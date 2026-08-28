@@ -52,9 +52,50 @@ export function envelope<T>(
 
 export type ChatPromptReq = {
   text: string;
-  attachments?: Array<{ kind: 'file' | 'alert-paste'; uri?: string; text?: string }>;
+  attachments?: Array<{
+    kind: 'file' | 'alert-paste' | 'log' | 'terminal' | 'evidence';
+    uri?: string;
+    text?: string;
+    label?: string;
+  }>;
   mode?: 'steer' | 'followUp';
+  /** 失败消息「重试」时带上被重发的 assistant item id。 */
+  retryOf?: string;
 };
+
+export type ChatAbortReq = { mode?: 'cancel' | 'stop' };
+
+export type ModelsTestReq = {
+  baseUrl: string;
+  modelId: string;
+  apiKey?: string;
+  provider?: string;
+};
+
+export type ModelsTestRes = {
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+  httpStatus?: number;
+};
+
+export type ModelsFetchReq = { baseUrl: string; apiKey?: string; provider?: string };
+export type ModelsFetchRes = { ok: boolean; models?: string[]; error?: string };
+
+export type AssetPickReq = { query?: string };
+export type AssetPickRes = {
+  items: Array<{ kind: 'log' | 'terminal' | 'evidence' | 'file'; label: string; text: string; uri?: string }>;
+};
+
+export type UsageView = {
+  inputTokens?: number;
+  outputTokens?: number;
+  contextUsed?: number;
+  contextWindow?: number;
+  costUsd?: number;
+};
+
+export type NoticeAction = { id: string; label: string; command?: string; request?: string };
 
 export type ModelSetReq = {
   provider: string;
@@ -76,12 +117,20 @@ export type SettingsOpenJsonReq = { kind: 'models' | 'mcp' | 'auth' | 'vscode' }
 
 export type TranscriptItem =
   | { kind: 'user'; id: string; text: string }
-  | { kind: 'assistant'; id: string; text: string; streaming?: boolean }
+  | { kind: 'assistant'; id: string; text: string; streaming?: boolean; error?: boolean; retryable?: boolean }
   | { kind: 'thinking'; id: string; steps: string[]; untrustedQuotes?: string[] }
   | { kind: 'tool'; id: string; call: ToolCallView }
   | { kind: 'subagents'; id: string; agents: SubagentCard[] }
   | { kind: 'evidence'; id: string; note: EvidenceNoteView }
-  | { kind: 'approval'; id: string; briefId: string };
+  | { kind: 'approval'; id: string; briefId: string }
+  | {
+      kind: 'notice';
+      id: string;
+      variant: 'error' | 'info' | 'success';
+      text: string;
+      actions?: NoticeAction[];
+    }
+  | { kind: 'system'; id: string; text: string };
 
 export type ToolCallView = {
   name: string;
@@ -139,13 +188,22 @@ export type HydrateEvt = {
   model?: string;
   modelProvider?: string;
   hasApiKey?: boolean;
+  /** vscode.env.language，webview i18n 用。 */
+  locale?: string;
+  usage?: UsageView;
+  onboarded?: boolean;
 };
 
 export type HostRequestType =
   | 'chat/prompt'
   | 'chat/abort'
+  | 'chat/retry'
+  | 'chat/export'
+  | 'hydrate'
   | 'model/set'
   | 'playbook/start'
+  | 'playbook/advance'
+  | 'playbook/close'
   | 'approval/respond'
   | 'subagent/abort'
   | 'session/list'
@@ -153,15 +211,19 @@ export type HostRequestType =
   | 'session/new'
   | 'settings/hydrate'
   | 'settings/patchConfig'
+  | 'settings/open'
   | 'mcp/get'
   | 'mcp/save'
   | 'settings/openJson'
   | 'history/toggle'
   | 'models/state'
   | 'models/save'
+  | 'models/test'
+  | 'models/fetch'
   | 'models/oauth'
   | 'models/openFile'
   | 'models/openAuth'
+  | 'asset/pick'
   | 'capabilities/refresh'
   | 'diagnose'
   | 'skill/open';
@@ -177,8 +239,12 @@ export type HostEventType =
   | 'subagent/upsert'
   | 'timeline/upsert'
   | 'approval/request'
+  | 'approval/resolve'
   | 'capabilities/snapshot'
   | 'playbook/stage'
+  | 'usage'
+  | 'compaction'
+  | 'turn/end'
   /** 标题栏 History 按钮 → chat webview 开关历史抽屉。 */
   | 'history/toggle'
   /** 设置面板：host 要求切换到指定页签。 */
