@@ -259,11 +259,15 @@ describe('discovery tools (pure)', () => {
     expect(missing).toMatchObject({ error: 'NOT_FOUND' });
   });
 
-  it('ops_list_providers 原样返回 hub.getProviders()，JSON 串一致', async () => {
+  it('ops_list_providers 包装 hub.getProviders()：附加 catalogLiveToolCount / liveToolCount，JSON 串一致', async () => {
     const hub = makeFakeHub();
-    expect(listProviders(hub)).toEqual(hub.getProviders());
+    const wrapped = listProviders(hub);
+    expect(wrapped).toMatchObject(hub.getProviders());
+    expect(wrapped.catalogLiveToolCount).toBe(hub.listAllTools().length);
+    expect(wrapped.providers.map((p) => p.liveToolCount)).toEqual([2, 1]);
+    expect(wrapped.hint).toBeUndefined();
     const text = await executeDiscoveryTool(hub, 'ops_list_providers');
-    expect(text).toBe(JSON.stringify(hub.getProviders()));
+    expect(text).toBe(JSON.stringify(wrapped));
   });
 
   it('ops_select_tools 透传给 hub.selection.select；空参数返回 INVALID_ARGS', async () => {

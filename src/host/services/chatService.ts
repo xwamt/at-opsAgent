@@ -25,6 +25,7 @@ import type { RuntimeLike } from '../hostTypes';
 import { describeError, type HostContext } from './context';
 import { RuntimeEventRouter } from './runtimeEvents';
 import { SessionPoolExhaustedError, SessionRuntimePool } from './runtimePool';
+import { StageLayerInjector } from './stageLayers';
 import { appendEvidenceNote, patchSubagentCard, type SubagentCardPatch } from './subagentCards';
 
 export class ChatService {
@@ -36,8 +37,15 @@ export class ChatService {
   private readonly lastUsage = new Map<string, UsageView>();
   /** sessionId → 全局停止时需一并中止的在跑子代理。 */
   private readonly activeSubagentTaskIds = new Map<string, Set<string>>();
+  /**
+   * 每条 prompt 前的 L-env（+当前 L4）现场同步（docs/13 §4.2）。
+   * PlaybookService 持有自己的注入器做阶段迁移注入；这里独立一份席位状态
+   * 做 per-prompt 同步——两者合成同一份 buildSystemPrompt 内容，互不擦层。
+   */
+  private readonly liveLayers: StageLayerInjector;
 
   constructor(private readonly ctx: HostContext) {
+    this.liveLayers = new StageLayerInjector(ctx, () => ctx.playbooks.getPlaybooks());
     this.pool = new SessionRuntimePool({
       maxParallel: () =>
         vscode.workspace.getConfiguration('atOpsAgent').get<number>('sessions.maxParallel', 1),
@@ -153,8 +161,18 @@ export class ChatService {
       }
       throw err;
     }
+    // docs/13 §4.2：模型开口前先等一轮 Hub catalog 刷新（消掉 start 竞态；
+    // 失败只记日志，绝不因此拒发 prompt）。
+    try {
+      await ctx.hub.refresh();
+    } catch (err) {
+      ctx.log(`[hub] refresh 失败（继续派发）: ${describeError(err)}`);
+    }
     // playbook 阶段驱动 + 当前阶段 L4 注入在首次模型调用之前完成。
     await ctx.playbooks.advancePlaybookForPrompt(sessionId);
+    // 现场同步：L-env（hub 实时快照）+ 当前 L4（若本会话有进行中的 playbook）
+    // 一起经 buildSystemPrompt 合成后 setSystemPrompt——互不擦层。
+    await this.liveLayers.syncLivePrompt(sessionId);
     this.pool.markBusy(sessionId);
     void runtime.prompt(text, mode !== undefined ? { mode } : undefined).catch((err) => {
       ctx.log(`[runtime] prompt 失败: ${describeError(err)}`);
@@ -216,6 +234,7 @@ export class ChatService {
   private onSessionEvicted(sessionId: string): void {
     this.ctx.approvals.clearSession(sessionId);
     this.ctx.playbooks.clearSession(sessionId);
+    this.liveLayers.clearSession(sessionId);
     this.lastUsage.delete(sessionId);
     this.activeSubagentTaskIds.delete(sessionId);
   }

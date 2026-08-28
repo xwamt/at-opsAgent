@@ -50,12 +50,57 @@ export interface ToolSearchHit {
   pluginId: string;
   risk: ToolRisk;
   descriptionPreview: string;
+  /** true = live catalog 命中；false = 仅插件声明（stub）。缺省视为 live。 */
+  live?: boolean;
 }
 
 export interface SearchToolsResult {
   total: number;
   returned: number;
   tools: ToolSearchHit[];
+}
+
+/** stub 命中的描述：告诉模型立刻 select，别再 get_tool 空转。 */
+export const STUB_HIT_DESCRIPTION =
+  '…声明工具，尚未进入 live catalog。请 ops_select_tools，不要重复 get_tool。';
+
+/**
+ * live catalog 未命中时的回退：在 providers[].toolNames（插件声明清单）里
+ * 搜 stub 命中。query 匹配工具名，或匹配插件 displayName / pluginId（此时
+ * 该插件全部未 live 的声明名都算命中）。已在 live catalog 的名字不出 stub。
+ */
+function searchDeclaredStubs(hub: DiscoveryHub, query: string, pluginId?: string): ToolSearchHit[] {
+  const liveNames = new Set(hub.listAllTools().map((t) => t.name));
+  let providers = hub.getProviders().providers;
+  if (pluginId) {
+    providers = providers.filter((p) => p.pluginId === pluginId);
+  }
+  const stubs: ToolSearchHit[] = [];
+  const seen = new Set<string>();
+  for (const provider of providers) {
+    const providerMatched =
+      query.length > 0 &&
+      (provider.displayName.toLowerCase().includes(query) ||
+        provider.pluginId.toLowerCase().includes(query));
+    for (const name of provider.toolNames) {
+      if (liveNames.has(name) || seen.has(name)) {
+        continue;
+      }
+      if (query && !providerMatched && !name.toLowerCase().includes(query)) {
+        continue;
+      }
+      seen.add(name);
+      stubs.push({
+        name,
+        title: name,
+        pluginId: provider.pluginId,
+        risk: 'read',
+        descriptionPreview: STUB_HIT_DESCRIPTION,
+        live: false
+      });
+    }
+  }
+  return stubs;
 }
 
 export function searchTools(hub: DiscoveryHub, args: SearchToolsArgs = {}): SearchToolsResult {
@@ -73,40 +118,91 @@ export function searchTools(hub: DiscoveryHub, args: SearchToolsArgs = {}): Sear
       )
     : [...candidates];
 
+  // live 未命中（含 catalog 为空）时回退到声明清单，避免对已声明的名字返回 total:0 空转。
+  const stubs = matched.length === 0 ? searchDeclaredStubs(hub, query, args.pluginId) : [];
+
   const rawLimit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.floor(args.limit) : DEFAULT_SEARCH_LIMIT;
   const limit = Math.min(Math.max(rawLimit, 1), MAX_SEARCH_LIMIT);
-  const hits = matched.slice(0, limit).map((t) => ({
+  const liveHits: ToolSearchHit[] = matched.slice(0, limit).map((t) => ({
     name: t.name,
     title: t.title,
     pluginId: t.pluginId,
     risk: t.risk,
-    descriptionPreview: t.description.slice(0, DESCRIPTION_PREVIEW_LIMIT)
+    descriptionPreview: t.description.slice(0, DESCRIPTION_PREVIEW_LIMIT),
+    live: true
   }));
+  const hits = liveHits.length > 0 ? liveHits : stubs.slice(0, limit);
 
-  return { total: matched.length, returned: hits.length, tools: hits };
+  return { total: matched.length + stubs.length, returned: hits.length, tools: hits };
 }
 
 // ── ops_get_tool ─────────────────────────────────────────────────────────
 
+/** 名字已被插件声明、但尚未进入 live catalog（桥不健康 / 未 sync）时的结构化错误。 */
+export interface NotInLiveCatalogError {
+  error: 'NOT_IN_LIVE_CATALOG';
+  message: string;
+  pluginId: string;
+  healthy: boolean;
+  next: { tool: 'ops_select_tools'; args: { pluginIds: string[]; mode: 'add' } };
+}
+
 export type GetToolResult =
   | AgentToolDescriptor
+  | NotInLiveCatalogError
   | { error: 'NOT_FOUND'; message: string };
 
 export function getTool(hub: DiscoveryHub, name: string): GetToolResult {
   const tool = hub.listAllTools().find((t) => t.name === name);
-  if (!tool) {
+  if (tool) {
+    return tool;
+  }
+  const provider = hub.getProviders().providers.find((p) => p.toolNames.includes(name));
+  if (provider) {
     return {
-      error: 'NOT_FOUND',
-      message: `未找到工具 "${name}"。用 ops_search_tools 按关键词搜索，或 ops_list_providers 查看可用插件。`
+      error: 'NOT_IN_LIVE_CATALOG',
+      message:
+        `工具 "${name}" 已由插件 ${provider.pluginId}（healthy=${provider.healthy}）声明，但尚未进入 live catalog。` +
+        `立刻 ops_select_tools {"pluginIds":["${provider.pluginId}"],"mode":"add"}，不要再对该名字 ops_get_tool / ops_search_tools；` +
+        `若 select 后 exposed 仍为空，说明桥未就绪，请直接告知用户。`,
+      pluginId: provider.pluginId,
+      healthy: provider.healthy,
+      next: { tool: 'ops_select_tools', args: { pluginIds: [provider.pluginId], mode: 'add' } }
     };
   }
-  return tool;
+  return {
+    error: 'NOT_FOUND',
+    message: `未找到工具 "${name}"（live catalog 与插件声明清单均无）。用 ops_search_tools 按关键词搜索，或 ops_list_providers 查看可用插件。`
+  };
 }
 
 // ── ops_list_providers ───────────────────────────────────────────────────
 
+/**
+ * 包装 hub.getProviders()：附加 catalogLiveToolCount 与每插件 liveToolCount。
+ * live catalog 为空但有声明工具时附顶层 hint，指示模型直接 select、禁止发现空转。
+ */
 export function listProviders(hub: DiscoveryHub): ListProvidersResult {
-  return hub.getProviders();
+  const base = hub.getProviders();
+  const liveTools = hub.listAllTools();
+  const liveNames = new Set(liveTools.map((t) => t.name));
+  const providers = base.providers.map((p) => ({
+    ...p,
+    liveToolCount: p.toolNames.filter((n) => liveNames.has(n)).length
+  }));
+  const declaredIds = providers.filter((p) => p.toolNames.length > 0).map((p) => p.pluginId);
+  const hint =
+    liveTools.length === 0 && declaredIds.length > 0
+      ? `live catalog 为空，但插件已声明工具。不要用 ops_get_tool / ops_search_tools 空转；` +
+        `立刻 ops_select_tools {"pluginIds":${JSON.stringify(declaredIds)}}；` +
+        `若 select 后 exposed 仍为空，说明桥未就绪，请直接告知用户，停止发现循环。`
+      : undefined;
+  return {
+    ...base,
+    providers,
+    catalogLiveToolCount: liveTools.length,
+    ...(hint !== undefined ? { hint } : {})
+  };
 }
 
 // ── ops_select_tools / ops_clear_tool_selection ──────────────────────────
@@ -180,8 +276,10 @@ export const discoveryToolSpecs: readonly DiscoveryToolSpec[] = [
     name: 'ops_search_tools',
     label: 'Ops：搜索工具',
     description:
-      '按关键词搜索所有已注册工具（匹配 name/title/description，不区分大小写），' +
-      `返回 ${DESCRIPTION_PREVIEW_LIMIT} 字符描述预览。可用 pluginId 限定插件范围。`,
+      '按关键词搜索 live catalog 工具（匹配 name/title/description，不区分大小写），' +
+      `返回 ${DESCRIPTION_PREVIEW_LIMIT} 字符描述预览。可用 pluginId 限定插件范围。` +
+      'live 未命中时回退到插件声明清单（live:false stub）。' +
+      'ops_list_providers 已声明的工具名应立刻 ops_select_tools，禁止对声明名反复 search。',
     parameters: {
       type: 'object',
       properties: {
@@ -200,7 +298,9 @@ export const discoveryToolSpecs: readonly DiscoveryToolSpec[] = [
   {
     name: 'ops_get_tool',
     label: 'Ops：查看工具详情',
-    description: '按名称取单个工具的完整 descriptor（含 inputSchema、risk、pluginId）。调用业务工具前先看清参数。',
+    description:
+      '按名称取单个工具的完整 descriptor（含 inputSchema、risk、pluginId）。只用于 live catalog 中、参数不清楚的工具。' +
+      '若名字只出现在 ops_list_providers 的 toolNames（声明未 live），应立刻 ops_select_tools，禁止对声明名循环 get_tool / search。',
     parameters: {
       type: 'object',
       properties: {

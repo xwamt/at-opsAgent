@@ -37,6 +37,7 @@ import type {
 import { composeSystemPrompt } from '../prompts/layers';
 import { composeSubagentPrompt } from '../prompts/roles';
 import { recoverFromPromptError } from './compaction';
+import { applyDiscoveryNudge, createDiscoveryNudgeState } from './discovery-nudge';
 import {
   discoveryToolSpecs,
   executeDiscoveryTool,
@@ -358,8 +359,10 @@ export interface CreateOpsRuntimeOptions {
   workspaceShellEnabled?: boolean;
 }
 
-/** 组装主代理系统提示词：L0+L1+L2+L3（+可选 L4 playbook 注入层）。 */
-export function buildSystemPrompt(opts: { playbookLayer?: string } = {}): string {
+/** 组装主代理系统提示词：L0+L1+L2+L3（+可选 L-env 现场层 +可选 L4 playbook 注入层）。 */
+export function buildSystemPrompt(
+  opts: { playbookLayer?: string; envLayer?: string } = {}
+): string {
   return composeSystemPrompt(opts);
 }
 
@@ -690,7 +693,11 @@ function toPiTool(pi: PiModule, source: OpsToolSource): ToolDefinition {
   return pi.defineTool(definition as never) as unknown as ToolDefinition;
 }
 
-function buildDiscoveryTools(pi: PiModule, handlers: OpsRuntimeHandlers): ToolDefinition[] {
+function buildDiscoveryTools(
+  pi: PiModule,
+  handlers: OpsRuntimeHandlers,
+  decorateResult?: (toolName: string, args: Record<string, unknown>, resultJson: string) => string
+): ToolDefinition[] {
   const hub: DiscoveryHub = handlers.hub;
   return discoveryToolSpecs.map((spec) =>
     toPiTool(pi, {
@@ -701,7 +708,8 @@ function buildDiscoveryTools(pi: PiModule, handlers: OpsRuntimeHandlers): ToolDe
       execute: async (args) => {
         const gate = await applyToolGate(handlers, spec.name, args, MAIN_ORIGIN);
         if (gate.kind === 'reject') return gate.resultJson;
-        return executeDiscoveryTool(hub, spec.name, args);
+        const result = await executeDiscoveryTool(hub, spec.name, args);
+        return decorateResult !== undefined ? decorateResult(spec.name, args, result) : result;
       }
     })
   );
@@ -1251,8 +1259,14 @@ async function createPiRuntime(
     listBusinessToolDescriptors(handlers.hub.listAllTools()).map((t) => t.name)
   );
 
+  // docs/13 §4.4 主会话发现空转软顶：ops_search_tools / ops_get_tool 同一
+  // 工具 + 规范化参数连续 ≥2 次空结果时在结果 JSON 附加 nudge（advisory，
+  // 不 block）。状态在本 runtime 闭包内（随会话生命周期，绝不全局）。
+  const discoveryNudgeState = createDiscoveryNudgeState();
   const customTools = [
-    ...buildDiscoveryTools(pi, handlers),
+    ...buildDiscoveryTools(pi, handlers, (toolName, args, resultJson) =>
+      applyDiscoveryNudge(discoveryNudgeState, toolName, args, resultJson)
+    ),
     dispatchTool,
     ...extraTools,
     ...buildBusinessTools(pi, handlers, agentDir)

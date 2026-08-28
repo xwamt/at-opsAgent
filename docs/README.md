@@ -19,6 +19,7 @@
 | 10 | [10-implementation-plan.md](10-implementation-plan.md) | 分阶段施工与验收 |
 | 11 | [11-redesign-recommendations.md](11-redesign-recommendations.md) | **下一阶段输入**：对照 OpenCode / Kilo / Cline 的架构、UI、体验、基础功能整改建议 |
 | 12 | [12-inspection-ux.md](12-inspection-ux.md) | 巡检实录：先认客户端、单机不拆子代理、子代理 inspector |
+| 13 | [13-ops-agent-loop.md](13-ops-agent-loop.md) | **Agent loop**：L-env 现场注入、声明工具直接 select、禁止 get_tool 空转（pi + Claude/Codex/DeepSeek） |
 
 配套：
 

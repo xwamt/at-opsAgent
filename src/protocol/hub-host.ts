@@ -69,7 +69,13 @@ export interface ListProvidersResult {
     connectedTargets?: number;
     toolNames: string[];
     pluginVersion?: string;
+    /** 该插件声明的 toolNames 中已进入 live catalog 的数量（发现层包装时填充）。 */
+    liveToolCount?: number;
   }>;
+  /** hub.listAllTools() 当前条数（发现层包装时填充）。 */
+  readonly catalogLiveToolCount?: number;
+  /** live catalog 为空但插件已声明工具时的行动指引（发现层包装时填充）。 */
+  readonly hint?: string;
 }
 
 export interface HubHost extends Disposable {
