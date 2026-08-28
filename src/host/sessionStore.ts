@@ -187,21 +187,44 @@ export class SessionStore {
     });
   }
 
+  /**
+   * 非活动会话的内存包（缺席则新建空包）。并行会话（sessions.maxParallel=2）
+   * 的后台席位事件经会话定向方法写到这里；活动会话仍走 live 字段。
+   */
+  private ensureBag(sessionId: string): SessionBag {
+    let bag = this._bags.get(sessionId);
+    if (!bag) {
+      bag = { items: [], playbook: undefined, pendingBriefs: [], subagents: new Map(), timeline: [] };
+      this._bags.set(sessionId, bag);
+    }
+    return bag;
+  }
+
+  private itemsRef(sessionId: string): TranscriptItem[] {
+    return sessionId === this._activeSessionId ? this._items : this.ensureBag(sessionId).items;
+  }
+
   // ── transcript ─────────────────────────────────────────────────────────
 
   get items(): readonly TranscriptItem[] {
     return this._items;
   }
 
-  appendItem(item: TranscriptItem): void {
-    this._items.push(item);
-    if (item.kind === 'user') this.maybeAdoptTitle(item.text);
+  /** 指定会话的 transcript（缺省活动会话）。 */
+  itemsOf(sessionId?: string): readonly TranscriptItem[] {
+    return this.itemsRef(sessionId ?? this._activeSessionId);
+  }
+
+  appendItem(item: TranscriptItem, sessionId?: string): void {
+    const sid = sessionId ?? this._activeSessionId;
+    this.itemsRef(sid).push(item);
+    if (item.kind === 'user') this.maybeAdoptTitle(item.text, sid);
     this.schedulePersist();
   }
 
   /** 首条用户消息 → 会话标题（仅覆盖自动标题「会话 N」）。 */
-  private maybeAdoptTitle(text: string): void {
-    const session = this._sessions.find((s) => s.id === this._activeSessionId);
+  private maybeAdoptTitle(text: string, sessionId: string): void {
+    const session = this._sessions.find((s) => s.id === sessionId);
     if (!session) return;
     if (session.title.length > 0 && !AUTO_TITLE_RE.test(session.title)) return;
     const compact = text.replace(/\s+/g, ' ').trim();
@@ -210,18 +233,18 @@ export class SessionStore {
     this.sessionsEmitter.fire();
   }
 
-  findItem(itemId: string): TranscriptItem | undefined {
-    return this._items.find((i) => i.id === itemId);
+  findItem(itemId: string, sessionId?: string): TranscriptItem | undefined {
+    return this.itemsRef(sessionId ?? this._activeSessionId).find((i) => i.id === itemId);
   }
 
-  appendAssistantText(itemId: string, text: string): void {
-    const item = this.findItem(itemId);
+  appendAssistantText(itemId: string, text: string, sessionId?: string): void {
+    const item = this.findItem(itemId, sessionId);
     if (item?.kind === 'assistant') item.text += text;
     this.schedulePersist();
   }
 
-  finalizeAssistant(itemId: string, finalText?: string): void {
-    const item = this.findItem(itemId);
+  finalizeAssistant(itemId: string, finalText?: string, sessionId?: string): void {
+    const item = this.findItem(itemId, sessionId);
     if (item?.kind === 'assistant') {
       if (typeof finalText === 'string') item.text = finalText;
       item.streaming = false;
@@ -229,8 +252,8 @@ export class SessionStore {
     this.schedulePersist();
   }
 
-  appendThinkingText(itemId: string, text: string): void {
-    const item = this.findItem(itemId);
+  appendThinkingText(itemId: string, text: string, sessionId?: string): void {
+    const item = this.findItem(itemId, sessionId);
     if (item?.kind === 'thinking') {
       if (item.steps.length === 0) item.steps.push('');
       item.steps[item.steps.length - 1] += text;
@@ -243,8 +266,19 @@ export class SessionStore {
     return this._playbook;
   }
 
-  setPlaybook(state: PlaybookState | undefined): void {
-    this._playbook = state;
+  /** 指定会话的 playbook 阶段（缺省活动会话）。 */
+  playbookOf(sessionId?: string): PlaybookState | undefined {
+    const sid = sessionId ?? this._activeSessionId;
+    return sid === this._activeSessionId ? this._playbook : this._bags.get(sid)?.playbook;
+  }
+
+  setPlaybook(state: PlaybookState | undefined, sessionId?: string): void {
+    const sid = sessionId ?? this._activeSessionId;
+    if (sid === this._activeSessionId) {
+      this._playbook = state;
+    } else {
+      this.ensureBag(sid).playbook = state;
+    }
     this.schedulePersist();
   }
 
@@ -254,17 +288,25 @@ export class SessionStore {
     return this._pendingBriefs;
   }
 
-  addBrief(brief: ApprovalBriefView): void {
-    if (!this._pendingBriefs.some((b) => b.id === brief.id)) {
-      this._pendingBriefs.push(brief);
+  private briefsRef(sessionId: string): ApprovalBriefView[] {
+    return sessionId === this._activeSessionId
+      ? this._pendingBriefs
+      : this.ensureBag(sessionId).pendingBriefs;
+  }
+
+  addBrief(brief: ApprovalBriefView, sessionId?: string): void {
+    const briefs = this.briefsRef(sessionId ?? this._activeSessionId);
+    if (!briefs.some((b) => b.id === brief.id)) {
+      briefs.push(brief);
       this.approvalsEmitter.fire();
     }
   }
 
-  resolveBrief(briefId: string): ApprovalBriefView | undefined {
-    const idx = this._pendingBriefs.findIndex((b) => b.id === briefId);
+  resolveBrief(briefId: string, sessionId?: string): ApprovalBriefView | undefined {
+    const briefs = this.briefsRef(sessionId ?? this._activeSessionId);
+    const idx = briefs.findIndex((b) => b.id === briefId);
     if (idx < 0) return undefined;
-    const [brief] = this._pendingBriefs.splice(idx, 1);
+    const [brief] = briefs.splice(idx, 1);
     this.approvalsEmitter.fire();
     return brief;
   }
@@ -276,18 +318,27 @@ export class SessionStore {
 
   // ── 子代理 ─────────────────────────────────────────────────────────────
 
-  getSubagent(taskId: string): SubagentCard | undefined {
-    return this._subagents.get(taskId);
+  private subagentsRef(sessionId: string): Map<string, SubagentCard> {
+    return sessionId === this._activeSessionId
+      ? this._subagents
+      : this.ensureBag(sessionId).subagents;
   }
 
-  upsertSubagent(card: SubagentCard): void {
-    this._subagents.set(card.taskId, card);
-    const existing = this._items.find((i) => i.kind === 'subagents');
-    const agents = [...this._subagents.values()];
+  getSubagent(taskId: string, sessionId?: string): SubagentCard | undefined {
+    return this.subagentsRef(sessionId ?? this._activeSessionId).get(taskId);
+  }
+
+  upsertSubagent(card: SubagentCard, sessionId?: string): void {
+    const sid = sessionId ?? this._activeSessionId;
+    const subagents = this.subagentsRef(sid);
+    subagents.set(card.taskId, card);
+    const items = this.itemsRef(sid);
+    const existing = items.find((i) => i.kind === 'subagents');
+    const agents = [...subagents.values()];
     if (existing?.kind === 'subagents') {
       existing.agents = agents;
     } else {
-      this._items.push({ kind: 'subagents', id: randomUUID(), agents });
+      items.push({ kind: 'subagents', id: randomUUID(), agents });
     }
     this.schedulePersist();
   }
@@ -298,16 +349,19 @@ export class SessionStore {
     return this._timeline;
   }
 
-  appendTimeline(event: Record<string, unknown>): TimelineEventView {
+  appendTimeline(event: Record<string, unknown>, sessionId?: string): TimelineEventView {
+    const sid = sessionId ?? this._activeSessionId;
+    const timeline = sid === this._activeSessionId ? this._timeline : this.ensureBag(sid).timeline;
     const view: TimelineEventView = {
       id: typeof event.id === 'string' ? event.id : randomUUID(),
       ts: typeof event.ts === 'number' ? event.ts : Date.now(),
       ...event
     };
-    const idx = this._timeline.findIndex((e) => e.id === view.id);
-    if (idx >= 0) this._timeline[idx] = view;
-    else this._timeline.push(view);
-    this.timelineEmitter.fire(view);
+    const idx = timeline.findIndex((e) => e.id === view.id);
+    if (idx >= 0) timeline[idx] = view;
+    else timeline.push(view);
+    // 看板实时事件只反映活动会话；后台会话的时间线切回时经 hydrate 恢复。
+    if (sid === this._activeSessionId) this.timelineEmitter.fire(view);
     this.schedulePersist();
     return view;
   }
