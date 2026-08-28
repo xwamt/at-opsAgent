@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://at-series.dev/schemas/task-spec.json",
+  "title": "at-opsAgent Subagent Task Spec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["specVersion", "taskId", "sessionId", "role", "goal", "toolPolicy", "output"],
+  "properties": {
+    "specVersion": { "const": 1 },
+    "taskId": { "type": "string" },
+    "sessionId": { "type": "string" },
+    "playbookId": { "type": "string" },
+    "stage": { "type": "string" },
+    "role": { "enum": ["investigator", "executor", "writer", "verifier"] },
+    "goal": { "type": "string" },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "timeWindow": {
+          "type": "object",
+          "properties": {
+            "from": { "type": "string" },
+            "to": { "type": "string" }
+          }
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "id"],
+            "properties": {
+              "kind": { "type": "string" },
+              "id": { "type": "string" }
+            }
+          }
+        },
+        "contextNotes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "toolPolicy": {
+      "type": "object",
+      "required": ["select", "riskCeiling", "budget"],
+      "properties": {
+        "select": {
+          "type": "object",
+          "properties": {
+            "mode": { "enum": ["inherit"] }
+          },
+          "required": ["mode"]
+        },
+        "allowTools": { "type": "array", "items": { "type": "string" } },
+        "riskCeiling": { "enum": ["read", "write", "exec"] },
+        "budget": {
+          "type": "object",
+          "required": ["maxToolCalls", "maxWallMs"],
+          "properties": {
+            "maxToolCalls": { "type": "integer", "minimum": 1, "maximum": 40 },
+            "maxWallMs": { "type": "integer", "minimum": 1000 }
+          }
+        },
+        "payloadCaps": { "type": "object" }
+      }
+    },
+    "approvalToken": {
+      "type": ["object", "null"],
+      "properties": {
+        "briefId": { "type": "string" },
+        "commandSetSha256": { "type": "string" }
+      }
+    },
+    "plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step", "kind", "tool"],
+        "properties": {
+          "step": { "type": "integer" },
+          "kind": { "enum": ["backup", "verifyBackup", "change", "readback", "verify", "other"] },
+          "tool": { "type": "string" },
+          "command": { "type": "string" },
+          "args": { "type": "object" }
+        }
+      }
+    },
+    "rollback": { "type": "object" },
+    "output": {
+      "type": "object",
+      "required": ["contract"],
+      "properties": {
+        "contract": {
+          "enum": ["evidence-note@1", "exec-report@1", "verify-report@1", "ops-doc"]
+        },
+        "maxSummaryTokens": { "type": "integer", "default": 800 },
+        "confidenceEnum": {
+          "type": "array",
+          "items": { "enum": ["confirmed", "hypothesis", "pending"] }
+        }
+      }
+    },
+    "parallelGroup": { "type": "string" },
+    "escalation": {
+      "type": "object",
+      "properties": {
+        "retries": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "onFail": { "enum": ["degrade", "abort-group", "escalate-lead"] }
+      }
+    }
+  }
+}

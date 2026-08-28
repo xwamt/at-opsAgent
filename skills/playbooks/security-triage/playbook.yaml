@@ -1,0 +1,21 @@
+id: pb.security-triage
+version: 1
+title: 安全事件初判
+triggers:
+  - kind: nl
+    patterns: ["入侵", "异常登录", "挖矿", "凭据泄漏", "可疑进程"]
+stages:
+  - id: triage
+  - id: selecting
+    select: { mode: replace, pluginIds: [at.terminal] }
+  - id: investigating
+    parallelGroup:
+      - id: inv-forensic
+        role: investigator
+        riskCeiling: read
+        goal: 最小接触采集会话/进程树/外联/计划任务/认证日志元数据
+  - id: synthesizing
+  - id: escalated
+  - id: reporting
+    artifact: security-triage
+  - id: closed

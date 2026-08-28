@@ -1,0 +1,16 @@
+node_modules/
+dist/
+out/
+.vscode-test/
+*.vsix
+.DS_Store
+*.log
+coverage/
+.turbo/
+.cache/
+*.tsbuildinfo
+.idea/
+.env
+.env.*
+!
+.env.example

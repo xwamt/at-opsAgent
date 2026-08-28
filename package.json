@@ -1,0 +1,110 @@
+{
+  "name": "at-ops-agent",
+  "displayName": "AT Ops Agent",
+  "description": "AT Series operations agent for VS Code / Cursor. Capability plugins register tools via the embedded MCP Hub — no extra MCP server config.",
+  "version": "0.0.0",
+  "publisher": "at-series",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=22.19.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["ops", "sre", "mcp", "at-series", "agent"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "atOpsAgent",
+          "title": "AT Ops Agent",
+          "icon": "media/icons/ops-agent.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "atOpsAgentBoard",
+          "title": "Ops 看板",
+          "icon": "media/icons/ops-board.svg"
+        }
+      ]
+    },
+    "views": {
+      "atOpsAgent": [
+        {
+          "id": "atOpsAgent.chat",
+          "type": "webview",
+          "name": "对话"
+        },
+        {
+          "id": "atOpsAgent.sessions",
+          "name": "会话",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "atOpsAgent.capabilities",
+          "name": "能力插件"
+        },
+        {
+          "id": "atOpsAgent.approvals",
+          "name": "审批"
+        },
+        {
+          "id": "atOpsAgent.skills",
+          "name": "技能",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "atOpsAgent.models",
+          "name": "模型",
+          "visibility": "collapsed"
+        }
+      ],
+      "atOpsAgentBoard": [
+        {
+          "id": "atOpsAgent.incidentBoard",
+          "type": "webview",
+          "name": "事故 / 任务"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AT Ops Agent",
+      "properties": {
+        "atOpsAgent.discovery.mode": {
+          "type": "string",
+          "enum": ["auto", "always", "off"],
+          "default": "auto",
+          "description": "Hub progressive tool discovery mode."
+        },
+        "atOpsAgent.discovery.threshold": {
+          "type": "number",
+          "default": 20
+        },
+        "atOpsAgent.plugins.autoEnableNew": {
+          "type": "boolean",
+          "default": true
+        },
+        "atOpsAgent.approval.sessionRequiredFor": {
+          "type": "string",
+          "enum": ["write-exec", "exec-only", "never"],
+          "default": "write-exec"
+        },
+        "atOpsAgent.workspaceShell.enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "atOpsAgent.subagent.maxParallel": {
+          "type": "number",
+          "default": 3,
+          "maximum": 4
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "echo 'implementation not started; see docs/10-implementation-plan.md'"
+  }
+}

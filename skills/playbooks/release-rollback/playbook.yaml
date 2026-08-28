@@ -1,0 +1,26 @@
+id: pb.release
+version: 1
+title: 发布与回滚
+triggers:
+  - kind: nl
+    patterns: ["发布", "回滚", "构建失败", "jenkins", "pipeline"]
+stages:
+  - id: triage
+  - id: selecting
+    select: { mode: replace, pluginIds: [at.jenkins] }
+    escalateSelect: { mode: add, pluginIds: [at.terminal, at.grafana] }
+  - id: investigating
+    parallelGroup:
+      - id: inv-build
+        role: investigator
+        riskCeiling: read
+        goal: 确认 job、构建号、制品 digest、失败日志尾部
+  - id: synthesizing
+  - id: guidedManual
+    guidedManual:
+      command: atJenkins.triggerBuild
+      hint: MCP 不能触发构建。在 AT Jenkins 视图确认后点击触发/停止。
+  - id: verifying
+  - id: reporting
+    artifact: service-deployment
+  - id: closed

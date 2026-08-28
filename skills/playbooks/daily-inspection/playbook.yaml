@@ -1,0 +1,30 @@
+id: pb.inspection
+version: 1
+title: 日常巡检
+triggers:
+  - kind: nl
+    patterns: ["巡检", "健康检查日报"]
+  - kind: command
+stages:
+  - id: triage
+  - id: selecting
+    select: { mode: replace, pluginIds: [at.grafana] }
+    escalateSelect: { mode: add, pluginIds: [at.nacos, at.terminal, at.jenkins] }
+  - id: investigating
+    parallelGroup:
+      - id: inv-metrics
+        role: investigator
+        riskCeiling: read
+        goal: 关键 SLO 与 firing alerts
+      - id: inv-configs
+        role: investigator
+        riskCeiling: read
+        goal: Nacos 关键配置 md5 与实例健康
+      - id: inv-hosts
+        role: investigator
+        riskCeiling: read
+        goal: 主机组有界巡检
+  - id: synthesizing
+  - id: reporting
+    artifact: service-inspection
+  - id: closed

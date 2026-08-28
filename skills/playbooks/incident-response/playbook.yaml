@@ -1,0 +1,65 @@
+id: pb.incident
+version: 1
+title: 故障排查
+description: 可用性/错误率/延迟事故的证据优先排查
+triggers:
+  - kind: nl
+    patterns: ["5xx", "超时", "打不开", "报错激增", "线上.*(挂|慢|异常)", "故障", "事故"]
+  - kind: board
+  - kind: alert-paste
+defaults:
+  maxParallelInvestigators: 3
+  payloadCaps:
+    lokiLimit: 100
+    maxOutputBytes: 65536
+stages:
+  - id: triage
+    prompt: references/triage.md
+  - id: selecting
+    select:
+      mode: replace
+      pluginIds: [at.grafana]
+    escalateSelect:
+      mode: add
+      pluginIds: [at.jumpserver, at.terminal, at.jenkins]
+  - id: investigating
+    parallelGroup:
+      - id: inv-metrics
+        role: investigator
+        riskCeiling: read
+        allowTools:
+          - grafana_list_instances
+          - grafana_list_dashboards
+          - grafana_get_dashboard
+          - grafana_query_prometheus
+          - grafana_list_alert_rules
+          - grafana_get_alert_history
+        goal: 窄窗确认尖刺并找出 top-N 放大面
+      - id: inv-logs
+        role: investigator
+        riskCeiling: read
+        allowTools:
+          - grafana_query_loki
+          - grafana_query_prometheus
+        goal: 同窗口业务日志中的触发事件（batch/approve/job/发布）
+      - id: inv-changes
+        role: investigator
+        riskCeiling: read
+        allowTools:
+          - jenkins_list_instances
+          - jenkins_list_jobs
+          - jenkins_list_builds
+          - jenkins_get_build
+        goal: 窗口内可疑发布或失败构建
+  - id: synthesizing
+  - id: awaitingApproval
+  - id: executing
+  - id: verifying
+    parallelGroup:
+      - id: verify
+        role: verifier
+        riskCeiling: read
+        goal: 独立复核健康与监控是否回归
+  - id: reporting
+    artifact: troubleshooting-report
+  - id: closed

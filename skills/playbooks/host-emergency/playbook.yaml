@@ -1,0 +1,24 @@
+id: pb.host-emergency
+version: 1
+title: 主机应急
+triggers:
+  - kind: nl
+    patterns: ["主机", "SSH", "OOM", "disk full", "服务挂了", "load 高"]
+stages:
+  - id: triage
+  - id: selecting
+    select: { mode: replace, pluginIds: [at.terminal] }
+    escalateSelect: { mode: add, pluginIds: [at.jumpserver] }
+  - id: investigating
+    parallelGroup:
+      - id: inv-host
+        role: investigator
+        riskCeiling: read
+        goal: uptime/free/ps/dmesg/journal 有界只读
+  - id: synthesizing
+  - id: awaitingApproval
+  - id: executing
+  - id: verifying
+  - id: reporting
+    artifact: operation-record
+  - id: closed

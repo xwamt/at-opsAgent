@@ -1,0 +1,27 @@
+id: pb.db
+version: 1
+title: 数据库慢查询与容量
+triggers:
+  - kind: nl
+    patterns: ["慢查询", "数据库", "QPS 尖", "锁等待", "连接数"]
+stages:
+  - id: triage
+  - id: selecting
+    select: { mode: replace, pluginIds: [at.jumpserver] }
+    escalateSelect: { mode: add, pluginIds: [at.grafana, at.database] }
+  - id: investigating
+    parallelGroup:
+      - id: inv-sql
+        role: investigator
+        riskCeiling: read
+        goal: 有界诊断查询（超时+LIMIT），不要先杀会话
+      - id: inv-metrics
+        role: investigator
+        riskCeiling: read
+        goal: 窄窗 Com_* / 连接 / 锁指标
+  - id: synthesizing
+  - id: awaitingApproval
+  - id: executing
+  - id: reporting
+    artifact: operation-record
+  - id: closed

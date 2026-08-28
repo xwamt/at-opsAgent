@@ -1,0 +1,22 @@
+id: pb.metric-anomaly
+version: 1
+title: 指标异常诊断
+triggers:
+  - kind: nl
+    patterns: ["告警", "CPU 飙", "QPS", "延迟升高", "saturation"]
+defaults:
+  maxParallelInvestigators: 2
+stages:
+  - id: triage
+  - id: selecting
+    select: { mode: replace, pluginIds: [at.grafana] }
+  - id: investigating
+    parallelGroup:
+      - id: inv-metrics
+        role: investigator
+        riskCeiling: read
+        goal: 窄窗基线 vs 峰值与 firing alerts
+  - id: synthesizing
+  - id: reporting
+    artifact: evidence-only
+  - id: closed

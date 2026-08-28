@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://at-series.dev/schemas/playbook.json",
+  "title": "at-opsAgent Playbook",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "triggers", "stages"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^pb\\.[a-z0-9-]+$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "triggers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": { "enum": ["nl", "board", "alert-paste", "command"] },
+          "patterns": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "maxParallelInvestigators": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "payloadCaps": { "type": "object" }
+      }
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {
+            "enum": [
+              "triage",
+              "selecting",
+              "investigating",
+              "synthesizing",
+              "awaitingApproval",
+              "executing",
+              "verifying",
+              "guidedManual",
+              "reporting",
+              "escalated",
+              "closed"
+            ]
+          },
+          "prompt": { "type": "string", "description": "Relative markdown path under the playbook folder" },
+          "select": {
+            "type": "object",
+            "properties": {
+              "mode": { "enum": ["replace", "add"] },
+              "pluginIds": { "type": "array", "items": { "type": "string" } },
+              "names": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "escalateSelect": {
+            "type": "object",
+            "properties": {
+              "mode": { "enum": ["add"] },
+              "pluginIds": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "parallelGroup": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "role"],
+              "properties": {
+                "id": { "type": "string" },
+                "role": { "enum": ["investigator", "executor", "writer", "verifier"] },
+                "allowTools": { "type": "array", "items": { "type": "string" } },
+                "riskCeiling": { "enum": ["read", "write", "exec"] },
+                "goal": { "type": "string" }
+              }
+            }
+          },
+          "guidedManual": {
+            "type": "object",
+            "properties": {
+              "command": { "type": "string" },
+              "hint": { "type": "string" }
+            }
+          },
+          "artifact": { "enum": ["troubleshooting-report", "operation-record", "service-deployment", "service-inspection", "evidence-only", "security-triage"] }
+        }
+      }
+    }
+  }
+}
