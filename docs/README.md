@@ -17,6 +17,7 @@
 | 8 | [08-performance.md](08-performance.md) | 激活、流式、工具爆炸、超时、崩溃恢复 |
 | 9 | [09-extensibility.md](09-extensibility.md) | 新插件、新 Playbook、新模型、新 MCP |
 | 10 | [10-implementation-plan.md](10-implementation-plan.md) | 分阶段施工与验收 |
+| 11 | [11-redesign-recommendations.md](11-redesign-recommendations.md) | **下一阶段输入**：对照 OpenCode / Kilo / Cline 的架构、UI、体验、基础功能整改建议 |
 
 配套：
 
@@ -24,6 +25,7 @@
 - [schemas/](schemas/) — 机器可读契约（playbook / task-spec / host protocol）
 - [../skills/](../skills/README.md) — 运行时技能包与 Playbook YAML 初稿
 - [research/](research/README.md) — 对 AT 插件、Hub、piagent、业界的原始调研
+- [reviews/](reviews/README.md) — 整改评审分项原文（架构 / UI / 体验 / 功能 / 竞品）
 
 ## 已冻结的决策（速查）
 

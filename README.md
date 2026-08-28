@@ -73,8 +73,9 @@ npm run package      # compile 后经 npx @vscode/vsce 生成本地 .vsix
 
 本仓库是[已冻结设计](docs/README.md)的实现。施工计划见 [docs/10-implementation-plan.md](docs/10-implementation-plan.md)：
 
-- **阶段 0–3 已落地**：Cline 式单 Chat 侧栏 + 设置 Webview、pi 会话 + Hub 工具调用 + 模型配置、审批安全闸与 Database 兼容、Playbook 状态机 + 子代理编排 + SuperOps 技能包。
-- **阶段 4–5 进行中**（由并行分支补齐）：运维看板 UI 打磨、Models 全页、第三方 MCP、性能合批、中英 i18n 与发布收尾。
+- **阶段 0–3 已落地骨架**：Cline 式单 Chat 侧栏 + 设置 Webview、pi 会话 + Hub 工具调用 + 模型配置、审批安全闸与 Database 兼容、Playbook 状态机 + 子代理编排 + SuperOps 技能包。
+- **阶段 4–5 进行中**：运维看板 UI 打磨、Models 全页、第三方 MCP、性能合批、中英 i18n 与发布收尾。
+- **已知阻断**：发布产物把 ESM-only 的 pi SDK 打进 CJS 后 `import.meta.url` 丢失，聊天会永远回落「未配置模型」。对照 OpenCode / Kilo 的整改清单见 [docs/11-redesign-recommendations.md](docs/11-redesign-recommendations.md)。
 
 ## 设计文档
 
@@ -87,6 +88,7 @@ npm run package      # compile 后经 npx @vscode/vsce 生成本地 .vsix
 | [docs/02-capability-hub.md](docs/02-capability-hub.md) | **核心设计 1**：嵌入 Hub + 能力插件热注册 |
 | [docs/04-ops-orchestration.md](docs/04-ops-orchestration.md) | **核心设计 2**：运维链路 / 子代理 / CoT / 提示词 |
 | [docs/05-ui-system.md](docs/05-ui-system.md) | 运维专属前端 |
+| [docs/11-redesign-recommendations.md](docs/11-redesign-recommendations.md) | 对照 OpenCode / Kilo 的整改建议（下一阶段输入） |
 
 调研原文（六份子代理交叉验证）在 [docs/research/](docs/research/README.md)。
 

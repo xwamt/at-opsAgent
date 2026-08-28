@@ -2,6 +2,8 @@
 
 设计已冻结。实现按阶段交付，每阶段有可演示的 vsix。
 
+> **下一阶段输入**：阶段 0–3 骨架已落地，但发布产物与首跑配置仍无法完成最小问答。对照 OpenCode / Kilo / Cline 的整改优先级见 [11-redesign-recommendations.md](11-redesign-recommendations.md)，不要在未完成该文档 P0 的情况下继续堆阶段 4–5 表面功能。
+
 ## 阶段 0 — 骨架（可安装但不会「干活」）
 
 - 扩展清单、esbuild、空 WebviewView、TreeView 壳
