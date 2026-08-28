@@ -53,11 +53,13 @@ export class PlaybookLayerSource {
     const lines = [
       '',
       '## 子代理（由你决定，host 不会自动下发）',
-      '是否调用 ops_dispatch_subagent 由你判断。简单问答或单证据面不要派发。',
+      '是否调用 ops_dispatch_subagent 由你判断。',
+      '单证据面或单台机器禁止派发——由主会话直接调用一等工具完成。',
+      '仅当存在多个独立目标（多主机、多插件面）时才考虑候选。',
       'yaml parallelGroup 只是候选，不是必须执行的清单。'
     ];
     if (group.length > 0) {
-      lines.push('本阶段候选：');
+      lines.push('本阶段候选（仅多个独立目标时考虑）：');
       for (const task of group) {
         const goal = task.goal ? ` — ${task.goal}` : '';
         lines.push(`- ${task.role} \`${task.id}\`${goal}`);

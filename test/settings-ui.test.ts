@@ -844,11 +844,13 @@ describe('settings i18n（本地包，独立于 chat i18n）', () => {
     expect(t('save')).toBe('Save');
   });
 
-  it('向导 / 保存并测试 / 角色映射的新键 zh+en 双语齐全', () => {
+  it('首跑提示 / 保存并测试 / 高级折叠 / 角色映射的键 zh+en 双语齐全', () => {
     const keys = [
-      'mWizardStep1',
-      'mWizardStep2',
-      'mWizardStep3',
+      'mFirstRunHint',
+      'modelsSectionConnect',
+      'modelsSectionReasoning',
+      'mAdvanced',
+      'mAdvancedHint',
       'mSaveTest',
       'mFetchModels',
       'mTesting',

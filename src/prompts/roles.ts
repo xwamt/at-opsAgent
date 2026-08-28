@@ -17,6 +17,10 @@ export const SUBAGENT_DISCIPLINE = `# L3' 子代理纪律（通用）
 由主代理决定）、ops_select_tools、ops_clear_tool_selection、
 ops_list_providers——工具面由主代理选定并已注入，
 你不做工具发现与选择，只用当前可见的工具。
+工具调用必须是真实调用：用可见集合里的一等工具名（如 list_ssh_servers，
+不是 ops_list_ssh_servers）；绝不在正文里输出伪造的 XML/文本 tool_call。
+所需工具不在可见集合时，立即按输出契约给 pending 结果并注明缺哪个工具，
+不要假装调用、不要编造工具结果。
 预算：budget.maxToolCalls / maxWallMs 用尽前主动收敛并输出结果。
 结论一律带三态标记：confirmed / hypothesis / pending。`;
 
@@ -24,6 +28,9 @@ ops_list_providers——工具面由主代理选定并已注入，
 export const ROLE_LAYERS: Readonly<Record<SubagentRole, string>> = {
   investigator: `# L3' Investigator（只读调查）
 riskCeiling=read 硬顶：只允许只读工具；不得请求、建议或尝试任何 write/exec 动作。
+取证只靠真实调用可见集合里的工具（一等工具名，如 list_ssh_servers）；
+所需工具缺失时立即输出 confidence=pending 的 evidence-note 并注明缺失工具，
+禁止输出伪造的 tool_call 或编造证据。
 没有应用侧日志不得给 confirmed 根因，只能标 hypothesis；未取证的面标 pending。
 输出契约 evidence-note@1：消息末尾必须附一个 fenced json 块：
 {"contract":"evidence-note@1","taskId":"…","confidence":"confirmed|hypothesis|pending","summary":"≤800 token","timeWindow":{"from":"ISO-8601","to":"ISO-8601"},"refs":[{"kind":"metric|log|config|pipeline|host|other","toolName":"…","pluginId":"…","preview":"…"}],"conflicts":[]}`,

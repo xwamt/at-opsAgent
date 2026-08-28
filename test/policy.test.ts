@@ -4,6 +4,7 @@ import {
   assertApproval,
   evaluatePolicy,
   hashCommandSet,
+  inferEffectiveRisk,
   issueApprovalToken,
   PolicyError,
   verifyApprovalToken,
@@ -139,6 +140,122 @@ describe('policy · 角色风险顶', () => {
       ctx({ toolName: 'terminal_run_command', role: 'writer', risk: 'exec', riskCeiling: 'exec' })
     );
     expectBlocked(decision, OPS_ERROR.RISK_CEILING);
+  });
+});
+
+describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）', () => {
+  it('只读巡检命令推断为 read', () => {
+    const readOnly = [
+      'hostname',
+      'whoami',
+      'uname -a',
+      'uptime',
+      'df -h',
+      'free -m',
+      'nproc',
+      'ps aux',
+      'top -b -n 1',
+      'top -bn1',
+      'systemctl --failed',
+      'systemctl is-active nginx',
+      'systemctl status nginx',
+      'journalctl -u nginx -n 100 --no-pager',
+      'cat /etc/os-release',
+      'head -n 50 /var/log/syslog',
+      'tail -n 200 /var/log/nginx/error.log',
+      'wc -l /var/log/messages',
+      'ls -lah /data',
+      'docker ps',
+      'kubectl get pods -A',
+      'iptables -L -n'
+    ];
+    for (const command of readOnly) {
+      expect(inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('read');
+    }
+  });
+
+  it('写/执行/维护类命令维持申报风险（保守方向）', () => {
+    const notReadOnly = [
+      'rm -rf /data',
+      'systemctl restart nginx',
+      'systemctl stop nginx',
+      'systemctl start nginx',
+      'apt install htop',
+      'yum update -y',
+      'docker run -it ubuntu',
+      'docker exec app sh',
+      'sh -c "echo hi > /tmp/x"',
+      'echo ok > /tmp/marker',
+      'journalctl --vacuum-size=100M',
+      'journalctl --rotate',
+      'kubectl delete pod api-1',
+      'iptables -F',
+      'iptables -L && iptables -F',
+      'df -h && rm -rf /data',
+      'top'
+    ];
+    for (const command of notReadOnly) {
+      expect(inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('exec');
+    }
+  });
+
+  it('组合命令要求每段只读；重定向/命令替换一律不推断', () => {
+    expect(inferEffectiveRisk('run_remote_command', { command: 'ps aux | head -n 20' }, 'exec')).toBe('read');
+    expect(inferEffectiveRisk('run_remote_command', { command: 'df -h; free -m' }, 'exec')).toBe('read');
+    expect(inferEffectiveRisk('run_remote_command', { command: 'cat /tmp/a | sh' }, 'exec')).toBe('exec');
+    expect(inferEffectiveRisk('run_remote_command', { command: 'cat $(find / -name x)' }, 'exec')).toBe('exec');
+    expect(inferEffectiveRisk('run_remote_command', { command: 'cat `which sh`' }, 'exec')).toBe('exec');
+  });
+
+  it('只对远程命令工具生效；缺 command / read 声明原样返回', () => {
+    expect(inferEffectiveRisk('jumpserver_run_terminal_command', { command: 'docker ps' }, 'exec')).toBe('read');
+    expect(inferEffectiveRisk('at.terminal/run_remote_command', { command: 'uptime' }, 'exec')).toBe('read');
+    // 其它工具不做内容推断
+    expect(inferEffectiveRisk('nacos_publish_config', { command: 'hostname' }, 'write')).toBe('write');
+    expect(inferEffectiveRisk('terminal_run_command', { command: 'hostname' }, 'exec')).toBe('exec');
+    // 缺 command / 空串 → 维持申报风险
+    expect(inferEffectiveRisk('run_remote_command', {}, 'exec')).toBe('exec');
+    expect(inferEffectiveRisk('run_remote_command', { command: '' }, 'exec')).toBe('exec');
+    // 声明本就是 read 时原样返回
+    expect(inferEffectiveRisk('run_remote_command', { command: 'anything' }, 'read')).toBe('read');
+  });
+
+  it('evaluatePolicy：investigator 用 run_remote_command 跑只读命令过 read 硬顶且免审', () => {
+    const decision = evaluatePolicy(
+      ctx({
+        toolName: 'run_remote_command',
+        role: 'investigator',
+        risk: 'exec',
+        args: { command: 'systemctl --failed' }
+      })
+    );
+    expect(decision).toEqual({ block: false, needSessionApproval: false });
+  });
+
+  it('evaluatePolicy：investigator 跑写命令仍被 read 硬顶拒绝（OPS_RISK_CEILING）', () => {
+    expectBlocked(
+      evaluatePolicy(
+        ctx({
+          toolName: 'run_remote_command',
+          role: 'investigator',
+          risk: 'exec',
+          args: { command: 'systemctl restart nginx' }
+        })
+      ),
+      OPS_ERROR.RISK_CEILING
+    );
+  });
+
+  it('evaluatePolicy：主会话只读远程命令免 9 要素审批；写命令照常需要', () => {
+    expect(
+      evaluatePolicy(ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'df -h' } }))
+    ).toEqual({ block: false, needSessionApproval: false });
+
+    const write = evaluatePolicy(
+      ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'rm -rf /tmp/x' } })
+    );
+    expect(write.block).toBe(false);
+    if (!write.block) expect(write.needSessionApproval).toBe(true);
   });
 });
 

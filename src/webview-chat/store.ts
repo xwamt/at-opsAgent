@@ -13,12 +13,15 @@ import {
   absorbChatModelFields,
   absorbHydrateModels,
   absorbHydrateMeta,
+  activeSubagentCards,
   buildHistoryList,
   buildPromptPayload,
   buildRenderList,
   buildTimelineStrip,
   canFollowUpFrom,
+  collectSubagentCards,
   modelsConfigured,
+  resolveInspectedSubagent,
   normalizeSessions,
   normalizeTimelineEvent,
   normalizeUsage,
@@ -146,6 +149,8 @@ export const useOpsStore = defineStore('ops-chat', {
     /** @资产附件（asset/pick res 回填；随下一条 chat/prompt 上行后清空）。 */
     attachments: [] as PromptAttachment[],
     activePicker: null as 'playbook' | null,
+    /** 子代理 inspector 当前打开的 taskId（null = 关闭）；整卡点击与顶栏运行条共用。 */
+    subagentInspectorId: null as string | null,
     timeline: [] as ChatTimelineEvent[],
     sessions: [] as SessionMeta[],
     historyOpen: false,
@@ -176,6 +181,16 @@ export const useOpsStore = defineStore('ops-chat', {
     /** 历史侧滑列表：hydrate.sessions 新→旧；host 未下发时退化为仅当前会话。 */
     historySessions(state): SessionMeta[] {
       return buildHistoryList(state.sessions, state.sessionId);
+    },
+
+    /** 进行中的子代理（queued/running）：chat 顶栏运行条数据源。 */
+    activeSubagents(state): SubagentCard[] {
+      return activeSubagentCards(collectSubagentCards(state.items));
+    },
+
+    /** inspector 当前卡片：id 失配（卡被移除等）视同关闭。 */
+    inspectedSubagent(state): SubagentCard | null {
+      return resolveInspectedSubagent(state.items, state.subagentInspectorId);
     },
 
     providerChips(state): ProviderChip[] {
@@ -322,6 +337,11 @@ export const useOpsStore = defineStore('ops-chat', {
 
     abortSubagent(taskId: string): void {
       this.post('subagent/abort', { taskId });
+    },
+
+    /** 打开 / 关闭子代理 inspector（null = 关闭）。 */
+    inspectSubagent(taskId: string | null): void {
+      this.subagentInspectorId = taskId;
     },
 
     attach(): void {

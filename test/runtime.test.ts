@@ -19,7 +19,8 @@ import {
   L0_IDENTITY,
   L1_SAFETY_REDLINES,
   L2_TOOL_DISCOVERY,
-  L3_OUTPUT_FORMAT
+  L3_OUTPUT_FORMAT,
+  composeSystemPrompt
 } from '../src/prompts/layers';
 import {
   ROLE_LAYERS,
@@ -372,6 +373,45 @@ describe('buildSystemPrompt', () => {
     const withLayer = buildSystemPrompt({ playbookLayer: '# L4 pb.incident\n当前阶段 Investigating' });
     expect(withLayer.endsWith('当前阶段 Investigating')).toBe(true);
     expect(buildSystemPrompt({ playbookLayer: '   ' })).toBe(buildSystemPrompt({}));
+  });
+});
+
+// ── 客户端优先（docs/12 巡检实录回归）───────────────────────────────────
+
+describe('prompts · client-first (docs/12)', () => {
+  it('L0：第一步识别可操作客户端——ops_list_providers → list_ssh_servers / get_terminal_context，connected=true 优先', () => {
+    expect(L0_IDENTITY).toContain('ops_list_providers');
+    expect(L0_IDENTITY).toContain('list_ssh_servers');
+    expect(L0_IDENTITY).toContain('get_terminal_context');
+    expect(L0_IDENTITY).toContain('connected=true');
+    expect(L0_IDENTITY).toContain('禁止先空转 playbook');
+  });
+
+  it('L2：单台已连接主机规则——1 台 connected 禁止 tasks[] 并行 investigator，主会话直接 run_remote_command', () => {
+    expect(L2_TOOL_DISCOVERY).toContain('只有 1 台 connected 目标');
+    expect(L2_TOOL_DISCOVERY).toContain('禁止 tasks[] 并行 investigator');
+    expect(L2_TOOL_DISCOVERY).toContain('主会话直接 run_remote_command');
+  });
+
+  it('L2：pb.inspection 映射到 playbooks/daily-inspection/（id ≠ 目录名对照表）', () => {
+    expect(L2_TOOL_DISCOVERY).toContain('pb.inspection→playbooks/daily-inspection/');
+    expect(L2_TOOL_DISCOVERY).toContain('playbooks/daily-inspection/SKILL.md');
+  });
+
+  it('composeSystemPrompt() 组装 L0+L1+L2+L3 四层', () => {
+    const prompt = composeSystemPrompt();
+    expect(prompt).toContain(L0_IDENTITY);
+    expect(prompt).toContain(L1_SAFETY_REDLINES);
+    expect(prompt).toContain(L2_TOOL_DISCOVERY);
+    expect(prompt).toContain(L3_OUTPUT_FORMAT);
+  });
+
+  it('SUBAGENT_DISCIPLINE：一等工具名，禁止伪造 XML/文本 tool_call（ops_list_ssh_servers 式假名）', () => {
+    expect(SUBAGENT_DISCIPLINE).toContain('一等工具名');
+    expect(SUBAGENT_DISCIPLINE).toContain('不是 ops_list_ssh_servers');
+    expect(SUBAGENT_DISCIPLINE).toContain('伪造的 XML/文本 tool_call');
+    expect(SUBAGENT_DISCIPLINE).toContain('不要假装调用');
+    expect(SUBAGENT_DISCIPLINE).toContain('不要编造工具结果');
   });
 });
 
@@ -1001,7 +1041,9 @@ describe('filterToolsForSubagent', () => {
     };
   }
 
-  it('investigator（read 硬顶）拿不到 write/exec 工具，即使写进了 allowTools', () => {
+  it('allowTools 显式点名的工具必须注入，即使 risk 超过 riskCeiling（越线由 policy 兜底）', () => {
+    // 巡检实录根因：run_remote_command（risk=exec）被 investigator 的
+    // read 硬顶滤掉，点名也进不了工具面（docs/12）。点名 = 必注入。
     const filtered = filterToolsForSubagent(
       tools,
       policySpec('investigator', 'read', [
@@ -1010,24 +1052,44 @@ describe('filterToolsForSubagent', () => {
         'nacos_publish_config'
       ])
     );
-    expect(filtered.map((t) => t.name)).toEqual(['grafana_query_prometheus']);
+    expect(filtered.map((t) => t.name)).toEqual([
+      'grafana_query_prometheus',
+      'nacos_publish_config',
+      'terminal_run_command'
+    ]);
   });
 
-  it('allowTools 白名单取交集；缺省时放行 riskCeiling 内全部业务工具', () => {
+  it('allowTools 白名单取交集；缺省（未点名）时按 riskCeiling 过滤全部业务工具', () => {
     const scoped = filterToolsForSubagent(tools, policySpec('investigator', 'read', ['loki_query_range']));
     expect(scoped.map((t) => t.name)).toEqual(['loki_query_range']);
 
+    // 未点名：ceiling 照常滤掉 write/exec 工具。
     const all = filterToolsForSubagent(tools, policySpec('investigator', 'read'));
     expect(all.map((t) => t.name)).toEqual(['grafana_query_prometheus', 'loki_query_range']);
+
+    // 点名了不在暴露集里的工具 → 不注入（allowlist ∩ hub exposed）。
+    const missing = filterToolsForSubagent(
+      tools,
+      policySpec('investigator', 'read', ['run_remote_command'])
+    );
+    expect(missing).toEqual([]);
   });
 
-  it('at_ / ops_ 前缀永不进子代理工具面；writer 恒为空', () => {
+  it('at_ / ops_ 前缀永不进子代理工具面（点名也不行）；writer 恒为空', () => {
     const exec = filterToolsForSubagent(tools, policySpec('executor', 'exec'));
     expect(exec.map((t) => t.name)).not.toContain('at_registry_scan');
     expect(exec.map((t) => t.name)).not.toContain('ops_select_tools');
     expect(exec.map((t) => t.name)).toContain('terminal_run_command');
 
-    expect(filterToolsForSubagent(tools, policySpec('writer', 'read'))).toEqual([]);
+    const named = filterToolsForSubagent(
+      tools,
+      policySpec('investigator', 'read', ['at_registry_scan', 'ops_select_tools', 'terminal_run_command'])
+    );
+    expect(named.map((t) => t.name)).toEqual(['terminal_run_command']);
+
+    // writer 恒为空，点名也不注入；空 allowTools（buildTaskSpec 对 writer 强制清空）同样为空。
+    expect(filterToolsForSubagent(tools, policySpec('writer', 'read', ['loki_query_range']))).toEqual([]);
+    expect(filterToolsForSubagent(tools, policySpec('investigator', 'read', []))).toEqual([]);
   });
 });
 
@@ -1070,6 +1132,28 @@ describe('parseContractJson / parseEvidenceNote / truncateSummary', () => {
       parseEvidenceNote('```json\n{"contract":"evidence-note@1","confidence":"sure","summary":"x"}\n```')
     ).toBeUndefined();
     expect(parseEvidenceNote('plain text')).toBeUndefined();
+  });
+
+  it('宽松兜底：contract 字段缺失但 confidence+summary 完整 → 仍解析出便签', () => {
+    const note = parseEvidenceNote(
+      '```json\n{"confidence":"confirmed","summary":"/data 磁盘使用率 82%"}\n```',
+      'sub-loose'
+    );
+    expect(note).toMatchObject({
+      id: 'note-sub-loose',
+      taskId: 'sub-loose',
+      confidence: 'confirmed',
+      summary: '/data 磁盘使用率 82%'
+    });
+
+    // 写了别的契约头的块不算 evidence note（那是别的契约）
+    expect(
+      parseEvidenceNote(
+        '```json\n{"contract":"exec-report@1","confidence":"confirmed","summary":"x"}\n```'
+      )
+    ).toBeUndefined();
+    // contract 缺失且形状不完整（缺 summary）→ 仍然 undefined
+    expect(parseEvidenceNote('```json\n{"confidence":"confirmed"}\n```')).toBeUndefined();
   });
 
   it('truncateSummary 以 ≈800 token（字符近似）截断', () => {
@@ -1187,6 +1271,25 @@ describe('createSubagentManager', () => {
       'evidence-note@1'
     );
     expect(manager.statusOf('writer-doc')).toBe('ok');
+  });
+
+  it('缺契约头但 confidence+summary 完整 → 仍 degraded，但摘要与便签不丢', async () => {
+    const events: SubagentStatusEvent[] = [];
+    const manager = createSubagentManager({
+      runner: async () => ({
+        finalText: '```json\n{"confidence":"hypothesis","summary":"df 显示 /data 82%，疑似日志未轮转"}\n```'
+      }),
+      onStatus: (e) => events.push(e)
+    });
+
+    manager.dispatch(makeManagedSpec('investigator', 'inv-loose'));
+    await flush();
+
+    expect(manager.statusOf('inv-loose')).toBe('degraded');
+    const done = events.find((e) => e.taskId === 'inv-loose' && e.status === 'degraded');
+    expect(done?.error).toContain('evidence-note@1');
+    expect(done?.summary).toBe('df 显示 /data 82%，疑似日志未轮转');
+    expect(done?.evidenceNote).toMatchObject({ confidence: 'hypothesis' });
   });
 
   it('abort 级联：signal 传给 runner，任务立即终态并释放并行位', async () => {
@@ -1424,6 +1527,12 @@ describe('ops_dispatch_subagent 契约', () => {
     expect(tasks.items.required).toEqual(['role', 'goal', 'riskCeiling']);
     // 阻塞式（P1-6）：描述必须说明工具结果即终态摘要
     expect(dispatchToolSpec.description).toContain('阻塞');
+    // docs/12：描述必须讲清 allowTools 点名即注入、investigator 可点名
+    // run_remote_command 做只读巡检、单台已连接主机不要用 tasks[]。
+    expect(dispatchToolSpec.description).toContain('run_remote_command');
+    expect(dispatchToolSpec.description).toContain('不要用 tasks[]');
+    const allowToolsProp = params.properties.allowTools as { description: string };
+    expect(allowToolsProp.description).toContain('注入');
     expect(discoveryToolNames).not.toContain(DISPATCH_TOOL_NAME);
   });
 

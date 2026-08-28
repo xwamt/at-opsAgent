@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { t } from '../i18n';
+import { t, tf } from '../i18n';
 import { useOpsStore } from '../store';
+import { subagentTitle } from '../store-helpers';
 import ApprovalBar from './ApprovalBar.vue';
 import ChatTranscript from './ChatTranscript.vue';
 import Composer from './Composer.vue';
 import HistoryOverlay from './HistoryOverlay.vue';
 import PlaybookHeader from './PlaybookHeader.vue';
 import PlaybookPicker from './PlaybookPicker.vue';
+import SubagentInspector from './SubagentInspector.vue';
 import WelcomeState from './WelcomeState.vue';
 
 const store = useOpsStore();
@@ -15,6 +17,18 @@ const store = useOpsStore();
 <template>
   <div class="chat-app">
     <PlaybookHeader />
+    <!-- Kilo 式后台代理运行条：有 queued/running 子代理时常驻一行，点击打开 inspector -->
+    <button
+      v-if="store.activeSubagents.length > 0"
+      type="button"
+      class="chat-app__agents"
+      :aria-label="t('subagentStripAria')"
+      @click="store.inspectSubagent(store.activeSubagents[0].taskId)"
+    >
+      <span class="codicon codicon-loading codicon-modifier-spin chat-app__agents-icon" aria-hidden="true"></span>
+      <span class="chat-app__agents-count">{{ tf('subagentStripCount', { count: store.activeSubagents.length }) }}</span>
+      <span class="chat-app__agents-goal ops-muted">{{ subagentTitle(store.activeSubagents[0]) }}</span>
+    </button>
     <!-- 空态走欢迎页（标题 + 建议卡），transcript 不再渲染自己的空提示 -->
     <WelcomeState v-if="store.items.length === 0" class="chat-app__transcript" />
     <ChatTranscript v-else class="chat-app__transcript" />
@@ -48,6 +62,11 @@ const store = useOpsStore();
       <Composer />
     </div>
     <HistoryOverlay v-if="store.historyOpen" />
+    <!-- 子代理 inspector 抬升到 ChatApp（docs/12 §3）：Teleport 到 body，
+         不受 transcript overflow 裁剪——看板滚出视口时顶栏条点击也能看到弹层 -->
+    <Teleport to="body">
+      <SubagentInspector v-if="store.inspectedSubagent" />
+    </Teleport>
   </div>
 </template>
 
@@ -63,6 +82,51 @@ const store = useOpsStore();
 .chat-app__transcript {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* 后台代理运行条：不随 transcript 滚走，一行 = 数量 + 首个目标 */
+.chat-app__agents {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--ops-space-1) var(--ops-space-3);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--ops-border);
+  color: var(--ops-fg);
+  cursor: pointer;
+  font-size: var(--ops-font-sm);
+  text-align: left;
+}
+
+.chat-app__agents:hover {
+  background: var(--ops-hover-bg);
+}
+
+.chat-app__agents:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: -1px;
+}
+
+.chat-app__agents-icon {
+  color: var(--ops-accent);
+  font-size: var(--ops-font-sm);
+  flex: 0 0 auto;
+}
+
+.chat-app__agents-count {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.chat-app__agents-goal {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-app__dock {

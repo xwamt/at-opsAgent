@@ -71,6 +71,104 @@ const READ_CEILING_ROLES = new Set<SubagentRole>(['investigator', 'writer', 'ver
 const SQL_TOOL_RE = /execute_(sql|query)/i;
 const SQL_LIMIT_RE = /\blimit\s+\d+/i;
 
+// ── 远程命令的只读风险推断 ───────────────────────────────────────────────
+
+/**
+ * 远程终端类工具：run_remote_command / jumpserver_run_terminal_command
+ * （允许 at.terminal/run_remote_command 这类带命名空间前缀的变体）。
+ */
+const REMOTE_COMMAND_TOOL_RE = /(?:^|[._/])run_(?:remote|terminal)_command$/i;
+
+/** 出现重定向 / 反引号 / $() 命令替换的命令一律不做只读推断。 */
+const SHELL_DANGER_RE = /[<>`]|\$\(/;
+
+/** 首词即整体只读的命令（参数任意；重定向已在上层排除）。 */
+const READ_ONLY_LEADING_COMMANDS = new Set([
+  'hostname',
+  'whoami',
+  'uname',
+  'uptime',
+  'df',
+  'free',
+  'nproc',
+  'ps',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'ls'
+]);
+
+/** systemctl 的只读子命令（无子命令的纯 flag 形式如 `systemctl --failed` 也算只读）。 */
+const SYSTEMCTL_READ_SUBCOMMANDS = new Set([
+  'status',
+  'is-active',
+  'is-enabled',
+  'is-failed',
+  'list-units',
+  'list-unit-files',
+  'list-timers',
+  'show'
+]);
+
+/** iptables 的链/规则变更选项（命中即非只读）。 */
+const IPTABLES_MUTATION_RE =
+  /^-(?:[ADIRNXPEZF]$|-(?:append|delete|insert|replace|new-chain|delete-chain|policy|flush|zero|rename-chain))/;
+
+/** 单段命令（无 && / ; / | 组合）是否只读；不认识的一律 false（保守）。 */
+function isReadOnlyCommandSegment(segment: string): boolean {
+  const tokens = segment.trim().split(/\s+/).filter((t) => t.length > 0);
+  if (tokens.length === 0) return false;
+  const [cmd, ...rest] = tokens;
+  if (READ_ONLY_LEADING_COMMANDS.has(cmd)) return true;
+  if (cmd === 'top') {
+    // 仅批处理模式（top -b / -bn1）只读；交互式 top 不推断。
+    return rest.some((t) => /^-[a-z]*b/.test(t));
+  }
+  if (cmd === 'systemctl') {
+    const sub = rest.find((t) => !t.startsWith('-'));
+    return sub === undefined ? true : SYSTEMCTL_READ_SUBCOMMANDS.has(sub);
+  }
+  if (cmd === 'journalctl') {
+    // journalctl 只读，除非带 --vacuum-* / --rotate / --flush 维护开关。
+    return !rest.some((t) => t.startsWith('--vacuum') || t === '--rotate' || t === '--flush');
+  }
+  if (cmd === 'docker') return rest[0] === 'ps';
+  if (cmd === 'kubectl') return rest.find((t) => !t.startsWith('-')) === 'get';
+  if (cmd === 'iptables') {
+    const hasList = rest.some((t) => t === '--list' || /^-[a-z]*L/.test(t));
+    return hasList && !rest.some((t) => IPTABLES_MUTATION_RE.test(t));
+  }
+  return false;
+}
+
+/**
+ * 按命令内容推断远程命令工具的有效风险：
+ * run_remote_command / jumpserver_run_terminal_command 声明 risk=exec，
+ * 但 `command` 是纯只读巡检命令（hostname / uptime / df / systemctl status /
+ * journalctl / docker ps / kubectl get / iptables -L…）时按 read 处理——
+ * 否则 investigator（read 硬顶）永远调不了只读巡检。管道/&&/; 组合要求
+ * 每一段都只读；出现重定向、$()、反引号、rm / systemctl restart / apt /
+ * docker run 等不认识或有副作用的命令一律维持申报风险（保守方向）。
+ * 其它工具、或 declaredRisk 本就是 read 时原样返回。
+ */
+export function inferEffectiveRisk(
+  toolName: string,
+  args: Record<string, unknown>,
+  declaredRisk: RiskLevel
+): RiskLevel {
+  if (declaredRisk === 'read') return declaredRisk;
+  if (!REMOTE_COMMAND_TOOL_RE.test(toolName)) return declaredRisk;
+  const command = firstString(args.command);
+  if (command === undefined || SHELL_DANGER_RE.test(command)) return declaredRisk;
+  const segments = command
+    .split(/&&|\|\||[;|&\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (segments.length > 0 && segments.every(isReadOnlyCommandSegment)) return 'read';
+  return declaredRisk;
+}
+
 function allow(): PolicyDecision {
   return { block: false, needSessionApproval: false };
 }
@@ -137,20 +235,25 @@ export function evaluatePolicy(ctx: PolicyContext): PolicyDecision {
     );
   }
 
+  // 远程命令按内容推断有效风险（只读巡检命令 → read；见 inferEffectiveRisk）。
+  // 后续 ceiling 与审批裁决一律用推断值——run_remote_command 声明 exec，
+  // 但 `hostname` / `systemctl status` 这类只读命令不应被 read 硬顶挡住。
+  const risk = inferEffectiveRisk(ctx.toolName, ctx.args, ctx.risk);
+
   // ── 规则 3：Investigator / Writer / Verifier 默认 read 硬顶 ─────────
   if (ctx.role !== undefined && READ_CEILING_ROLES.has(ctx.role)) {
     const ceiling = ctx.riskCeiling ?? 'read';
-    if (RISK_ORDER[ctx.risk] > RISK_ORDER[ceiling]) {
+    if (RISK_ORDER[risk] > RISK_ORDER[ceiling]) {
       return block(
         OPS_ERROR.RISK_CEILING,
-        `${ctx.role} 的 riskCeiling=${ceiling}，拒绝 ${ctx.risk} 级工具 ${ctx.toolName}`
+        `${ctx.role} 的 riskCeiling=${ceiling}，拒绝 ${risk} 级工具 ${ctx.toolName}`
       );
     }
-  } else if (ctx.riskCeiling !== undefined && RISK_ORDER[ctx.risk] > RISK_ORDER[ctx.riskCeiling]) {
+  } else if (ctx.riskCeiling !== undefined && RISK_ORDER[risk] > RISK_ORDER[ctx.riskCeiling]) {
     // lead / executor 只在显式给出 riskCeiling 时受顶
     return block(
       OPS_ERROR.RISK_CEILING,
-      `riskCeiling=${ctx.riskCeiling}，拒绝 ${ctx.risk} 级工具 ${ctx.toolName}`
+      `riskCeiling=${ctx.riskCeiling}，拒绝 ${risk} 级工具 ${ctx.toolName}`
     );
   }
 
@@ -173,11 +276,11 @@ export function evaluatePolicy(ctx: PolicyContext): PolicyDecision {
   // ── read：会话免审名单（P1-9）命中即放行；其余 read 也直接放行 ───────
   // 名单只对 read 生效（write/exec 双闸不受影响）。当前 read 本就免审，
   // 显式短路承载「本会话不再问」语义——将来引入 read 级审批（敏感读接口）
-  // 时命中名单仍然跳过。
-  if (ctx.risk === 'read' && ctx.sessionReadAllowlist?.includes(ctx.toolName) === true) {
+  // 时命中名单仍然跳过。推断为 read 的只读远程命令走同一条路。
+  if (risk === 'read' && ctx.sessionReadAllowlist?.includes(ctx.toolName) === true) {
     return allow();
   }
-  if (ctx.risk === 'read') {
+  if (risk === 'read') {
     return allow();
   }
 
@@ -204,22 +307,22 @@ export function evaluatePolicy(ctx: PolicyContext): PolicyDecision {
   if (ctx.role === 'executor') {
     return block(
       OPS_ERROR.APPROVAL_REQUIRED,
-      `Executor 调用 ${ctx.risk} 级工具必须携带有效 approvalToken`
+      `Executor 调用 ${risk} 级工具必须携带有效 approvalToken`
     );
   }
 
   // 规则 5：at.database 的 write 强制会话审批（插件无确认弹窗缺口），
   // 即使 sessionRequiredFor 被调成 exec-only / never。
-  if (ctx.pluginId === 'at.database' && ctx.risk === 'write') {
+  if (ctx.pluginId === 'at.database' && risk === 'write') {
     return needApproval('at.database 写操作无插件弹窗，强制 9 要素审批简报');
   }
 
   // 规则 6：按全局策略决定是否需要会话审批
   switch (ctx.sessionRequiredFor) {
     case 'write-exec':
-      return needApproval(`${ctx.risk} 级操作需要 9 要素审批简报（sessionRequiredFor=write-exec）`);
+      return needApproval(`${risk} 级操作需要 9 要素审批简报（sessionRequiredFor=write-exec）`);
     case 'exec-only':
-      return ctx.risk === 'exec'
+      return risk === 'exec'
         ? needApproval('exec 级操作需要 9 要素审批简报（sessionRequiredFor=exec-only）')
         : allow();
     case 'never':

@@ -10,8 +10,8 @@ stages:
     prompt: references/triage.md
   - id: selecting
     prompt: references/selecting.md
-    select: { mode: replace, pluginIds: [at.grafana] }
-    escalateSelect: { mode: add, pluginIds: [at.nacos, at.terminal, at.jenkins] }
+    select: { mode: replace, pluginIds: [at.terminal] }
+    escalateSelect: { mode: add, pluginIds: [at.grafana, at.nacos, at.jenkins] }
   - id: investigating
     prompt: references/investigating.md
     parallelGroup:

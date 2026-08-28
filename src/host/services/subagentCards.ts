@@ -6,34 +6,56 @@ import { randomUUID } from 'node:crypto';
 import type { EvidenceNoteView, SubagentCard } from '../../protocol';
 import type { HostContext } from './context';
 
+/** 卡片增量（runtime 事件字段全部可选；缺席时保留既有值，安全降级）。 */
+export interface SubagentCardPatch {
+  status?: string;
+  /** 最近输出/终态摘要——只进 latest，绝不当卡片标题。 */
+  latest?: string;
+  role?: string;
+  /** 派单目标（一句话）；有值时作为卡片主标题 label。 */
+  goal?: string;
+  /** 子会话实际注入的业务工具名。 */
+  visibleTools?: string[];
+}
+
 /** 更新或创建子代理卡片并广播；返回卡片是否处于 live（queued/running）态。 */
 export function patchSubagentCard(
   ctx: HostContext,
   sessionId: string,
   taskId: string | undefined,
-  status?: string,
-  latest?: string,
-  role?: string
+  patch: SubagentCardPatch = {}
 ): boolean | undefined {
   if (!taskId) return undefined;
   const existing = ctx.store.getSubagent(taskId, sessionId);
-  const nextRole = isSubagentRole(role) ? role : existing?.role ?? 'investigator';
+  const nextRole = isSubagentRole(patch.role) ? patch.role : existing?.role ?? 'investigator';
+  const goal =
+    typeof patch.goal === 'string' && patch.goal.trim().length > 0 ? patch.goal : undefined;
+  const visibleTools = Array.isArray(patch.visibleTools)
+    ? patch.visibleTools.filter((name): name is string => typeof name === 'string')
+    : undefined;
   const next: SubagentCard = existing
     ? {
         ...existing,
         role: nextRole,
-        status: isSubagentStatus(status) ? status : existing.status,
-        ...(latest !== undefined ? { latest } : {})
+        status: isSubagentStatus(patch.status) ? patch.status : existing.status,
+        // 标题只跟 goal 走：latest 可能是大段输出，绝不覆盖 label。
+        label: goal ?? existing.label,
+        ...(goal !== undefined ? { goal } : {}),
+        ...(visibleTools !== undefined ? { visibleTools } : {}),
+        ...(patch.latest !== undefined ? { latest: patch.latest } : {})
       }
     : {
         taskId,
         role: nextRole,
-        label: latest && latest.length > 0 ? latest : nextRole,
-        status: isSubagentStatus(status) ? status : 'queued',
+        // 新卡标题：goal 优先，否则角色名——不用 latest 文本。
+        label: goal ?? nextRole,
+        status: isSubagentStatus(patch.status) ? patch.status : 'queued',
         riskCeiling: nextRole === 'executor' ? 'exec' : 'read',
         toolCalls: { used: 0, max: 15 },
         wallMs: { used: 0, max: 180_000 },
-        ...(latest !== undefined ? { latest } : {})
+        ...(goal !== undefined ? { goal } : {}),
+        ...(visibleTools !== undefined ? { visibleTools } : {}),
+        ...(patch.latest !== undefined ? { latest: patch.latest } : {})
       };
   ctx.store.upsertSubagent(next, sessionId);
   ctx.broadcastToSession(sessionId, 'subagent/upsert', next);

@@ -18,14 +18,14 @@ import type {
   SessionSummary,
   UsageView
 } from '../../protocol';
-import type { CreateOpsRuntimeOptions, OpsRuntimeHandlers } from '../../core';
+import type { CreateOpsRuntimeOptions, OpsRuntimeHandlers, OpsSubagentEvent } from '../../core';
 import { readAgentSettings } from '../agentSettings';
 import { normalizeRoleModels } from '../modelsView';
 import type { RuntimeLike } from '../hostTypes';
 import { describeError, type HostContext } from './context';
 import { RuntimeEventRouter } from './runtimeEvents';
 import { SessionPoolExhaustedError, SessionRuntimePool } from './runtimePool';
-import { appendEvidenceNote, patchSubagentCard } from './subagentCards';
+import { appendEvidenceNote, patchSubagentCard, type SubagentCardPatch } from './subagentCards';
 
 export class ChatService {
   private readonly pool: SessionRuntimePool;
@@ -266,7 +266,7 @@ export class ChatService {
     this.activeSubagentTaskIds.get(sid)?.delete(taskId);
     const card = ctx.store.getSubagent(taskId, sid);
     if (card && (card.status === 'queued' || card.status === 'running')) {
-      this.upsertSubagentCard(sid, taskId, 'aborted', '用户中止');
+      this.upsertSubagentCard(sid, taskId, { status: 'aborted', latest: '用户中止' });
     }
   }
 
@@ -274,11 +274,9 @@ export class ChatService {
   private upsertSubagentCard(
     sessionId: string,
     taskId: string | undefined,
-    status?: string,
-    latest?: string,
-    role?: string
+    patch: SubagentCardPatch
   ): void {
-    const live = patchSubagentCard(this.ctx, sessionId, taskId, status, latest, role);
+    const live = patchSubagentCard(this.ctx, sessionId, taskId, patch);
     if (live === undefined || taskId === undefined) return;
     let set = this.activeSubagentTaskIds.get(sessionId);
     if (!set) {
@@ -301,8 +299,16 @@ export class ChatService {
       // await 本回调；批准继续同一调用，无需模型重试。
       requestApproval: (input) => ctx.approvals.resolveSessionApproval(sessionId, input),
       onEvent: (e) => this.events.route(sessionId, e),
-      onSubagentEvent: (e) => {
-        this.upsertSubagentCard(sessionId, e.taskId, e.status, e.summary ?? e.error, e.role);
+      // goal / visibleTools 为 runtime 侧后续开始发送的可选字段：交集类型
+      // 让旧 runtime（不带这两个字段）与新 runtime 都能通过类型检查。
+      onSubagentEvent: (e: OpsSubagentEvent & { goal?: string; visibleTools?: string[] }) => {
+        this.upsertSubagentCard(sessionId, e.taskId, {
+          status: e.status,
+          latest: e.summary ?? e.error,
+          role: e.role,
+          goal: e.goal,
+          visibleTools: e.visibleTools
+        });
         if (e.evidenceNote) appendEvidenceNote(ctx, sessionId, e.evidenceNote);
       },
       // pi 会话无法追加新 ToolDefinition：目录需要重建时等该席 idle 释放，

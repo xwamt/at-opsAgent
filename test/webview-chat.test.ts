@@ -12,11 +12,13 @@
  *   仅 untrustedQuotes 警示块渲染，对齐 pi hideThinkingBlock）
  * - HistoryOverlay/WelcomeState 的会话归一化与建议卡（sessions / suggestions）
  * - ModelSelector 模型清单（normalizeChatModels + hydrate 吸收顺序）
+ * - 子代理 inspector（collect/active/title + resolveInspectedSubagent：
+ *   ChatApp 顶层 SubagentInspector overlay 的 v-if 数据源，无需 mount Vue store）
  *
  * @vitest-environment jsdom
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { TranscriptItem } from '../src/protocol/host-protocol';
+import type { SubagentCard, TranscriptItem } from '../src/protocol/host-protocol';
 import {
   confidenceClass,
   confidenceLabel,
@@ -27,17 +29,21 @@ import {
   absorbChatModelFields,
   absorbHydrateMeta,
   absorbHydrateModels,
+  activeSubagentCards,
   buildHistoryList,
   buildPromptPayload,
   buildRenderList,
   buildTimelineStrip,
   buildWelcomeSuggestions,
   canFollowUpFrom,
+  collectSubagentCards,
   modelsConfigured,
   normalizeChatModels,
   normalizeSessions,
   normalizeTimelineEvent,
   normalizeUsage,
+  resolveInspectedSubagent,
+  subagentTitle,
   usagePercent,
   visibleUntrustedQuotes,
   type ChatTimelineEvent,
@@ -561,5 +567,60 @@ describe('ChatTranscript 渲染列表：连续只读工具聚合（buildRenderLi
     ];
     const out = buildRenderList(items);
     expect(out.map((e) => e.kind)).toEqual(['toolGroup', 'item']);
+  });
+});
+
+describe('SubagentBoard/ChatApp 子代理 inspector（docs/12 §3）', () => {
+  const card = (taskId: string, status: SubagentCard['status'], goal?: string): SubagentCard => ({
+    taskId,
+    role: 'investigator',
+    label: `label-${taskId}`,
+    status,
+    riskCeiling: 'read',
+    toolCalls: { used: 1, max: 6 },
+    wallMs: { used: 1200, max: 60000 },
+    goal
+  });
+
+  it('collectSubagentCards：跨看板平铺，同 taskId 后到覆盖先到', () => {
+    const items: TranscriptItem[] = [
+      { kind: 'user', id: 'u1', text: '巡检' },
+      { kind: 'subagents', id: 'b1', agents: [card('t1', 'running'), card('t2', 'queued')] },
+      { kind: 'assistant', id: 'a1', text: '…', streaming: false },
+      { kind: 'subagents', id: 'b2', agents: [card('t1', 'ok'), card('t3', 'failed')] }
+    ];
+    const cards = collectSubagentCards(items);
+    expect(cards.map((c) => c.taskId)).toEqual(['t1', 't2', 't3']);
+    expect(cards[0].status).toBe('ok');
+  });
+
+  it('activeSubagentCards：只留 queued/running（顶栏运行条数据源）', () => {
+    const cards = [card('t1', 'ok'), card('t2', 'running'), card('t3', 'queued'), card('t4', 'aborted')];
+    expect(activeSubagentCards(cards).map((c) => c.taskId)).toEqual(['t2', 't3']);
+  });
+
+  it('subagentTitle：goal 首行优先；goal 空白/缺失回退 label', () => {
+    expect(subagentTitle(card('t1', 'running', '检查磁盘水位\n第二行不进标题'))).toBe('检查磁盘水位');
+    expect(subagentTitle(card('t2', 'running'))).toBe('label-t2');
+    expect(subagentTitle(card('t3', 'running', '  \n'))).toBe('label-t3');
+  });
+
+  it('resolveInspectedSubagent：命中返回卡；null / id 失配（卡被移除）视同关闭（ChatApp overlay 数据源）', () => {
+    const items: TranscriptItem[] = [
+      { kind: 'subagents', id: 'b1', agents: [card('t1', 'running')] }
+    ];
+    expect(resolveInspectedSubagent(items, null)).toBeNull();
+    expect(resolveInspectedSubagent(items, 't1')?.taskId).toBe('t1');
+    // 卡被移除（transcript 覆盖）→ id 失配视同关闭，overlay 不渲染
+    expect(resolveInspectedSubagent([], 't1')).toBeNull();
+  });
+
+  it('inspector 新增文案 zh/en 双语齐备（含空输出与顶栏条）', () => {
+    expect(t('subagentNoOutput')).toBe('尚无输出');
+    expect(tf('subagentStripCount', { count: 2 })).toBe('2 个子代理进行中');
+    setLocale('en');
+    expect(t('subagentNoOutput')).toBe('No output yet');
+    expect(tf('subagentStripCount', { count: 2 })).toContain('2');
+    expect(t('subagentVisibleTools')).toBe('Visible tools');
   });
 });

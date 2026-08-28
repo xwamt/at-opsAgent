@@ -87,21 +87,6 @@ const activePanel = computed(() => PANELS[store.activeTab]);
   margin: 0 0 10px;
 }
 
-/* 向导步骤行（ux.md §5 首跑 2 分钟文案） */
-.set-step {
-  font-size: var(--set-font-sm, 12px);
-  font-weight: 600;
-  color: var(--set-surface-fg, var(--ops-fg));
-  border-left: 3px solid var(--vscode-focusBorder, var(--ops-accent));
-  padding: 2px 8px;
-  margin: 12px 0 8px;
-}
-
-.set-step--muted {
-  font-weight: 400;
-  color: var(--ops-muted);
-}
-
 .set-field {
   margin: 0 0 10px;
 }
@@ -277,9 +262,9 @@ const activePanel = computed(() => PANELS[store.activeTab]);
   padding: 16px 24px 32px;
 }
 
-/* 编辑器区宽度大：限制表单列宽保证可读性 */
+/* 编辑器区宽度大：限制表单列宽保证可读性（docs/12 §5：~640px） */
 .settings__content > :deep(section) {
-  max-width: 680px;
+  max-width: 640px;
 }
 
 /* 窄视图（<420px）：导航折到顶部横排（Roo 式响应） */

@@ -246,6 +246,14 @@ export type OpsSubagentEvent = {
   taskId: string;
   status: SubagentRunStatus;
   role?: string;
+  /** 派单目标（TaskSpec.goal；host 侧子代理卡主标题）。派发起即携带，全生命周期不丢。 */
+  goal?: string;
+  /**
+   * 实际注入子会话的业务工具名（filterToolsForSubagent 过滤结果，
+   * 即 allowTools ∩ hub 暴露集 / riskCeiling）。派发起即携带；后续
+   * 状态/摘要事件同样带上，host 合并时不得丢弃。
+   */
+  visibleTools?: string[];
   /** 终态摘要（≤800 token 近似截断；原始大输出不进事件）。 */
   summary?: string;
   error?: string;
@@ -1110,11 +1118,27 @@ async function createPiRuntime(
   // 回灌已删除（不再有伪装 user 消息的异步插播）。
   const subagentEnv: SubagentSessionEnv = { pi, handlers, cwd, agentDir, modelRuntime, model };
 
+  // 派发时登记 goal + 实际注入的工具名（与 runSubagentSession 用同一套
+  // filterToolsForSubagent 过滤），全部生命周期事件都带上——host 侧子代理卡
+  // 据此渲染「目标 / 可见工具」，摘要事件合并时不丢字段。
+  const subagentMeta = new Map<string, { goal: string; visibleTools: string[] }>();
+  const registerSubagentMeta = (spec: TaskSpec): void => {
+    subagentMeta.set(spec.taskId, {
+      goal: spec.goal,
+      visibleTools: filterToolsForSubagent(
+        listBusinessToolDescriptors(handlers.hub.listExposedTools()),
+        spec
+      ).map((tool) => tool.name)
+    });
+  };
+
   const onSubagentStatus = (e: SubagentStatusEvent): void => {
+    const meta = subagentMeta.get(e.taskId);
     handlers.onSubagentEvent?.({
       taskId: e.taskId,
       status: e.status,
       role: e.role,
+      ...(meta !== undefined ? { goal: meta.goal, visibleTools: [...meta.visibleTools] } : {}),
       ...(e.summary !== undefined ? { summary: e.summary } : {}),
       ...(e.error !== undefined ? { error: e.error } : {}),
       ...(e.evidenceNote !== undefined ? { evidenceNote: e.evidenceNote } : {})
@@ -1137,10 +1161,19 @@ async function createPiRuntime(
     }
   };
 
-  const subagents: SubagentManager = createSubagentManager({
+  const rawSubagents: SubagentManager = createSubagentManager({
     runner: (spec, signal) => runSubagentSession(subagentEnv, spec, signal),
     onStatus: onSubagentStatus
   });
+  // dispatch 前登记 meta：首个 queued 事件就带 goal/visibleTools。
+  // 模型侧 ops_dispatch_subagent（runDispatchToolCall）与 host API 共用本包装。
+  const subagents: SubagentManager = {
+    ...rawSubagents,
+    dispatch(spec: TaskSpec) {
+      registerSubagentMeta(spec);
+      return rawSubagents.dispatch(spec);
+    }
+  };
 
   const dispatchSubagent = async (
     input: SubagentDispatchInput | TaskSpec

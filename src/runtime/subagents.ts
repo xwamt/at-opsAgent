@@ -193,16 +193,26 @@ export function buildTaskSpec(input: SubagentDispatchInput): BuildTaskSpecOutcom
 // ── 工具面过滤 ───────────────────────────────────────────────────────────
 
 /**
- * 子代理可见工具 = 业务工具 ∩ allowTools 白名单 ∩ riskCeiling；Writer 恒为空。
- * 调用方传入 hub.listExposedTools()（暴露集），即「allowlist ∩ hub exposed ∩ riskCeiling」。
+ * 子代理可见工具（调用方传入 hub.listExposedTools() 暴露集）：
+ * - Writer 恒为空（无业务工具面）；
+ * - allowTools 为非空清单时：显式点名的业务工具必须注入，即使其声明
+ *   risk 超过 riskCeiling——否则 run_remote_command（声明 risk=exec）
+ *   永远进不了 investigator（ceiling=read）的工具面，只读巡检无从下手。
+ *   越线调用仍由 policy 闸在每次 tools/call 时兜底（只读命令按推断
+ *   risk=read 放行，见 src/policy inferEffectiveRisk）；
+ * - allowTools 缺省（未点名）时：按 riskCeiling 过滤全部业务工具。
+ * 即「点名 = allowlist ∩ hub exposed」「未点名 = hub exposed ∩ riskCeiling」。
  */
 export function filterToolsForSubagent(
   tools: readonly AgentToolDescriptor[],
   spec: Pick<TaskSpec, 'role' | 'toolPolicy'>
 ): AgentToolDescriptor[] {
   if (spec.role === 'writer') return [];
-  const ceiling = RISK_RANK[spec.toolPolicy.riskCeiling] ?? 0;
   const allow = spec.toolPolicy.allowTools;
+  if (allow !== undefined && allow.length > 0) {
+    return tools.filter((tool) => isBusinessToolName(tool.name) && allow.includes(tool.name));
+  }
+  const ceiling = RISK_RANK[spec.toolPolicy.riskCeiling] ?? 0;
   return tools.filter(
     (tool) =>
       isBusinessToolName(tool.name) &&
@@ -242,12 +252,48 @@ export function parseContractJson(text: string): ContractJson | undefined {
   return undefined;
 }
 
-/** 解析 evidence-note@1；形状不完整（缺 confidence/summary）返回 undefined。 */
+function isEvidenceConfidence(value: unknown): value is EvidenceNote['confidence'] {
+  return value === 'confirmed' || value === 'hypothesis' || value === 'pending';
+}
+
+/**
+ * 宽松兜底：contract 字段整个缺失、但 confidence+summary 形状完整的 JSON 块
+ * 也接受（settle 仍按「缺契约块」标 degraded，但摘要/便签不丢）。
+ * 写了 contract 却不是 evidence-note@1 的块不算（那是别的契约）。
+ */
+function parseLooseEvidenceJson(text: string): Record<string, unknown> | undefined {
+  const blocks = [...text.matchAll(FENCED_BLOCK_RE)].map((m) => m[1]);
+  blocks.unshift(text);
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const value = tryParseObject(blocks[i]);
+    if (
+      value !== undefined &&
+      value.contract === undefined &&
+      isEvidenceConfidence(value.confidence) &&
+      typeof value.summary === 'string' &&
+      value.summary.length > 0
+    ) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 解析 evidence-note@1；形状不完整（缺 confidence/summary）返回 undefined。
+ * contract 字段缺失但 confidence+summary 完整时宽松接受（见 parseLooseEvidenceJson）。
+ */
 export function parseEvidenceNote(text: string, fallbackTaskId = ''): EvidenceNote | undefined {
-  const json = parseContractJson(text);
-  if (json === undefined || json.contract !== 'evidence-note@1') return undefined;
+  const strict = parseContractJson(text);
+  const json =
+    strict !== undefined
+      ? strict.contract === 'evidence-note@1'
+        ? strict
+        : undefined
+      : parseLooseEvidenceJson(text);
+  if (json === undefined) return undefined;
   const confidence = json.confidence;
-  if (confidence !== 'confirmed' && confidence !== 'hypothesis' && confidence !== 'pending') {
+  if (!isEvidenceConfidence(confidence)) {
     return undefined;
   }
   if (typeof json.summary !== 'string' || json.summary.length === 0) return undefined;
@@ -417,8 +463,14 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
         extra = { summary, error: outcome.degradedReason, ...(note !== undefined ? { evidenceNote: note } : {}) };
       } else if (JSON_CONTRACTS.has(contract) && contractJson?.contract !== contract) {
         // 契约 JSON 缺失：结果仍可用但标 degraded（该面按未完整取证处理）。
+        // 宽松解析出的便签（contract 字段缺失但 confidence+summary 完整）
+        // 照常附上——摘要与结构化证据不因缺契约头而丢失。
         record.status = 'degraded';
-        extra = { summary, error: `输出缺少 ${contract} JSON 契约块` };
+        extra = {
+          summary,
+          error: `输出缺少 ${contract} JSON 契约块`,
+          ...(note !== undefined ? { evidenceNote: note } : {})
+        };
       } else {
         record.status = 'ok';
         extra = { summary, ...(note !== undefined ? { evidenceNote: note } : {}) };
@@ -650,7 +702,10 @@ const DISPATCH_TASK_PROPERTIES: Record<string, unknown> = {
   allowTools: {
     type: 'array',
     items: { type: 'string' },
-    description: '工具白名单（与 Hub 暴露集、riskCeiling 取交集）'
+    description:
+      '工具白名单（与 Hub 暴露集取交集）。点名的工具会被实际注入子会话，' +
+      '不会被 riskCeiling 滤掉（越线调用仍由 policy 按命令内容裁决）；' +
+      '未点名时按 riskCeiling 过滤全部业务工具'
   },
   budget: {
     type: 'object',
@@ -705,6 +760,11 @@ export const dispatchToolSpec = {
     '工具结果即终态摘要 JSON（status: ok|degraded|failed|aborted|rejected + summary）。' +
     '单任务给顶层 role/goal/riskCeiling；并行取证给 tasks[]（一次最多 ' +
     `${MAX_DISPATCH_TASKS} 个，全部结束后一并返回）。` +
+    '仅多主机/多插件并行取证才用 tasks[]；单台已连接主机的巡检不要用 tasks[]' +
+    '（单目标由主会话直接调工具，或至多派一个子任务）。' +
+    'allowTools 点名的工具会被实际注入子会话（不被 riskCeiling 滤掉）：' +
+    'investigator 做只读巡检可点名 run_remote_command——只读命令' +
+    '（hostname/uptime/df/free/ps/systemctl status 等）按 read 推断放行。' +
     'Investigator 只读（riskCeiling 必须 read）；Executor 必须携带 approvalToken.briefId' +
     '（commandSetSha256 由 host 绑定，不要自行计算）；Writer 无业务工具。' +
     '仅主会话可用，子代理禁止递归派发。',
@@ -720,7 +780,9 @@ export const dispatchToolSpec = {
           required: ['role', 'goal', 'riskCeiling'],
           additionalProperties: false
         },
-        description: `并行任务数组（可选；与顶层单任务字段二选一，最多 ${MAX_DISPATCH_TASKS} 个）`
+        description:
+          `并行任务数组（可选；与顶层单任务字段二选一，最多 ${MAX_DISPATCH_TASKS} 个）。` +
+          '仅多主机/多插件才用；单台已连接主机不要用 tasks[]'
       }
     },
     additionalProperties: false

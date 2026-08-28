@@ -1,6 +1,19 @@
 # 巡检清单：Triage(Plan) 阶段载入；组 = select 边界（组间允许一轮 replace）。
+# 首组是主机组（at.terminal）：仅一台已连接 SSH 时主会话直接跑，不派子代理。
 # 判定标准缺基线时结果标「待确认」；未执行项标「未检查」，绝不标「正常」。
 groups:
+  - id: hosts
+    title: 主机组
+    provider: at.terminal
+    items:
+      - key: basics
+        check: "# Purpose: 基础状态\nhostname && uptime && free -h"
+      - key: disk
+        check: "# Purpose: 磁盘水位\ndf -h"
+      - key: load
+        check: "# Purpose: 负载概览\ntop -b -n1 | head -20"
+      - key: services
+        check: "# Purpose: 关键服务状态\nsystemctl status <svc> --no-pager && systemctl --failed"
   - id: metrics
     title: 看板组
     provider: at.grafana
@@ -17,13 +30,3 @@ groups:
         check: 关键配置 md5 vs 基线（nacos_list_configs / get_config 默认脱敏）
       - key: service-instances
         check: nacos_list_service_instances 健康实例数 vs 期望副本数
-  - id: hosts
-    title: 主机组
-    provider: at.terminal
-    items:
-      - key: disk
-        check: "# Purpose: 磁盘水位\ndf -h"
-      - key: load
-        check: "# Purpose: 负载概览\ntop -b -n1 | head -20"
-      - key: services
-        check: "# Purpose: 关键服务状态\nsystemctl status <svc> --no-pager"

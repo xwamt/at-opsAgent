@@ -185,6 +185,10 @@ export interface RuntimeHandlers {
     role?: string;
     summary?: string;
     error?: string;
+    /** 派单目标（一句话）；host 用作卡片主标题（runtime 后续开始发送，缺席安全降级）。 */
+    goal?: string;
+    /** 子会话实际注入的业务工具名（同上，前向兼容）。 */
+    visibleTools?: string[];
     /** evidence-note@1 解析成功时附上（runtime 侧后续开始发送，host 前向兼容）。 */
     evidenceNote?: {
       taskId: string;

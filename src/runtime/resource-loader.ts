@@ -36,6 +36,31 @@ export function skillRootsFor(options: { bundledSkillsDir: string; agentDir: str
   return [options.bundledSkillsDir, join(options.agentDir, 'skills')];
 }
 
+/**
+ * skill 路径别名：模型常按 playbook id 短名猜目录（playbooks/inspection/…），
+ * 真实目录名不同（daily-inspection/…）。lookup 前按前缀重写；键含结尾斜杠。
+ */
+export const SKILL_PATH_ALIASES: Readonly<Record<string, string>> = {
+  'playbooks/inspection/': 'playbooks/daily-inspection/',
+  'playbooks/incident/': 'playbooks/incident-response/',
+  'playbooks/db/': 'playbooks/db-slow-and-capacity/',
+  'playbooks/release/': 'playbooks/release-rollback/',
+  'playbooks/host/': 'playbooks/host-emergency/'
+};
+
+/**
+ * 应用 SKILL_PATH_ALIASES：前缀命中（如 playbooks/inspection/SKILL.md）或
+ * 恰为别名目录本身（playbooks/inspection）时重写到真实目录，否则原样返回。
+ */
+export function applySkillPathAliases(relPath: string): string {
+  const trimmed = relPath.trim();
+  for (const [alias, target] of Object.entries(SKILL_PATH_ALIASES)) {
+    if (trimmed.startsWith(alias)) return target + trimmed.slice(alias.length);
+    if (trimmed === alias.slice(0, -1)) return target.slice(0, -1);
+  }
+  return relPath;
+}
+
 function isSafeRelativePath(relPath: string): boolean {
   if (typeof relPath !== 'string') return false;
   const trimmed = relPath.trim();
@@ -62,14 +87,18 @@ export type ReadSkillResult =
   | { ok: true; root: string; path: string; content: string; truncated: boolean; notice?: string }
   | { ok: false; error: string };
 
-/** 按根顺序读取第一个存在的文件；utf8；超过 limit 截断并附中文提示。 */
+/**
+ * 按根顺序读取第一个存在的文件；utf8；超过 limit 截断并附中文提示。
+ * lookup 前先应用 SKILL_PATH_ALIASES（playbook id 短名 → 真实目录）。
+ */
 export async function readSkillFile(
   roots: readonly string[],
   relPath: string,
   limit = SKILL_FILE_CHAR_LIMIT
 ): Promise<ReadSkillResult> {
+  const aliased = applySkillPathAliases(relPath);
   const candidates = roots
-    .map((root) => ({ root, abs: resolveUnderRoot(root, relPath) }))
+    .map((root) => ({ root, abs: resolveUnderRoot(root, aliased) }))
     .filter((c): c is { root: string; abs: string } => c.abs !== undefined);
   if (candidates.length === 0) {
     return {
@@ -96,7 +125,7 @@ export async function readSkillFile(
         : {})
     };
   }
-  return { ok: false, error: `未找到 "${relPath}"（在 ${roots.join('、')} 下均不存在）。` };
+  return { ok: false, error: `未找到 "${aliased}"（在 ${roots.join('、')} 下均不存在）。` };
 }
 
 /** 自定义工具 spec 的最小面（src/runtime/index.ts 的 toPiTool 可直接消费）。 */
@@ -122,7 +151,8 @@ export function createReadSkillTool(roots: readonly string[]): OpsCustomToolSpec
       '按相对路径读取 skills 根目录下的文件（打包 skills 与 ~/.at-series/agent/skills，' +
       `utf8，单文件上限 ${SKILL_FILE_CHAR_LIMIT} 字符）。` +
       '用法：命中 playbook/vendor 后再读对应 SKILL.md / references，不要把全文塞进 system prompt，按需分文件读取。' +
-      '示例 path：playbooks/incident-response/SKILL.md、ops-agent-core/references/approval-brief.md。',
+      '示例 path：playbooks/incident-response/SKILL.md、ops-agent-core/references/approval-brief.md。' +
+      'playbook id 短名会自动映射到真实目录（如 playbooks/inspection/ → playbooks/daily-inspection/）。',
     parameters: {
       type: 'object',
       properties: {

@@ -31,7 +31,9 @@ describe('playbook eval · pb.inspection 全生命周期（orchestrator，无 LL
     orchestrator.advanceTo(run, 'selecting');
     const select = orchestrator.desiredSelect(run);
     expect(select?.mode).toBe('replace');
-    expect(select?.pluginIds?.length).toBeGreaterThan(0);
+    // 巡检实录回归（docs/12）：首轮 select 必须精确等于 [at.terminal]
+    // （客户端优先），不是 Grafana、也不接受「非空即可」。
+    expect(select?.pluginIds).toEqual(['at.terminal']);
     const fixtureIds = new Set(listBridgeFixturePluginIds());
     for (const pluginId of select?.pluginIds ?? []) {
       expect(fixtureIds.has(pluginId)).toBe(true);
@@ -44,10 +46,13 @@ describe('playbook eval · pb.inspection 全生命周期（orchestrator，无 LL
     }
     expect(orchestrator.recordSelect(run)).toBe(1);
 
-    // escalateSelect 只声明一次 add 扩面，host 不自动应用。
+    // escalateSelect 只声明一次 add 扩面，host 不自动应用；
+    // 扩面必须点名 Grafana/Nacos/Jenkins（首轮不选，升级时才加）。
     const escalate = orchestrator.desiredEscalateSelect(run);
     expect(escalate?.mode).toBe('add');
-    expect(escalate?.pluginIds?.length).toBeGreaterThan(0);
+    expect(escalate?.pluginIds).toEqual(
+      expect.arrayContaining(['at.grafana', 'at.nacos', 'at.jenkins'])
+    );
 
     // investigating：3 个只读 investigator，evidence-note@1 契约、预算齐全。
     orchestrator.advanceTo(run, 'investigating');

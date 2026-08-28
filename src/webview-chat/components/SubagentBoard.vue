@@ -1,22 +1,12 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue';
+import { computed } from 'vue';
 import type { SubagentCard } from '../../protocol/host-protocol';
 import { t } from '../i18n';
 import { useOpsStore } from '../store';
+import { subagentTitle } from '../store-helpers';
 
 const props = defineProps<{ agents: SubagentCard[] }>();
 const store = useOpsStore();
-
-/** 展开态：卡片级「详情」开关，展开后 latest 全文显示（docs/05 §3.3 展开）。 */
-const detailsOpen = reactive(new Set<string>());
-
-function toggleDetails(taskId: string): void {
-  if (detailsOpen.has(taskId)) {
-    detailsOpen.delete(taskId);
-  } else {
-    detailsOpen.add(taskId);
-  }
-}
 
 const ROLE_ICON: Record<SubagentCard['role'], string> = {
   investigator: 'codicon-search',
@@ -57,6 +47,20 @@ function statusOf(agent: SubagentCard) {
 function secs(ms: number): string {
   return `${Math.round(ms / 1000)}s`;
 }
+
+/** 打开的是 ChatApp 顶层的 SubagentInspector（Teleport 到 body，本组件只写 store）。 */
+function openInspector(taskId: string): void {
+  store.inspectSubagent(taskId);
+}
+
+/** 卡片键盘激活：只认卡片自身（内部 abort 按钮的 Enter/Space 不冒泡成打开）。 */
+function onCardKey(event: KeyboardEvent, taskId: string): void {
+  if (event.target !== event.currentTarget) {
+    return;
+  }
+  event.preventDefault();
+  openInspector(taskId);
+}
 </script>
 
 <template>
@@ -66,16 +70,23 @@ function secs(ms: number): string {
       <span v-if="active > 0">· {{ active }} {{ t('subagentActive') }}</span>
     </header>
     <div class="sa__cards">
+      <!-- Kilo Sub-Agent Viewer 式：整卡即按钮，点开只读 inspector（latest 空也可点） -->
       <article
         v-for="agent in props.agents"
         :key="agent.taskId"
         class="sa__card"
         :class="'sa__card--' + agent.status"
+        role="button"
+        tabindex="0"
+        :aria-label="t('subagentOpenAria') + ' ' + subagentTitle(agent)"
         :title="agent.taskId"
+        @click="openInspector(agent.taskId)"
+        @keydown.enter="onCardKey($event, agent.taskId)"
+        @keydown.space="onCardKey($event, agent.taskId)"
       >
         <div class="sa__row">
           <span class="codicon sa__role" :class="ROLE_ICON[agent.role] ?? 'codicon-hubot'" aria-hidden="true"></span>
-          <span class="sa__label">{{ agent.label }}</span>
+          <span class="sa__label">{{ subagentTitle(agent) }}</span>
           <span class="sa__status" :class="statusOf(agent).cls">
             <span class="codicon" :class="statusOf(agent).icon" aria-hidden="true"></span>{{ t(statusOf(agent).key) }}
           </span>
@@ -87,36 +98,19 @@ function secs(ms: number): string {
             v-if="abortable(agent)"
             type="button"
             class="ops-btn ops-btn--danger sa__abort"
-            :aria-label="t('subagentAbortAria') + ' ' + agent.label"
-            @click="store.abortSubagent(agent.taskId)"
+            :aria-label="t('subagentAbortAria') + ' ' + subagentTitle(agent)"
+            @click.stop="store.abortSubagent(agent.taskId)"
+            @keydown.stop
           >
             {{ t('subagentAbort') }}
           </button>
+          <span class="codicon codicon-chevron-right sa__open" aria-hidden="true"></span>
         </div>
         <div class="sa__meta ops-muted ops-mono">
           <span>tools {{ agent.toolCalls.used }}/{{ agent.toolCalls.max }}</span>
           <span>wall {{ secs(agent.wallMs.used) }}/{{ secs(agent.wallMs.max) }}</span>
-          <button
-            v-if="agent.latest"
-            type="button"
-            class="sa__details"
-            :aria-expanded="detailsOpen.has(agent.taskId)"
-            :aria-label="t('subagentDetails') + ' ' + agent.label"
-            @click="toggleDetails(agent.taskId)"
-          >
-            <span
-              class="codicon"
-              :class="detailsOpen.has(agent.taskId) ? 'codicon-chevron-down' : 'codicon-chevron-right'"
-              aria-hidden="true"
-            ></span>
-            {{ t('subagentDetails') }}
-          </button>
         </div>
-        <div
-          v-if="agent.latest"
-          class="sa__latest"
-          :class="{ 'sa__latest--full': detailsOpen.has(agent.taskId) }"
-        >{{ agent.latest }}</div>
+        <div v-if="agent.latest" class="sa__latest">{{ agent.latest }}</div>
       </article>
     </div>
   </section>
@@ -126,24 +120,34 @@ function secs(ms: number): string {
 .sa {
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
-  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
+  padding: var(--ops-space-2) var(--ops-space-2);
 }
 
 .sa__head {
-  font-size: calc(var(--ops-font-size) - 2px);
-  margin-bottom: var(--ops-density);
+  font-size: var(--ops-font-xs);
+  margin-bottom: var(--ops-space-1);
 }
 
 .sa__cards {
   display: flex;
   flex-direction: column;
-  gap: var(--ops-density);
+  gap: var(--ops-space-1);
 }
 
 .sa__card {
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
-  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
+  padding: var(--ops-space-1) var(--ops-space-2);
+  cursor: pointer;
+}
+
+.sa__card:hover {
+  background: var(--ops-hover-bg);
+}
+
+.sa__card:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: -1px;
 }
 
 .sa__card--aborted,
@@ -154,7 +158,7 @@ function secs(ms: number): string {
 .sa__row {
   display: flex;
   align-items: center;
-  gap: calc(var(--ops-density) * 1.5);
+  gap: var(--ops-space-2);
   min-width: 0;
 }
 
@@ -175,16 +179,25 @@ function secs(ms: number): string {
   flex: 0 0 auto;
 }
 
+.sa__open {
+  color: var(--ops-muted);
+  font-size: var(--ops-font-xs);
+  flex: 0 0 auto;
+}
+
+.sa__card:hover .sa__open {
+  color: var(--ops-fg);
+}
+
 .sa__status {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
   white-space: nowrap;
 }
 
-.sa__status .codicon,
-.sa__details .codicon {
+.sa__status .codicon {
   font-size: var(--ops-font-xs);
 }
 
@@ -209,54 +222,26 @@ function secs(ms: number): string {
 }
 
 .sa__abort {
-  padding: 0 calc(var(--ops-density) * 1.5);
-  font-size: calc(var(--ops-font-size) - 2px);
+  padding: 0 var(--ops-space-2);
+  font-size: var(--ops-font-xs);
   line-height: 1.6;
 }
 
 .sa__meta {
   display: flex;
-  gap: calc(var(--ops-density) * 3);
-  font-size: calc(var(--ops-font-size) - 2px);
+  gap: var(--ops-space-3);
+  font-size: var(--ops-font-xs);
   margin-top: 2px;
   flex-wrap: wrap;
 }
 
-.sa__details {
-  background: transparent;
-  border: none;
-  color: var(--ops-muted);
-  cursor: pointer;
-  padding: 0;
-  font-size: calc(var(--ops-font-size) - 2px);
-  font-family: inherit;
-}
-
-.sa__details:hover {
-  color: var(--ops-fg);
-}
-
-.sa__details:focus-visible {
-  outline: 1px solid var(--ops-accent);
-  outline-offset: 1px;
-}
-
+/* 卡内 latest 只留单行预览；全文进 inspector（SubagentInspector.vue，ChatApp 顶层） */
 .sa__latest {
   margin-top: 2px;
-  font-size: calc(var(--ops-font-size) - 1px);
+  font-size: var(--ops-font-sm);
   color: var(--ops-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 详情展开：latest 全文，不再截为单行 */
-.sa__latest--full {
-  white-space: pre-wrap;
-  word-break: break-word;
-  text-overflow: clip;
-  color: var(--ops-fg);
-  border-left: 2px solid var(--ops-border);
-  padding-left: calc(var(--ops-density) * 1.5);
 }
 </style>

@@ -3,7 +3,7 @@
  * prompt 上行 payload 组装与「事件脉络」时间线条目归一化。
  * 单独成文件是为了能在 node 环境直接单测（docs/09 §8 组件测降级路径）。
  */
-import type { ChatPromptReq, TranscriptItem, UsageView } from '../protocol/host-protocol';
+import type { ChatPromptReq, SubagentCard, TranscriptItem, UsageView } from '../protocol/host-protocol';
 import { normalizeConfidence, type ConfidenceLevel } from './confidence';
 
 export type PromptAttachment = NonNullable<ChatPromptReq['attachments']>[number];
@@ -337,6 +337,47 @@ export function modelsConfigured(
   hasApiKey: boolean | null
 ): boolean {
   return modelOptions.length > 0 && hasApiKey !== false;
+}
+
+// ── 子代理 inspector（docs/12 §3：整卡可点 + 顶栏运行条）──────────────────
+
+/** transcript 内全部子代理卡平铺（出现顺序；同 taskId 后到覆盖先到）。 */
+export function collectSubagentCards(items: readonly TranscriptItem[]): SubagentCard[] {
+  const byId = new Map<string, SubagentCard>();
+  for (const item of items) {
+    if (item.kind !== 'subagents') {
+      continue;
+    }
+    for (const agent of item.agents) {
+      byId.set(agent.taskId, agent);
+    }
+  }
+  return [...byId.values()];
+}
+
+/** 进行中的子代理（queued / running）：顶栏运行条数据源。 */
+export function activeSubagentCards(cards: readonly SubagentCard[]): SubagentCard[] {
+  return cards.filter((card) => card.status === 'queued' || card.status === 'running');
+}
+
+/**
+ * ChatApp 顶层 inspector 的选中卡：id 为空或在 transcript 里找不到时视同关闭。
+ * 抽成纯函数以便 node tsc（无 DOM lib）单测，避免测试 import Vue store。
+ */
+export function resolveInspectedSubagent(
+  items: readonly TranscriptItem[],
+  inspectorId: string | null
+): SubagentCard | null {
+  if (!inspectorId) {
+    return null;
+  }
+  return collectSubagentCards(items).find((card) => card.taskId === inspectorId) ?? null;
+}
+
+/** 卡片主标题：goal 首行优先，缺省回退 label（标题不倒 latest 全文）。 */
+export function subagentTitle(card: Pick<SubagentCard, 'goal' | 'label'>): string {
+  const goal = (card.goal ?? '').split('\n')[0].trim();
+  return goal || card.label;
 }
 
 /**
