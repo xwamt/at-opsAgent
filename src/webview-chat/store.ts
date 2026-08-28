@@ -12,8 +12,11 @@ import {
   buildPromptPayload,
   buildTimelineStrip,
   canFollowUpFrom,
+  absorbChatModelFields,
+  absorbHydrateModels,
   normalizeSessions,
   normalizeTimelineEvent,
+  type ChatModelOption,
   type ChatTimelineEvent,
   type PromptAttachment,
   type SessionMeta,
@@ -41,11 +44,8 @@ export interface PlaybookMeta {
   description?: string;
 }
 
-export interface ModelOption {
-  provider: string;
-  model: string;
-  label: string;
-}
+/** picker 用的模型项（与 store-helpers.normalizeChatModels 的产物同形）。 */
+export type ModelOption = ChatModelOption;
 
 /** host 未下发 playbook 列表时的兜底：设计稿 8 条一等链路（docs/research/06 §B.3）。 */
 export const DEFAULT_PLAYBOOKS: PlaybookMeta[] = [
@@ -59,7 +59,7 @@ export const DEFAULT_PLAYBOOKS: PlaybookMeta[] = [
   { id: 'pb.security-triage', title: '安全事件初判', maxRisk: 'read', description: '证据保全 · 不做清理' }
 ];
 
-/** host 未下发模型列表时的兜底（models.json 模板同款）。 */
+/** models.json 模板同款示例（仅供文档/演示引用；picker 不再用它兜底）。 */
 export const DEFAULT_MODELS: ModelOption[] = [
   { provider: 'custom', model: 'qwen3-max', label: 'Qwen3 Max' }
 ];
@@ -76,6 +76,11 @@ interface HydratePayload {
   timeline?: unknown;
   /** 可选会话列表（历史侧滑数据源；host 未下发时退化为仅当前会话）。 */
   sessions?: unknown;
+  /** 顶层模型清单（models.json 解析结果；空数组 = 未配置，覆盖 providers 快照）。 */
+  models?: unknown;
+  /** 顶层当前模型 id / provider（优先于 providers 快照内的同名字段）。 */
+  model?: unknown;
+  modelProvider?: unknown;
 }
 
 type AnyRecord = Record<string, unknown>;
@@ -118,8 +123,10 @@ export const useOpsStore = defineStore('ops-chat', {
     streaming: false,
     streamingId: null as string | null,
     modelLabel: '' as string,
+    modelProvider: '' as string,
     playbooks: [...DEFAULT_PLAYBOOKS] as PlaybookMeta[],
-    modelOptions: [...DEFAULT_MODELS] as ModelOption[],
+    // 初始为空：真实清单只来自 host（hydrate / capabilities）；空 = 未配置，UI 引导去设置
+    modelOptions: [] as ModelOption[],
     activePicker: null as 'playbook' | null,
     timeline: [] as ChatTimelineEvent[],
     sessions: [] as SessionMeta[],
@@ -219,6 +226,7 @@ export const useOpsStore = defineStore('ops-chat', {
       this.post('model/set', { provider, model });
       // 乐观更新；host capabilities/snapshot 到达后覆盖。
       this.modelLabel = model;
+      this.modelProvider = provider;
     },
 
     /** 内置技能不再有用户可见入口；保留上行通道（host 侧仅记日志）。 */
@@ -317,28 +325,17 @@ export const useOpsStore = defineStore('ops-chat', {
 
     /** capabilities/hydrate payload 里可选的 model/models/playbooks 提取（缺省保留兜底）。 */
     absorbCapabilities(rec: AnyRecord): void {
-      if (typeof rec.model === 'string') {
-        this.modelLabel = rec.model;
-      }
-      if (Array.isArray(rec.models)) {
-        const models = rec.models
-          .map((entry) => {
-            const m = asRecord(entry);
-            const model = String(m.model ?? m.id ?? '');
-            if (!model) {
-              return null;
-            }
-            return {
-              provider: String(m.provider ?? 'custom'),
-              model,
-              label: String(m.label ?? m.name ?? model)
-            };
-          })
-          .filter((m): m is ModelOption => m !== null);
-        if (models.length > 0) {
-          this.modelOptions = models;
-        }
-      }
+      const next = absorbChatModelFields(
+        {
+          modelOptions: this.modelOptions,
+          modelLabel: this.modelLabel,
+          modelProvider: this.modelProvider
+        },
+        rec
+      );
+      this.modelOptions = next.modelOptions;
+      this.modelLabel = next.modelLabel;
+      this.modelProvider = next.modelProvider;
       if (Array.isArray(rec.playbooks)) {
         const playbooks = rec.playbooks
           .map((entry): PlaybookMeta | null => {
@@ -376,6 +373,18 @@ export const useOpsStore = defineStore('ops-chat', {
       this.items = Array.isArray(snapshot.items) ? [...snapshot.items] : [];
       this.providers = snapshot.providers ?? null;
       this.absorbCapabilities(asRecord(snapshot.providers));
+      // 顶层 models/model/modelProvider 后吸收 ⇒ 覆盖 providers 快照里的同名旧值
+      const models = absorbHydrateModels(
+        {
+          modelOptions: this.modelOptions,
+          modelLabel: this.modelLabel,
+          modelProvider: this.modelProvider
+        },
+        snapshot
+      );
+      this.modelOptions = models.modelOptions;
+      this.modelLabel = models.modelLabel;
+      this.modelProvider = models.modelProvider;
       this.pendingApproval = snapshot.pendingApproval ?? null;
       // timeline 是可选字段：只有下发数组时才整体重放，否则保留已收到的 upsert
       if (Array.isArray(snapshot.timeline)) {

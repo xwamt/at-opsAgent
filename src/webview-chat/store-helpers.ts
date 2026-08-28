@@ -168,6 +168,63 @@ export function buildWelcomeSuggestions<T>(playbooks: readonly T[], cap = 6): T[
   return playbooks.slice(0, Math.min(8, Math.max(4, cap)));
 }
 
+export interface ChatModelOption {
+  provider: string;
+  model: string;
+  label: string;
+}
+
+/** hydrate / capabilities 的 models[]：空数组表示「未配置」，不是解析失败。 */
+export function normalizeChatModels(raw: unknown): ChatModelOption[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChatModelOption[] = [];
+  for (const entry of raw) {
+    const rec = asRecord(entry);
+    const model = String(rec.model ?? rec.id ?? '').trim();
+    if (model.length === 0) continue;
+    const provider = String(rec.provider ?? 'custom').trim() || 'custom';
+    const label = String(rec.label ?? rec.name ?? model).trim() || model;
+    out.push({ provider, model, label });
+  }
+  return out;
+}
+
+export interface ChatModelState {
+  modelOptions: ChatModelOption[];
+  modelLabel: string;
+  modelProvider: string;
+}
+
+/** 从 capabilities / providers 记录吸收模型字段；models 是数组（含空）就整体覆盖。 */
+export function absorbChatModelFields(state: ChatModelState, rec: Record<string, unknown>): ChatModelState {
+  const next: ChatModelState = { ...state, modelOptions: [...state.modelOptions] };
+  if (typeof rec.model === 'string') next.modelLabel = rec.model;
+  if (typeof rec.modelProvider === 'string') next.modelProvider = rec.modelProvider;
+  if (Array.isArray(rec.models)) next.modelOptions = normalizeChatModels(rec.models);
+  return next;
+}
+
+/**
+ * hydrate 吸收顺序：先 providers 快照（旧 host 兼容），再顶层
+ * models/model/modelProvider（新 host 字段胜出）。
+ */
+export function absorbHydrateModels(
+  state: ChatModelState,
+  snapshot: {
+    providers?: unknown;
+    models?: unknown;
+    model?: unknown;
+    modelProvider?: unknown;
+  }
+): ChatModelState {
+  const fromProviders = absorbChatModelFields(state, asRecord(snapshot.providers));
+  return absorbChatModelFields(fromProviders, {
+    models: snapshot.models,
+    model: snapshot.model,
+    modelProvider: snapshot.modelProvider
+  });
+}
+
 /**
  * 紧凑「事件脉络」条：host 下发的 timeline 事件在前，transcript 中的
  * evidence 便签（confidence 三态）在后；host 不发 timeline 时仅证据也能撑起条带。

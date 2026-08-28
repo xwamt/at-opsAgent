@@ -11,6 +11,7 @@
  * - ChatTranscript CoT 隐藏（visibleUntrustedQuotes：思考步骤永不可见，
  *   仅 untrustedQuotes 警示块渲染，对齐 pi hideThinkingBlock）
  * - HistoryOverlay/WelcomeState 的会话归一化与建议卡（sessions / suggestions）
+ * - ModelSelector 模型清单（normalizeChatModels + hydrate 吸收顺序）
  *
  * @vitest-environment jsdom
  */
@@ -23,11 +24,14 @@ import {
 } from '../src/webview-chat/confidence';
 import { detectLocale, dualConfirmText, normalizeLocale, setLocale, t } from '../src/webview-chat/i18n';
 import {
+  absorbChatModelFields,
+  absorbHydrateModels,
   buildHistoryList,
   buildPromptPayload,
   buildTimelineStrip,
   buildWelcomeSuggestions,
   canFollowUpFrom,
+  normalizeChatModels,
   normalizeSessions,
   normalizeTimelineEvent,
   visibleUntrustedQuotes,
@@ -335,5 +339,101 @@ describe('i18n：欢迎页 / 历史会话新键（zh-CN + en）', () => {
     expect(t('historyButton')).toBe('History');
     expect(t('welcomeTitle')).toBe('Start an ops investigation');
     expect(t('roleUser')).toBe('You');
+  });
+
+  it('模型选择器空态引导键（zh-CN + en 同步存在）', () => {
+    expect(t('modelSelectorEmpty')).toBe('去设置添加模型');
+    expect(t('modelSelectorAria')).toBe('选择模型');
+    setLocale('en');
+    expect(t('modelSelectorEmpty')).toBe('Add a model in Settings');
+    expect(t('modelSelectorAria')).toBe('Choose model');
+  });
+});
+
+describe('ModelSelector 模型清单归一化（normalizeChatModels）', () => {
+  it('空数组 / 非数组 ⇒ []（空 = 未配置，不是解析失败）', () => {
+    expect(normalizeChatModels([])).toEqual([]);
+    expect(normalizeChatModels(undefined)).toEqual([]);
+    expect(normalizeChatModels({ not: 'an array' })).toEqual([]);
+  });
+
+  it('完整条目原样归一；provider/label 缺省回退 custom / model id', () => {
+    expect(
+      normalizeChatModels([
+        { provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+        { model: 'qwen3-max' }
+      ])
+    ).toEqual([
+      { provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+      { provider: 'custom', model: 'qwen3-max', label: 'qwen3-max' }
+    ]);
+  });
+
+  it('id/name 字段可替代 model/label；无 model 的条目丢弃', () => {
+    expect(
+      normalizeChatModels([
+        { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai' },
+        { label: '没有 model，丢弃' },
+        { model: '   ' },
+        'garbage'
+      ])
+    ).toEqual([{ provider: 'openai', model: 'gpt-4o', label: 'GPT-4o' }]);
+  });
+});
+
+describe('store：模型清单吸收（hydrate 顶层 / capabilities/snapshot）', () => {
+  const empty = { modelOptions: [], modelLabel: '', modelProvider: '' };
+
+  it('初始状态为空（不用假模型占位）', () => {
+    expect(empty.modelOptions).toEqual([]);
+    expect(empty.modelLabel).toBe('');
+    expect(empty.modelProvider).toBe('');
+  });
+
+  it('capabilities/snapshot：models 是数组就整体覆盖，含空数组', () => {
+    const filled = absorbChatModelFields(empty, {
+      model: 'qwen3-max',
+      modelProvider: 'custom',
+      models: [{ provider: 'custom', model: 'qwen3-max', label: 'Qwen3 Max' }]
+    });
+    expect(filled.modelOptions).toEqual([
+      { provider: 'custom', model: 'qwen3-max', label: 'Qwen3 Max' }
+    ]);
+    expect(filled.modelLabel).toBe('qwen3-max');
+    expect(filled.modelProvider).toBe('custom');
+    const cleared = absorbChatModelFields(filled, { models: [] });
+    expect(cleared.modelOptions).toEqual([]);
+  });
+
+  it('hydrate：顶层 models/model/modelProvider 覆盖 providers 快照里的旧值', () => {
+    const next = absorbHydrateModels(empty, {
+      providers: {
+        providers: [],
+        model: 'stale-model',
+        models: [{ provider: 'custom', model: 'stale-model' }]
+      },
+      models: [{ provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }],
+      model: 'claude-sonnet-4-5',
+      modelProvider: 'anthropic'
+    });
+    expect(next.modelOptions).toEqual([
+      { provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }
+    ]);
+    expect(next.modelLabel).toBe('claude-sonnet-4-5');
+    expect(next.modelProvider).toBe('anthropic');
+  });
+
+  it('hydrate 未带顶层字段时仍从 providers 快照吸收（旧 host 兼容）', () => {
+    const next = absorbHydrateModels(empty, {
+      providers: {
+        providers: [],
+        model: 'qwen3-max',
+        models: [{ provider: 'custom', model: 'qwen3-max', label: 'Qwen3 Max' }]
+      }
+    });
+    expect(next.modelOptions).toEqual([
+      { provider: 'custom', model: 'qwen3-max', label: 'Qwen3 Max' }
+    ]);
+    expect(next.modelLabel).toBe('qwen3-max');
   });
 });

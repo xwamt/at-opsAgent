@@ -50,6 +50,7 @@ import {
   type OpsCustomToolSpec
 } from './resource-loader';
 import { createWorkspaceReadTool } from './workspace-read';
+import { createPlaybookTools, type PlaybookToolHost } from './playbook-tools';
 import {
   buildTaskSpec,
   createSubagentManager,
@@ -133,6 +134,15 @@ export {
   type ReadWorkspaceFileResult
 } from './workspace-read';
 
+export {
+  createPlaybookTools,
+  LIST_PLAYBOOKS_TOOL_NAME,
+  START_PLAYBOOK_TOOL_NAME,
+  type PlaybookCatalogEntry,
+  type PlaybookStartResult,
+  type PlaybookToolHost
+} from './playbook-tools';
+
 // ── 对外契约 ─────────────────────────────────────────────────────────────
 
 export type OpsRuntimeHandlers = {
@@ -161,6 +171,11 @@ export type OpsRuntimeHandlers = {
    * 工具无需重建：setActiveToolsByName 即时同步。
    */
   onCatalogNeedsRebuild?: () => void;
+  /**
+   * 运维链路目录（ops_list_playbooks / ops_start_playbook）。
+   * 缺席时工具仍注册，执行结果告知模型 host 未接线。
+   */
+  playbooks?: PlaybookToolHost;
 };
 
 export type OpsSubagentEvent = {
@@ -925,6 +940,12 @@ async function createPiRuntime(
     const workspaceReadSpec = createWorkspaceReadTool(cwd);
     extraTools.push(gatedTool(workspaceReadSpec));
     extraToolNames.push(workspaceReadSpec.name);
+  }
+
+  // 运维链路：由主代理决定是否启动，host 不再用 NL 关键词自动开 playbook。
+  for (const spec of createPlaybookTools(handlers.playbooks)) {
+    extraTools.push(gatedTool(spec));
+    extraToolNames.push(spec.name);
   }
 
   // 目录热更新判定基线：本次注册进会话的业务工具名快照。

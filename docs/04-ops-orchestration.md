@@ -41,7 +41,7 @@ Orchestrator 持有状态；模型不能直接把状态写成 Closed。非法迁
 | `pb.inspection` | 日常巡检 | 按 checklist 分组 | read | 不就地修 | service-inspection |
 | `pb.security-triage` | 安全初判 | 单 provider 最小面 | **强制 read** | 遏制升级人工 | 证据清单 + 初判 |
 
-触发：自然语言分类（主代理 Triage）/ 用户点 PlaybookPicker / 看板新建 / 粘贴告警。不确定时问一句，不静默开 pb.incident。
+触发：主代理判断后调用 `ops_start_playbook`（目录来自 `ops_list_playbooks`；yaml `triggers.kind=nl` 的 patterns 只作为 whenToUse 提示词进工具描述）/ 用户点 PlaybookPicker / 看板新建 / 粘贴告警后仍由主代理决定。host **不做** NL 关键词/正则匹配自动启动链路。不确定时问一句，不静默开 pb.incident。
 
 ### 2.1 pb.incident（主路径）
 
@@ -104,6 +104,7 @@ MCP 不能触发构建或发布配置。阶段产出：
 
 ### 3.3 并行与合并
 
+- yaml `parallelGroup` 是给主代理的候选建议（经 L4 注入）；host **不在**进入 investigating 等阶段时自动 spawn，是否派发、派发几个由主代理调用 `ops_dispatch_subagent` 决定
 - 同 `parallelGroup` 默认 3、硬顶 4
 - exec 并行度 1；同一 pluginId 的 exec 与其它任务互斥
 - 子代理只回传 ≤800 token 摘要 + 证据引用 id；原始大输出落盘

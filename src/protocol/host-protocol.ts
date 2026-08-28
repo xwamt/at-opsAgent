@@ -133,6 +133,12 @@ export type HydrateEvt = {
   playbooks?: unknown;
   /** 会话列表（历史抽屉 / 设置页 Sessions 页签消费）。 */
   sessions?: SessionSummary[];
+  /** models.json 解析出的聊天模型清单（不含凭证）。缺省 = 未配置。 */
+  models?: Array<{ provider: string; model: string; label: string }>;
+  /** 当前选中的模型 id。 */
+  model?: string;
+  modelProvider?: string;
+  hasApiKey?: boolean;
 };
 
 export type HostRequestType =

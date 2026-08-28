@@ -35,6 +35,11 @@ export const L2_TOOL_DISCOVERY = `# L2 工具发现
   每个任务只做一轮 select（一次 replace，必要时至多一次 add）；选择 ≠ 授权，write/exec 仍需审批。
 - 调查中禁止 ops_clear_tool_selection。
 - Playbook 已代发 select 时会告知「当前已选 pluginId=…」，直接用一等工具名，不要重复 select。
+- ops_list_playbooks：列出运维链路与适用场景提示。简单问答、闲聊不要启动链路。
+- ops_start_playbook {playbookId}：仅当你判断当前问题需要结构化排查/变更/巡检时启动。
+  host 不会因「故障」「超时」等关键词自动启动；是否开链路由你决定。
+- ops_dispatch_subagent：仅当单会话不够（需并行取证、独立验证或写文档）时派发。
+  yaml parallelGroup 只是候选建议，不是必须执行的清单；不要派发与当前问题无关的子代理。
 - 易错：nacos_list_instances ≠ 服务主机（主机在 nacos_list_service_instances）。`;
 
 /** L3 输出格式（主代理） */

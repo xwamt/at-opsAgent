@@ -53,6 +53,11 @@ export interface PlaybookStageMeta {
    */
   escalateSelect?: SelectToolsInput;
   guidedManual?: GuidedManualMeta;
+  /**
+   * yaml parallelGroup：给主代理的候选建议，host 不再自动 spawn。
+   * L4 注入会把这些条目写成「可选 ops_dispatch_subagent」。
+   */
+  parallelGroup?: Array<{ id: string; role: string; goal?: string; allowTools?: string[] }>;
 }
 
 /** playbook 触发器（真 PlaybookTrigger 的最小面；host 只消费 kind=nl 的 patterns）。 */
@@ -115,7 +120,7 @@ export interface OrchestratorLike {
   advanceTo?(runOrId: PlaybookRunLike | string, stage: string): PlaybookRunLike;
   /** runtime 实际执行了一轮 select 后登记（policy 的 selectCountThisTask）。 */
   recordSelect?(runOrId: PlaybookRunLike | string): number;
-  /** 当前阶段 parallelGroup → TaskSpec[]（真形状见 src/orchestrator/index.ts）。 */
+  /** 当前阶段 parallelGroup → TaskSpec[]。host 不再自动调用；仅主代理 ops_dispatch_subagent 或测试使用。 */
   spawnSubagentSpecs?(runOrId: PlaybookRunLike | string): unknown[];
   abortSubagent?(taskId: string): void;
   dispose?(): void;
@@ -178,6 +183,18 @@ export interface RuntimeHandlers {
    * host 收到后 disposeRuntime，下一次 prompt 以最新目录重建工具面。
    */
   onCatalogNeedsRebuild?: () => void;
+  /**
+   * 运维链路（ops_list_playbooks / ops_start_playbook）。
+   * 缺席时 runtime 仍注册工具，执行结果告知模型 host 未接线。
+   */
+  playbooks?: {
+    list():
+      | Array<{ id: string; title: string; description?: string; whenToUse?: string[] }>
+      | Promise<Array<{ id: string; title: string; description?: string; whenToUse?: string[] }>>;
+    start(
+      playbookId: string
+    ): { ok: boolean; stage?: string; error?: string } | Promise<{ ok: boolean; stage?: string; error?: string }>;
+  };
 }
 
 export interface RuntimeLike {

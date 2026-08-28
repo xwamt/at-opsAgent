@@ -44,6 +44,27 @@ function toGuidedManual(value: unknown): GuidedManualMeta | undefined {
   };
 }
 
+function toParallelGroup(
+  value: unknown
+): Array<{ id: string; role: string; goal?: string; allowTools?: string[] }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const group = value
+    .filter(isRecord)
+    .filter(
+      (t): t is Record<string, unknown> & { id: string; role: string } =>
+        typeof t.id === 'string' && typeof t.role === 'string'
+    )
+    .map((t) => ({
+      id: t.id,
+      role: t.role,
+      ...(typeof t.goal === 'string' ? { goal: t.goal } : {}),
+      ...(Array.isArray(t.allowTools)
+        ? { allowTools: t.allowTools.filter((n): n is string => typeof n === 'string') }
+        : {})
+    }));
+  return group.length > 0 ? group : undefined;
+}
+
 function toTriggers(value: unknown): PlaybookTriggerMeta[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const triggers = value
@@ -81,7 +102,8 @@ export async function loadPlaybooksFallback(rootDir: string): Promise<PlaybookMe
           prompt: typeof stage.prompt === 'string' ? stage.prompt : undefined,
           select: toSelect(stage.select),
           escalateSelect: toSelect(stage.escalateSelect),
-          guidedManual: toGuidedManual(stage.guidedManual)
+          guidedManual: toGuidedManual(stage.guidedManual),
+          parallelGroup: toParallelGroup(stage.parallelGroup)
         }))
       : undefined;
     playbooks.push({

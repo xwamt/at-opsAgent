@@ -6,9 +6,11 @@
  *   （transcript/append|patch、tool/*、thinking/delta、approval/*…）
  * - webview 请求路由（chat/prompt、chat/abort、playbook/start、approval/respond…）
  * - beforeToolCall 权限闸装配（policy.evaluate；orchestrator 侧不重复）
- * - playbook 阶段驱动：首条用户消息 triage → selecting → investigating；
- *   进入 investigating/executing/verifying/reporting 时下发子代理；
- *   阶段迁移时整体替换 L4；无进行中 playbook 时 NL 触发词唯一命中可自动启动；
+ * - playbook 阶段驱动：用户显式 /playbook 或主代理调用 ops_start_playbook
+ *   后，首条用户消息 triage → selecting → investigating；
+ *   阶段迁移时整体替换 L4。host **不会**用 NL 关键词自动启动 playbook，
+ *   **不会**在进入 investigating 时自动下发 yaml parallelGroup 子代理——
+ *   是否派发由主代理调用 ops_dispatch_subagent 决定。
  *   guidedManual（Jenkins/Nacos 人工步骤）发引导提示，completed 后续链路
  * - 会话审批闭环：write/exec 被策略闸拦下时经 orchestrator 产出 9 要素简报，
  *   批准后 host 内存签发 HMAC 令牌（不进 LLM/webview），模型重试同一命令集放行
@@ -45,7 +47,7 @@ import {
   verifyApprovalToken,
   type ApprovalRef
 } from '../policy';
-import { normalizeThinkingLevel, readAgentSettings } from './agentSettings';
+import { normalizeThinkingLevel, patchAgentSettings, readAgentSettings } from './agentSettings';
 import { buildApprovalCommandSet, buildApprovalElements } from './approvalGate';
 import { FallbackOrchestrator, loadPlaybooksFallback } from './fallback/fallbackOrchestrator';
 import { FallbackRuntime } from './fallback/fallbackRuntime';
@@ -61,6 +63,7 @@ import type {
   ThinkingLevel
 } from './hostTypes';
 import { diagnoseHub } from './diagnose';
+import { listConfiguredModels, pickSelectedModel, readLastModel } from './modelsCatalog';
 import { openModelsJson, readModelsFormState, saveModelsForm } from './modelsView';
 import { loadOrchestratorModule, loadRuntimeModule } from './modules';
 import { loginOAuthViaPi, openAuthJson } from './oauthLogin';
@@ -148,9 +151,9 @@ export class HostController {
 
   private playbookCache: PlaybookMeta[] | undefined;
   private modelSelection: ModelSetReq | undefined;
+  /** SecretStorage 是否已有 LLM key（异步刷新；选择器不依赖此字段显示清单）。 */
+  private hasApiKey = false;
   private selectCountThisTask = 0;
-  /** NL 触发词自动启动 playbook：每会话最多一次，不重复替用户拍板。 */
-  private nlTriggerConsumed = false;
   /** 已知插件基线（plugins.autoEnableNew=false 时用于识别「新上线」插件）。 */
   private knownPluginIds: Set<string> | undefined;
   /** briefId → runId（applyApproval 需要 runId 定位 run）。 */
@@ -169,8 +172,6 @@ export class HostController {
 
   /** 当前 playbook run（阶段驱动 / guidedManual/complete 的落点）。 */
   private activeRun: PlaybookRunLike | undefined;
-  /** 已下发过子代理的 runId:stage，防止重复 spawn。 */
-  private readonly spawnedStageKeys = new Set<string>();
   /** 已发过 guidedManual 提示的 runId（每个 run 只提示一次）。 */
   private readonly guidedNoticeRuns = new Set<string>();
   /** 全局停止时需一并中止的在跑子代理。 */
@@ -191,10 +192,12 @@ export class HostController {
     this.modelsPath = path.join(this.agentDir, 'models.json');
     this.playbooksDir = path.join(this.extensionPath, 'skills', 'playbooks');
     this.layerSource = new PlaybookLayerSource(this.playbooksDir);
+    this.modelSelection = readLastModel(this.agentDir);
+    void this.bootstrapModelCatalog();
 
     this.hubSub = this.hub.onDidChangeTools(() => {
       this.handleToolCatalogChange();
-      this.broadcast('capabilities/snapshot', { providers: this.safeProviders() });
+      this.broadcast('capabilities/snapshot', this.chatCapabilitiesPayload());
     });
     this.timelineSub = this.store.onDidAppendTimeline((event) => {
       this.boardEmitter.fire(envelope('evt', 'timeline/upsert', event, randomUUID()));
@@ -261,10 +264,11 @@ export class HostController {
   snapshot(): HydrateEvt {
     const providers = this.safeProviders();
     const playbooks = this.playbookCache;
+    const modelsPayload = this.chatModelsExtra();
     if (!playbooks) {
       // 不阻塞快照：后台预热缓存，下一次 hydrate 自然带上。
       void this.getPlaybooks().catch(() => {});
-      return this.store.snapshot(providers);
+      return this.store.snapshot(providers, modelsPayload);
     }
     // webview 的 absorbCapabilities 从 providers 记录里取 playbooks；
     // 顶层字段同时下发，供后续消费方直接读取。
@@ -272,7 +276,77 @@ export class HostController {
       typeof providers === 'object' && providers !== null && !Array.isArray(providers)
         ? { ...(providers as Record<string, unknown>), playbooks }
         : providers;
-    return this.store.snapshot(providersWithPlaybooks, { playbooks });
+    return this.store.snapshot(providersWithPlaybooks, { playbooks, ...modelsPayload });
+  }
+
+  /** 聊天选择器 / hydrate 共用的模型清单（读 models.json，不含凭证）。 */
+  private chatModelsExtra(): {
+    models: ReturnType<typeof listConfiguredModels>;
+    model?: string;
+    modelProvider?: string;
+    hasApiKey: boolean;
+  } {
+    const models = listConfiguredModels(this.modelsPath);
+    const selected = pickSelectedModel(models, this.modelSelection);
+    return {
+      models,
+      ...(selected !== undefined
+        ? { model: selected.model, modelProvider: selected.provider }
+        : {}),
+      hasApiKey: this.hasApiKey
+    };
+  }
+
+  private chatCapabilitiesPayload(): Record<string, unknown> {
+    const extra = this.chatModelsExtra();
+    return {
+      providers: this.safeProviders(),
+      ...extra,
+      ...(this.playbookCache ? { playbooks: this.playbookCache } : {})
+    };
+  }
+
+  private async bootstrapModelCatalog(): Promise<void> {
+    await this.refreshModelKeyFlag();
+    const models = listConfiguredModels(this.modelsPath);
+    const selected = pickSelectedModel(models, this.modelSelection ?? readLastModel(this.agentDir));
+    if (selected) this.modelSelection = { ...this.modelSelection, ...selected };
+    this.broadcast('capabilities/snapshot', this.chatCapabilitiesPayload());
+  }
+
+  private async refreshModelKeyFlag(): Promise<void> {
+    try {
+      const key = await this.secrets.getLlmApiKey();
+      this.hasApiKey = typeof key === 'string' && key.length > 0;
+    } catch {
+      this.hasApiKey = false;
+    }
+  }
+
+  private resolveRuntimeModelPref(): { provider?: string; id?: string } | undefined {
+    const models = listConfiguredModels(this.modelsPath);
+    const selected = pickSelectedModel(models, this.modelSelection);
+    if (!selected) return undefined;
+    if (!this.modelSelection) this.modelSelection = selected;
+    return { provider: selected.provider, id: selected.model };
+  }
+
+  private async listPlaybookCatalog(): Promise<
+    Array<{ id: string; title: string; description?: string; whenToUse?: string[] }>
+  > {
+    const playbooks = await this.getPlaybooks();
+    return playbooks.map((pb) => {
+      const whenToUse = (pb.triggers ?? [])
+        .filter((t) => t.kind === 'nl')
+        .flatMap((t) => t.patterns ?? [])
+        .filter((p) => p.trim().length > 0);
+      return {
+        id: pb.id,
+        title: pb.title ?? pb.id,
+        ...(typeof pb.description === 'string' ? { description: pb.description } : {}),
+        ...(whenToUse.length > 0 ? { whenToUse } : {})
+      };
+    });
   }
 
   // ── webview 请求路由 ───────────────────────────────────────────────────
@@ -367,8 +441,6 @@ export class HostController {
     const userItem = { kind: 'user' as const, id: randomUUID(), text };
     this.store.appendItem(userItem);
     this.broadcast('transcript/append', { item: userItem });
-    // 无进行中 playbook 时按 yaml triggers（kind=nl）尝试自动启动，再继续对话。
-    await this.maybeAutoStartPlaybook(text);
     const runtime = await this.ensureRuntime();
     // playbook 阶段驱动 + 当前阶段 L4 注入在首次模型调用之前完成。
     await this.advancePlaybookForPrompt();
@@ -393,11 +465,15 @@ export class HostController {
 
   async setModel(req: ModelSetReq): Promise<{ ok: boolean }> {
     this.modelSelection = req;
+    void patchAgentSettings(this.agentDir, {
+      lastModel: { provider: req.provider, model: req.model }
+    }).catch((err) => this.log(`[models] 持久化 lastModel 失败: ${describeError(err)}`));
     // 真 runtime 的模型在创建期绑定：丢弃现有实例，下次 prompt 按新模型重建。
     if (this.runtime) {
       this.log(`[runtime] 切换模型 ${req.provider}/${req.model}，重建会话`);
       this.disposeRuntime();
     }
+    this.broadcast('capabilities/snapshot', this.chatCapabilitiesPayload());
     return { ok: true };
   }
 
@@ -424,12 +500,10 @@ export class HostController {
   /** newSession / switchSession 共用：清空绑定旧会话的运行态。 */
   private resetSessionScopedState(): void {
     this.selectCountThisTask = 0;
-    this.nlTriggerConsumed = false;
     this.briefRuns.clear();
     this.briefHashes.clear();
     this.currentApproval = null;
     this.activeRun = undefined;
-    this.spawnedStageKeys.clear();
     this.guidedNoticeRuns.clear();
     this.activeSubagentTaskIds.clear();
     this.lastLayerKey = undefined;
@@ -496,6 +570,13 @@ export class HostController {
         this.log(`[models] setModel 同步失败: ${describeError(err)}`);
       }
     }
+    await this.refreshModelKeyFlag();
+    this.broadcast('capabilities/snapshot', this.chatCapabilitiesPayload());
+    this.broadcast('hydrate', this.snapshot());
+    // 保存后立刻重建 runtime，避免聊天仍走「未配置模型」的 Fallback。
+    void this.ensureRuntime().catch((err) =>
+      this.log(`[runtime] 保存模型后重建失败: ${describeError(err)}`)
+    );
     return { ok: true, state: await this.modelsFormState() };
   }
 
@@ -676,8 +757,19 @@ export class HostController {
     return this.playbookCache;
   }
 
-  async startPlaybook(playbookId: string): Promise<{ ok: boolean; stage?: string }> {
-    if (typeof playbookId !== 'string' || playbookId.length === 0) return { ok: false };
+  async startPlaybook(
+    playbookId: string,
+    opts?: { advance?: boolean }
+  ): Promise<{ ok: boolean; stage?: string; error?: string }> {
+    if (typeof playbookId !== 'string' || playbookId.length === 0) {
+      return { ok: false, error: 'playbookId 不能为空' };
+    }
+    if (opts?.advance && this.activeRun) {
+      return {
+        ok: false,
+        error: `已有进行中的 playbook ${this.activeRun.playbookId}，不要叠加启动`
+      };
+    }
     const orchestrator = await this.ensureOrchestrator();
     let run: PlaybookRunLike;
     try {
@@ -707,45 +799,11 @@ export class HostController {
       this.store.setPlaybook({ id: playbookId, stage: run.stage });
       this.broadcast('playbook/stage', { playbookId, stage: run.stage });
     }
-    return { ok: true, stage };
-  }
-
-  /**
-   * NL 触发词（playbook.yaml triggers.kind=nl 的 patterns）自动启动 playbook：
-   * 仅在没有进行中 playbook、且 **唯一** 命中一条时启动（多条命中视为不确定，
-   * 绝不静默替用户拍板，也绝不默认落到 pb.incident）。每会话最多自动启动一次。
-   */
-  private async maybeAutoStartPlaybook(text: string): Promise<void> {
-    if (this.nlTriggerConsumed || this.activeRun || this.store.playbook) return;
-    let playbooks: PlaybookMeta[];
-    try {
-      playbooks = await this.getPlaybooks();
-    } catch {
-      return;
+    // 主代理在对话中途启动链路时立即推进阶段并注入 L4；UI 手动选择仍等下一条消息。
+    if (opts?.advance) {
+      await this.advancePlaybookForPrompt();
     }
-    const matches = playbooks.filter((pb) => matchesNlTrigger(pb, text));
-    if (matches.length !== 1) {
-      if (matches.length > 1) {
-        this.log(
-          `[playbook] NL 触发词命中多条（${matches.map((p) => p.id).join(', ')}），不自动启动`
-        );
-      }
-      return;
-    }
-    this.nlTriggerConsumed = true;
-    const target = matches[0];
-    this.log(`[playbook] 用户输入命中 ${target.id} 的 NL 触发词，自动启动`);
-    try {
-      const result = await this.startPlaybook(target.id);
-      if (result.ok) {
-        this.emitAssistantNotice(
-          `已根据触发词自动启动 playbook **${target.title ?? target.id}**（${target.id}）。` +
-            `如不需要可通过标题栏重新选择链路。`
-        );
-      }
-    } catch (err) {
-      this.log(`[playbook] NL 自动启动 ${target.id} 失败: ${describeError(err)}`);
-    }
+    return { ok: true, stage: this.store.playbook?.stage ?? stage };
   }
 
   /**
@@ -881,76 +939,12 @@ export class HostController {
     }
   }
 
-  /** 阶段进入钩子：下发子代理、注入 L4、guidedManual 提示。绝不抛出。 */
+  /** 阶段进入钩子：注入 L4、guidedManual 提示。子代理由主代理 ops_dispatch_subagent 派发，绝不在此自动下发。 */
   private handleStageEntered(runId: string, playbookId: string, stage: string): void {
-    // reporting 阶段的 parallelGroup 是 writer（运维文档产出），一并下发。
-    if (
-      stage === 'investigating' ||
-      stage === 'executing' ||
-      stage === 'verifying' ||
-      stage === 'reporting'
-    ) {
-      void this.spawnSubagentsFor(runId, stage).catch((err) =>
-        this.log(`[subagent] spawn 失败: ${describeError(err)}`)
-      );
-    }
     void this.injectStageLayer(playbookId, stage);
     void this.maybeEmitGuidedManualNotice(runId, playbookId, stage).catch((err) =>
       this.log(`[guidedManual] 提示失败: ${describeError(err)}`)
     );
-  }
-
-  /**
-   * 进入 investigating / executing / verifying 时把 parallelGroup 转成
-   * TaskSpec 并交 runtime 执行。orchestrator 缺 spawnSubagentSpecs 或 runtime
-   * 缺 dispatchSubagent 都静默降级：卡片仍显示（queued），但没有真实子代理。
-   */
-  private async spawnSubagentsFor(runId: string, stage: string): Promise<void> {
-    const orchestrator = this.orchestrator;
-    if (!orchestrator?.spawnSubagentSpecs) return;
-    const key = `${runId}:${stage}`;
-    if (this.spawnedStageKeys.has(key)) return;
-    this.spawnedStageKeys.add(key);
-    let specs: unknown[];
-    try {
-      // subagent/upsert（queued 卡片）在 spawnSubagentSpecs 内同步发出。
-      specs = orchestrator.spawnSubagentSpecs(runId) ?? [];
-    } catch (err) {
-      this.log(`[orchestrator] spawnSubagentSpecs 失败: ${describeError(err)}`);
-      return;
-    }
-    if (specs.length === 0) return;
-    const runtime = this.runtime;
-    for (const rawSpec of specs) {
-      // 已批准的会话内，executor spec 附上 {briefId, commandSetSha256}
-      //（不含 hmac token——token 只留在 host，闸门校验时使用）。
-      const spec = this.attachApprovalToken(rawSpec);
-      const taskId = readTaskId(spec);
-      if (taskId) this.activeSubagentTaskIds.add(taskId);
-      if (!runtime?.dispatchSubagent) continue;
-      void runtime
-        .dispatchSubagent(spec)
-        .then((res) => this.patchSubagentCard(res?.taskId ?? taskId, res?.status))
-        .catch((err) => {
-          this.log(`[runtime] dispatchSubagent 失败: ${describeError(err)}`);
-          this.patchSubagentCard(taskId, 'failed', describeError(err));
-        });
-    }
-    if (!runtime?.dispatchSubagent) {
-      this.log(`[subagent] runtime 未提供 dispatchSubagent，${specs.length} 个任务保持 queued`);
-    }
-  }
-
-  /** executor spec 合并审批引用（TaskSpec.approvalToken 形状不含 hmac token）。 */
-  private attachApprovalToken(spec: unknown): unknown {
-    const approval = this.currentApproval;
-    if (!approval) return spec;
-    if (typeof spec !== 'object' || spec === null) return spec;
-    if ((spec as { role?: unknown }).role !== 'executor') return spec;
-    return {
-      ...(spec as Record<string, unknown>),
-      approvalToken: { briefId: approval.briefId, commandSetSha256: approval.commandSetSha256 }
-    };
   }
 
   /**
@@ -1011,19 +1005,38 @@ export class HostController {
     });
   }
 
-  /** 更新子代理卡片状态并广播；终态任务从全局停止清单摘除。 */
-  private patchSubagentCard(taskId: string | undefined, status?: string, latest?: string): void {
+  /** 更新或创建子代理卡片并广播；主代理 ops_dispatch_subagent 派发时没有事先 queued 卡。 */
+  private patchSubagentCard(
+    taskId: string | undefined,
+    status?: string,
+    latest?: string,
+    role?: string
+  ): void {
     if (!taskId) return;
-    const card = this.store.getSubagent(taskId);
-    if (!card) return;
-    const next: SubagentCard = {
-      ...card,
-      status: isSubagentStatus(status) ? status : card.status,
-      ...(latest !== undefined ? { latest } : {})
-    };
+    const existing = this.store.getSubagent(taskId);
+    const nextRole = isSubagentRole(role) ? role : existing?.role ?? 'investigator';
+    const next: SubagentCard = existing
+      ? {
+          ...existing,
+          role: nextRole,
+          status: isSubagentStatus(status) ? status : existing.status,
+          ...(latest !== undefined ? { latest } : {})
+        }
+      : {
+          taskId,
+          role: nextRole,
+          label: latest && latest.length > 0 ? latest : nextRole,
+          status: isSubagentStatus(status) ? status : 'queued',
+          riskCeiling: nextRole === 'executor' ? 'exec' : 'read',
+          toolCalls: { used: 0, max: 15 },
+          wallMs: { used: 0, max: 180_000 },
+          ...(latest !== undefined ? { latest } : {})
+        };
     this.store.upsertSubagent(next);
     this.broadcast('subagent/upsert', next);
-    if (next.status !== 'queued' && next.status !== 'running') {
+    if (next.status === 'queued' || next.status === 'running') {
+      this.activeSubagentTaskIds.add(taskId);
+    } else {
       this.activeSubagentTaskIds.delete(taskId);
     }
   }
@@ -1204,7 +1217,7 @@ export class HostController {
               beforeToolCall: async (ctx) => this.gateToolCall(ctx.toolName, ctx.args),
               onEvent,
               onSubagentEvent: (e) => {
-                this.patchSubagentCard(e.taskId, e.status, e.summary ?? e.error);
+                this.patchSubagentCard(e.taskId, e.status, e.summary ?? e.error, e.role);
                 if (e.evidenceNote) this.appendEvidenceNote(e.evidenceNote);
               },
               // pi 会话无法追加新 ToolDefinition：目录需要重建时释放 runtime，
@@ -1212,14 +1225,21 @@ export class HostController {
               onCatalogNeedsRebuild: () => {
                 this.log('[runtime] 工具目录需重建：释放当前 runtime，下次 prompt 重建工具面');
                 this.disposeRuntime();
+              },
+              playbooks: {
+                list: async () => this.listPlaybookCatalog(),
+                start: async (playbookId: string) => {
+                  const result = await this.startPlaybook(playbookId, { advance: true });
+                  return result.ok
+                    ? { ok: true, ...(result.stage !== undefined ? { stage: result.stage } : {}) }
+                    : { ok: false, error: result.error ?? '无法启动 playbook' };
+                }
               }
             },
             {
               agentDir: this.agentDir,
               cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir(),
-              model: this.modelSelection
-                ? { provider: this.modelSelection.provider, id: this.modelSelection.model }
-                : undefined,
+              model: this.resolveRuntimeModelPref(),
               getApiKey: () => Promise.resolve(this.secrets.getLlmApiKey()),
               bundledSkillsDir: path.join(this.extensionPath, 'skills'),
               thinkingLevel: await this.resolveThinkingLevel(config),
@@ -1684,23 +1704,6 @@ function restoreRedactedEntry(entry: unknown, prev: unknown): unknown {
   return out;
 }
 
-/** kind=nl 触发词匹配：pattern 先按（大小写不敏感）正则试，非法正则退回子串包含。 */
-function matchesNlTrigger(pb: PlaybookMeta, text: string): boolean {
-  const lower = text.toLowerCase();
-  for (const trigger of pb.triggers ?? []) {
-    if (trigger.kind !== 'nl') continue;
-    for (const pattern of trigger.patterns ?? []) {
-      if (typeof pattern !== 'string' || pattern.trim().length === 0) continue;
-      try {
-        if (new RegExp(pattern, 'i').test(text)) return true;
-      } catch {
-        if (lower.includes(pattern.toLowerCase())) return true;
-      }
-    }
-  }
-  return false;
-}
-
 /** 简单启发式：工具输出是否像日志 / SQL（时间戳、日志级别、异常栈、SQL 关键字）。 */
 function looksLikeLogOrSql(text: string): boolean {
   return (
@@ -1732,16 +1735,21 @@ function isSubagentStatus(value: string | undefined): value is SubagentCard['sta
   return value !== undefined && SUBAGENT_STATUSES.has(value);
 }
 
+const SUBAGENT_ROLES: ReadonlySet<string> = new Set([
+  'investigator',
+  'executor',
+  'writer',
+  'verifier'
+]);
+
+function isSubagentRole(value: string | undefined): value is SubagentCard['role'] {
+  return value !== undefined && SUBAGENT_ROLES.has(value);
+}
+
 const EVIDENCE_CONFIDENCES: ReadonlySet<string> = new Set(['confirmed', 'hypothesis', 'pending']);
 
 function isEvidenceConfidence(value: unknown): value is EvidenceNoteView['confidence'] {
   return typeof value === 'string' && EVIDENCE_CONFIDENCES.has(value);
-}
-
-function readTaskId(spec: unknown): string | undefined {
-  if (typeof spec !== 'object' || spec === null) return undefined;
-  const taskId = (spec as { taskId?: unknown }).taskId;
-  return typeof taskId === 'string' ? taskId : undefined;
 }
 
 function toBriefView(brief: ApprovalBriefLike): ApprovalBriefView {

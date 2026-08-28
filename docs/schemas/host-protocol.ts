@@ -96,8 +96,13 @@ export type HydrateEvt = {
   items: TranscriptItem[];
   providers: unknown;
   pendingApproval?: ApprovalBriefView;
+  playbooks?: unknown;
   /** Session list (history drawer / settings Sessions tab). */
   sessions?: SessionSummary[];
+  models?: Array<{ provider: string; model: string; label: string }>;
+  model?: string;
+  modelProvider?: string;
+  hasApiKey?: boolean;
 };
 
 export type HostRequestType =

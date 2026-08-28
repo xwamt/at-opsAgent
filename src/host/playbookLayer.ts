@@ -30,14 +30,40 @@ export class PlaybookLayerSource {
     if (promptRel) {
       const content = await this.readStagePrompt(playbookId, promptRel);
       if (content) {
-        return `# L4 Playbook 阶段注入（${playbookId} / ${stage}）\n${content}`;
+        return `${this.wrapLayer(playbookId, stage, content)}${this.agentChoiceFooter(meta, stage)}`;
       }
     }
     return (
-      `# L4 Playbook 阶段注入\n` +
-      `当前 playbook ${playbookId}，阶段 ${stage}。` +
-      `调查中禁止 ops_clear_tool_selection；选择已由编排器代发，直接用一等工具名。`
+      this.wrapLayer(
+        playbookId,
+        stage,
+        `当前 playbook ${playbookId}，阶段 ${stage}。` +
+          `调查中禁止 ops_clear_tool_selection；选择已由编排器代发，直接用一等工具名。`
+      ) + this.agentChoiceFooter(meta, stage)
     );
+  }
+
+  private wrapLayer(playbookId: string, stage: string, body: string): string {
+    return `# L4 Playbook 阶段注入（${playbookId} / ${stage}）\n${body}`;
+  }
+
+  /** host 不再自动 spawn；把 yaml parallelGroup 写成主代理可选用的候选。 */
+  private agentChoiceFooter(meta: PlaybookMeta | undefined, stage: string): string {
+    const group = meta?.stages?.find((s) => s.id === stage)?.parallelGroup ?? [];
+    const lines = [
+      '',
+      '## 子代理（由你决定，host 不会自动下发）',
+      '是否调用 ops_dispatch_subagent 由你判断。简单问答或单证据面不要派发。',
+      'yaml parallelGroup 只是候选，不是必须执行的清单。'
+    ];
+    if (group.length > 0) {
+      lines.push('本阶段候选：');
+      for (const task of group) {
+        const goal = task.goal ? ` — ${task.goal}` : '';
+        lines.push(`- ${task.role} \`${task.id}\`${goal}`);
+      }
+    }
+    return `\n\n${lines.join('\n')}`;
   }
 
   private async readStagePrompt(playbookId: string, promptRel: string): Promise<string | undefined> {

@@ -335,6 +335,15 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('禁止 ops_clear_tool_selection');
   });
 
+  it('L2 文档化主代理自选的链路/子代理工具，并声明 host 不自动启动', () => {
+    const prompt = buildSystemPrompt({});
+    expect(prompt).toContain('ops_list_playbooks');
+    expect(prompt).toContain('ops_start_playbook');
+    expect(prompt).toContain('ops_dispatch_subagent');
+    expect(prompt).toContain('自动启动');
+    expect(prompt).toContain('只是候选建议');
+  });
+
   it('playbookLayer 追加在末尾，空白串被忽略', () => {
     const withLayer = buildSystemPrompt({ playbookLayer: '# L4 pb.incident\n当前阶段 Investigating' });
     expect(withLayer.endsWith('当前阶段 Investigating')).toBe(true);
@@ -625,9 +634,10 @@ describe('composeSubagentPrompt', () => {
     expect(prompt).not.toContain('ops_get_tool');
   });
 
-  it('明确禁止 dispatch/select/clear 与工具发现', () => {
+  it('明确禁止 dispatch/start_playbook/select/clear 与工具发现', () => {
     const prompt = composeSubagentPrompt({ role: 'investigator', spec: makeInvestigatorSpec() });
     expect(prompt).toContain('禁止调用 ops_dispatch_subagent');
+    expect(prompt).toContain('ops_start_playbook');
     expect(prompt).toContain('ops_select_tools');
     expect(prompt).toContain('ops_clear_tool_selection');
     expect(prompt).toContain('不做工具发现与选择');

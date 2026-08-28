@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { t } from '../i18n';
 import { useOpsStore, type ModelOption } from '../store';
 
 const store = useOpsStore();
@@ -18,18 +19,28 @@ const options = computed<OptionView[]>(() => {
   // 当前模型不在列表里（如 host 侧手工配置）时补一个只读项
   if (store.modelLabel && !list.some((m) => m.model === store.modelLabel)) {
     list.unshift({
-      provider: 'custom',
+      provider: store.modelProvider || 'custom',
       model: store.modelLabel,
       label: store.modelLabel,
-      value: 'custom' + SEP + store.modelLabel
+      value: (store.modelProvider || 'custom') + SEP + store.modelLabel
     });
   }
   return list;
 });
 
 const current = computed(() => {
-  const hit = options.value.find((m) => m.model === store.modelLabel);
-  return hit ? hit.value : '';
+  // 优先 provider+model 精确匹配（同名 model 可能挂在不同 provider 下）
+  const hit =
+    options.value.find(
+      (m) =>
+        m.model === store.modelLabel &&
+        (!store.modelProvider || m.provider === store.modelProvider)
+    ) ?? options.value.find((m) => m.model === store.modelLabel);
+  if (hit) {
+    return hit.value;
+  }
+  // 有清单但 host 尚未下发选中项 ⇒ 展示第一项（纯展示，不上行 model/set）
+  return options.value.length > 0 ? options.value[0].value : '';
 });
 
 function onChange(event: Event): void {
@@ -48,10 +59,11 @@ function onChange(event: Event): void {
     <select
       class="modelsel__select"
       :value="current"
-      aria-label="选择模型"
+      :aria-label="t('modelSelectorAria')"
       @change="onChange"
     >
-      <option v-if="!current" value="" disabled>模型未设置</option>
+      <!-- 清单为空 = 未配置：引导去设置页添加模型（models/save 后 host 会推新快照） -->
+      <option v-if="options.length === 0" value="" disabled>{{ t('modelSelectorEmpty') }}</option>
       <option v-for="opt in options" :key="opt.value" :value="opt.value">
         {{ opt.label }}<template v-if="opt.provider !== 'custom'"> · {{ opt.provider }}</template>
       </option>
