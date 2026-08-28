@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useOpsStore } from '../store';
+import { getVsCodeApi } from '../vscode-api';
 import EvidenceNote from './EvidenceNote.vue';
 import SubagentBoard from './SubagentBoard.vue';
 import ThinkingTrace from './ThinkingTrace.vue';
@@ -8,6 +9,54 @@ import ToolCallCard from './ToolCallCard.vue';
 
 const store = useOpsStore();
 const scroller = ref<HTMLElement | null>(null);
+
+// ── 简单块级虚拟化：仅当消息数超过阈值时，只渲染滚动位置 ± OVERSCAN 的窗口 ──
+const VIRTUAL_MIN = 80;
+const EST_HEIGHT = 72; // 未渲染块的估高（px），只影响滚动条比例
+const OVERSCAN = 20;
+
+const range = ref({ start: 0, end: Number.MAX_SAFE_INTEGER });
+const virtual = computed(() => store.items.length > VIRTUAL_MIN);
+
+const visibleItems = computed(() =>
+  virtual.value ? store.items.slice(range.value.start, range.value.end) : store.items
+);
+const padTop = computed(() => (virtual.value ? range.value.start * EST_HEIGHT : 0));
+const padBottom = computed(() =>
+  virtual.value ? Math.max(0, store.items.length - range.value.end) * EST_HEIGHT : 0
+);
+
+function updateRange(): void {
+  if (!virtual.value) {
+    return;
+  }
+  const el = scroller.value;
+  if (!el) {
+    return;
+  }
+  const first = Math.floor(el.scrollTop / EST_HEIGHT);
+  const count = Math.ceil(el.clientHeight / EST_HEIGHT);
+  const start = Math.max(0, first - OVERSCAN);
+  const end = Math.min(store.items.length, first + count + OVERSCAN);
+  if (start !== range.value.start || end !== range.value.end) {
+    range.value = { start, end };
+  }
+}
+
+// 滚动：rAF 节流更新窗口；滚动位置进 getState（仅 UI 状态，非真源）
+let scrollRaf = 0;
+function onScroll(): void {
+  if (scrollRaf) {
+    return;
+  }
+  scrollRaf = window.requestAnimationFrame(() => {
+    scrollRaf = 0;
+    updateRange();
+    const api = getVsCodeApi();
+    const prev = (api.getState() as Record<string, unknown> | undefined) ?? {};
+    api.setState({ ...prev, transcriptScrollTop: scroller.value?.scrollTop ?? 0 });
+  });
+}
 
 function nearBottom(): boolean {
   const el = scroller.value;
@@ -17,26 +66,54 @@ function nearBottom(): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 }
 
+function scrollToBottom(): void {
+  const el = scroller.value;
+  if (!el) {
+    return;
+  }
+  if (virtual.value) {
+    // 先把窗口挪到末尾再滚，保证最后一屏是真实渲染的
+    const count = Math.ceil(el.clientHeight / EST_HEIGHT);
+    range.value = {
+      start: Math.max(0, store.items.length - count - OVERSCAN),
+      end: store.items.length
+    };
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
 watch(
   () => [store.items.length, store.streaming ? Date.now() : 0],
   async (_next, _prev) => {
     const stick = nearBottom();
     await nextTick();
-    const el = scroller.value;
-    if (el && stick) {
-      el.scrollTop = el.scrollHeight;
+    if (stick) {
+      scrollToBottom();
+    } else {
+      updateRange();
     }
   },
   { deep: false }
 );
+
+onMounted(async () => {
+  await nextTick();
+  const state = getVsCodeApi().getState() as { transcriptScrollTop?: number } | undefined;
+  const el = scroller.value;
+  if (el && typeof state?.transcriptScrollTop === 'number') {
+    el.scrollTop = state.transcriptScrollTop;
+  }
+  updateRange();
+});
 </script>
 
 <template>
-  <div ref="scroller" class="transcript" role="log" aria-label="会话记录">
+  <div ref="scroller" class="transcript" role="log" aria-label="会话记录" @scroll="onScroll">
     <div v-if="store.items.length === 0" class="transcript__empty ops-muted">
       描述你的运维问题，或粘贴告警文本开始调查。
     </div>
-    <template v-for="item in store.items" :key="item.id">
+    <div v-if="padTop > 0" class="transcript__pad" :style="{ height: padTop + 'px' }" aria-hidden="true"></div>
+    <template v-for="item in visibleItems" :key="item.id">
       <div v-if="item.kind === 'user'" class="transcript__row transcript__row--user">
         <span class="transcript__who">你</span>
         <div class="transcript__text">{{ item.text }}</div>
@@ -67,6 +144,7 @@ watch(
         <span v-else>（已处理）</span>
       </div>
     </template>
+    <div v-if="padBottom > 0" class="transcript__pad" :style="{ height: padBottom + 'px' }" aria-hidden="true"></div>
   </div>
 </template>
 
@@ -82,6 +160,10 @@ watch(
 .transcript__empty {
   padding: calc(var(--ops-density) * 4) var(--ops-density);
   text-align: center;
+}
+
+.transcript__pad {
+  flex: 0 0 auto;
 }
 
 .transcript__row {

@@ -1,9 +1,9 @@
 /**
- * L0–L2 系统提示词分层（压缩版，常驻预算约 30–40 行）。
+ * L0–L3 系统提示词分层（压缩版，常驻预算约 30–40 行）。
  *
  * 对齐 docs/04-ops-orchestration.md §5：
- *   主代理 = L0+L1+L2(+L3+L4)；本模块只负责常驻的 L0/L1/L2，
- *   L4（playbook 阶段注入）由调用方通过 `playbookLayer` 传入。
+ *   主代理 = L0+L1+L2+L3(+L4)；L4（playbook 阶段注入）由调用方通过
+ *   `playbookLayer` 传入。子代理层（L3'/L5）见 ./roles.ts。
  *
  * 红线内容不得删改语义；如需扩展请追加新层，禁止覆盖 L1。
  */
@@ -37,14 +37,26 @@ export const L2_TOOL_DISCOVERY = `# L2 工具发现
 - Playbook 已代发 select 时会告知「当前已选 pluginId=…」，直接用一等工具名，不要重复 select。
 - 易错：nacos_list_instances ≠ 服务主机（主机在 nacos_list_service_instances）。`;
 
+/** L3 输出格式（主代理） */
+export const L3_OUTPUT_FORMAT = `# L3 输出格式
+- 证据便签用 evidence-note@1 JSON（fenced json 块）：
+  {"contract":"evidence-note@1","taskId":"…","confidence":"confirmed|hypothesis|pending","summary":"≤800 token","timeWindow":{"from":"ISO-8601","to":"ISO-8601"},"refs":[{"kind":"metric|log|config|pipeline|host|other","toolName":"…","pluginId":"…","preview":"…"}],"conflicts":[]}
+- 三态结论：任何结论必须标 confirmed / hypothesis / pending。
+  confirmed 需要应用侧日志或等价事件证据；没有应用侧日志不得宣称根因，最高只能 hypothesis。
+- 任何 write/exec 前先出 9 要素审批简报：1 目标与理由；2 支持证据（引用 EvidenceNote id）；
+  3 预期影响与中断；4 前置检查；5 备份方式与位置；6 确切命令/文件操作（计算 commandSetSha256）；
+  7 成功判据；8 回滚触发与确切步骤；9 剩余不确定性。要素实质变化则令牌作废，重新审批。
+- C9：根因未 confirmed 前禁止输出长篇 RCA 报告，只给当前证据 + 下一步动作。
+- 文档模板按链路选择：troubleshooting-report / operation-record / service-deployment / service-inspection。`;
+
 export interface ComposeSystemPromptOptions {
   /** L4：当前 playbook 阶段注入层（允许动作、DoD、停止条件），阶段迁移时整体替换。 */
   playbookLayer?: string;
 }
 
-/** 组装常驻系统提示词：L0 + L1 + L2 (+ playbookLayer)。 */
+/** 组装常驻系统提示词：L0 + L1 + L2 + L3 (+ playbookLayer)。 */
 export function composeSystemPrompt(opts: ComposeSystemPromptOptions = {}): string {
-  const layers = [L0_IDENTITY, L1_SAFETY_REDLINES, L2_TOOL_DISCOVERY];
+  const layers = [L0_IDENTITY, L1_SAFETY_REDLINES, L2_TOOL_DISCOVERY, L3_OUTPUT_FORMAT];
   const playbook = opts.playbookLayer?.trim();
   if (playbook) {
     layers.push(playbook);

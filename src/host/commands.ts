@@ -1,12 +1,10 @@
 /**
  * package.json contributes.commands 中九条命令的实现与注册。
  */
-import { promises as fs } from 'node:fs';
-import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { diagnoseHub } from './diagnose';
 import type { HostController } from './hostController';
-import { LLM_API_KEY_SECRET } from './secrets';
+import { showModelsPanel } from './modelsView';
 import type { ApprovalTreeItem } from './trees/approvalsTree';
 import type { ChatViewProvider } from './chatView';
 
@@ -17,22 +15,6 @@ export interface CommandDeps {
   output: vscode.OutputChannel;
   refreshTrees: () => void;
 }
-
-/** openModels 写入的模板：apiKey 用 SecretStorage 占位符，不落明文。 */
-const MODELS_TEMPLATE = `{
-  "providers": {
-    "internal-gateway": {
-      "baseUrl": "https://llm.example.internal/v1",
-      "api": "openai-completions",
-      "apiKey": "\${secret:${LLM_API_KEY_SECRET}}",
-      "headers": {},
-      "models": [
-        { "id": "qwen3-max", "name": "Qwen3 Max", "thinking": true }
-      ]
-    }
-  }
-}
-`;
 
 export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
   const { controller, chatView, hostApp, output, refreshTrees } = deps;
@@ -70,24 +52,14 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     void vscode.commands.executeCommand('workbench.action.openSettings', 'atOpsAgent');
   });
 
-  const openModels = vscode.commands.registerCommand('atOpsAgent.openModels', async () => {
-    const modelsPath = controller.modelsPath;
-    try {
-      await fs.mkdir(path.dirname(modelsPath), { recursive: true });
-      try {
-        await fs.access(modelsPath);
-      } catch {
-        await fs.writeFile(modelsPath, MODELS_TEMPLATE, { encoding: 'utf8', mode: 0o600 });
-        output.appendLine(`[models] 已创建模板 ${modelsPath}（apiKey 使用 SecretStorage 占位符）`);
-      }
-      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(modelsPath));
-      await vscode.window.showTextDocument(doc, { preview: false });
-    } catch (err) {
-      void vscode.window.showErrorMessage(
-        `打开 models.json 失败: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-    refreshTrees();
+  const openModels = vscode.commands.registerCommand('atOpsAgent.openModels', () => {
+    // 配置页 webview（表单 + SecretStorage key）；「打开 models.json」是页内次级动作。
+    showModelsPanel({
+      modelsPath: controller.modelsPath,
+      secrets: controller.secrets,
+      output,
+      refreshTrees
+    });
   });
 
   const refreshBridges = vscode.commands.registerCommand('atOpsAgent.refreshBridges', async () => {

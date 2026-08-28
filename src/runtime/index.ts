@@ -16,9 +16,11 @@ import type {
   AgentSession,
   AgentSessionEvent,
   CreateAgentSessionOptions,
+  ModelRuntime,
   ToolDefinition
 } from '@earendil-works/pi-coding-agent';
 
+import type { TaskSpec } from '../orchestrator';
 import type {
   AgentToolDescriptor,
   ListProvidersResult,
@@ -27,12 +29,25 @@ import type {
   ToolInvocationResult
 } from '../protocol';
 import { composeSystemPrompt } from '../prompts/layers';
+import { composeSubagentPrompt } from '../prompts/roles';
 import {
   discoveryToolSpecs,
   executeDiscoveryTool,
   listBusinessToolDescriptors,
   type DiscoveryHub
 } from './discovery-tools';
+import {
+  buildTaskSpec,
+  createSubagentManager,
+  dispatchToolSpec,
+  filterToolsForSubagent,
+  normalizeDispatchInput,
+  type SubagentDispatchInput,
+  type SubagentManager,
+  type SubagentRunOutcome,
+  type SubagentRunStatus,
+  type SubagentStatusEvent
+} from './subagents';
 
 export {
   discoveryToolNames,
@@ -52,6 +67,29 @@ export {
   type SearchToolsResult
 } from './discovery-tools';
 
+export {
+  buildTaskSpec,
+  createSubagentManager,
+  dispatchToolSpec,
+  filterToolsForSubagent,
+  normalizeDispatchInput,
+  parseContractJson,
+  parseEvidenceNote,
+  truncateSummary,
+  DEFAULT_SUBAGENT_BUDGET,
+  DISPATCH_TOOL_NAME,
+  ROLE_PARALLEL_LIMITS,
+  SUBAGENT_SUMMARY_CHAR_LIMIT,
+  type BuildTaskSpecOutcome,
+  type ContractJson,
+  type SubagentDispatchInput,
+  type SubagentManager,
+  type SubagentRunner,
+  type SubagentRunOutcome,
+  type SubagentRunStatus,
+  type SubagentStatusEvent
+} from './subagents';
+
 // ── 对外契约 ─────────────────────────────────────────────────────────────
 
 export type OpsRuntimeHandlers = {
@@ -68,6 +106,17 @@ export type OpsRuntimeHandlers = {
     args: Record<string, unknown>;
   }) => Promise<{ block: boolean; reason?: string }>;
   onEvent?: (e: OpsRuntimeEvent) => void;
+  /** 子代理生命周期（可选；host 后续接 SubagentBoard 时消费）。 */
+  onSubagentEvent?: (e: OpsSubagentEvent) => void;
+};
+
+export type OpsSubagentEvent = {
+  taskId: string;
+  status: SubagentRunStatus;
+  role?: string;
+  /** 终态摘要（≤800 token 近似截断；原始大输出不进事件）。 */
+  summary?: string;
+  error?: string;
 };
 
 export type OpsRuntimeEvent =
@@ -83,11 +132,24 @@ export type OpsRuntimeEvent =
     }
   | { type: 'idle' };
 
+/** dispatchSubagent 的即时返回：结果本体经事件异步回传。 */
+export type DispatchSubagentResult = {
+  taskId: string;
+  status: string;
+  /** 拒绝/不可用时的中文说明（不抛错）。 */
+  notice?: string;
+};
+
 export interface OpsRuntime {
   prompt(text: string, opts?: { mode?: 'steer' | 'followUp' }): Promise<void>;
+  /** 中止主会话，并级联中止所有在跑子代理。 */
   abort(): void;
   dispose(): Promise<void>;
   setSystemPrompt(prompt: string): void;
+  /** 派发子代理（TaskSpec 子集或 orchestrator 的完整 TaskSpec）。立即返回。 */
+  dispatchSubagent(spec: SubagentDispatchInput | TaskSpec): Promise<DispatchSubagentResult>;
+  /** 中止单个子代理（AbortSignal 级联到其 LLM 子会话与 in-flight invoke）。 */
+  abortSubagent(taskId: string): void;
 }
 
 export interface CreateOpsRuntimeOptions {
@@ -97,7 +159,7 @@ export interface CreateOpsRuntimeOptions {
   model?: { provider?: string; id?: string };
 }
 
-/** 组装 L0+L1+L2（+可选 playbook 注入层）系统提示词。 */
+/** 组装主代理系统提示词：L0+L1+L2+L3（+可选 L4 playbook 注入层）。 */
 export function buildSystemPrompt(opts: { playbookLayer?: string } = {}): string {
   return composeSystemPrompt(opts);
 }
@@ -181,6 +243,13 @@ export function createFallbackRuntime(handlers: OpsRuntimeHandlers, reason?: str
     },
     setSystemPrompt(): void {
       // 无会话，忽略；等模型配置好后重建 runtime 时再生效。
+    },
+    async dispatchSubagent(): Promise<DispatchSubagentResult> {
+      // no-op：模型不可用时不派发，也不抛错。
+      return { taskId: '', status: 'unavailable', notice: `无法派发子代理：${message}` };
+    },
+    abortSubagent(): void {
+      // 无子代理在跑，无事可做。
     }
   };
 }
@@ -261,7 +330,12 @@ function exposedBusinessToolNames(handlers: OpsRuntimeHandlers): string[] {
 }
 
 function activeToolNames(handlers: OpsRuntimeHandlers): string[] {
-  return [...discoveryToolSpecs.map((s) => s.name), ...exposedBusinessToolNames(handlers)];
+  // ops_dispatch_subagent 仅主会话常驻；子会话（runSubagentSession）不注册。
+  return [
+    ...discoveryToolSpecs.map((s) => s.name),
+    dispatchToolSpec.name,
+    ...exposedBusinessToolNames(handlers)
+  ];
 }
 
 function subscribeSessionEvents(
@@ -344,6 +418,129 @@ async function resolveModel(
   return available[0];
 }
 
+// ── 子代理子会话 ─────────────────────────────────────────────────────────
+
+interface SubagentSessionEnv {
+  pi: PiModule;
+  handlers: OpsRuntimeHandlers;
+  cwd: string;
+  agentDir: string;
+  modelRuntime: ModelRuntime;
+  model: CreateAgentSessionOptions['model'];
+}
+
+/**
+ * 在同进程内另起一个 in-memory pi 子会话跑单个 TaskSpec。
+ * - customTools = 业务工具 ∩ allowTools ∩ hub 暴露集 ∩ riskCeiling（无任何 ops_* 发现/派发工具）；
+ * - 系统提示词 = L0+L1+L3'+L5（无 L2）；
+ * - 子代理事件不进主 transcript，只收集最后一条 assistant 文本供契约解析；
+ * - signal 级联：manager 的 AbortController → session.abort()；
+ * - maxToolCalls 超限即中止并按 degraded 上报。
+ */
+async function runSubagentSession(env: SubagentSessionEnv, spec: TaskSpec, signal: AbortSignal): Promise<SubagentRunOutcome> {
+  const { pi, handlers } = env;
+  const customTools = filterToolsForSubagent(
+    listBusinessToolDescriptors(handlers.hub.listExposedTools()),
+    spec
+  ).map((descriptor) =>
+    toPiTool(pi, {
+      name: descriptor.name,
+      label: descriptor.title,
+      description: descriptor.description,
+      parameters: descriptor.inputSchema,
+      execute: async (args, toolSignal) => {
+        await applyToolGate(handlers, descriptor.name, args);
+        const result = await handlers.hub.invoke({
+          name: descriptor.name,
+          arguments: args,
+          abort: toolSignal ?? signal
+        });
+        return JSON.stringify(result);
+      }
+    })
+  );
+
+  const systemPrompt = composeSubagentPrompt({ role: spec.role, spec });
+  const settingsManager = pi.SettingsManager.inMemory();
+  const resourceLoader = new pi.DefaultResourceLoader({
+    cwd: env.cwd,
+    agentDir: env.agentDir,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    systemPromptOverride: () => systemPrompt
+  });
+  await resourceLoader.reload();
+
+  const { session } = await pi.createAgentSession({
+    cwd: env.cwd,
+    agentDir: env.agentDir,
+    modelRuntime: env.modelRuntime,
+    model: env.model,
+    // 子会话同样禁用 pi 内置 coding 四件套。
+    noTools: 'builtin',
+    customTools,
+    resourceLoader,
+    sessionManager: pi.SessionManager.inMemory(env.cwd),
+    settingsManager
+  });
+
+  let lastAssistantText = '';
+  let currentText = '';
+  let toolCalls = 0;
+  let budgetExceeded = false;
+  const maxToolCalls = spec.toolPolicy.budget.maxToolCalls;
+  const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+    switch (event.type) {
+      case 'message_start':
+        if ((event.message as { role?: string }).role === 'assistant') currentText = '';
+        break;
+      case 'message_update':
+        if (event.assistantMessageEvent.type === 'text_delta') {
+          currentText += event.assistantMessageEvent.delta;
+          if (currentText.trim().length > 0) lastAssistantText = currentText;
+        }
+        break;
+      case 'tool_execution_start':
+        toolCalls += 1;
+        if (toolCalls > maxToolCalls && !budgetExceeded) {
+          budgetExceeded = true;
+          void session.abort().catch(() => {
+            // 子会话已结束时的 abort 竞态，无需上报。
+          });
+        }
+        break;
+      default:
+        break;
+    }
+  });
+
+  const onAbort = (): void => {
+    void session.abort().catch(() => {
+      // abort 竞态（子会话已结束），无需上报。
+    });
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  if (signal.aborted) onAbort();
+
+  try {
+    await session.prompt(`开始执行任务 ${spec.taskId}：${spec.goal}`);
+    return {
+      finalText: lastAssistantText,
+      ...(budgetExceeded
+        ? { degradedReason: `超出 maxToolCalls=${maxToolCalls} 预算，已中止取证` }
+        : {})
+    };
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+    unsubscribe();
+    session.dispose();
+  }
+}
+
 async function createPiRuntime(
   handlers: OpsRuntimeHandlers,
   options: CreateOpsRuntimeOptions
@@ -357,7 +554,66 @@ async function createPiRuntime(
     modelsPath: join(agentDir, 'models.json'),
     modelsStorePath: join(agentDir, 'models-store.json')
   });
-  const model = await resolveModel(modelRuntime, options.model);
+  const model = (await resolveModel(modelRuntime, options.model)) as CreateAgentSessionOptions['model'];
+
+  // ── 子代理调度：同模型、同 hub 面，in-memory 子会话（结果异步回灌主会话） ──
+  const subagentEnv: SubagentSessionEnv = { pi, handlers, cwd, agentDir, modelRuntime, model };
+  let mainSession: AgentSession | undefined;
+
+  const deliverToMain = (text: string): void => {
+    if (mainSession === undefined) return;
+    void mainSession
+      .prompt(text, { streamingBehavior: mainSession.isStreaming ? 'steer' : 'followUp' })
+      .catch(() => {
+        // 回灌失败（会话正被 dispose 等）不致命：事件已经发给 UI。
+      });
+  };
+
+  const onSubagentStatus = (e: SubagentStatusEvent): void => {
+    handlers.onSubagentEvent?.({
+      taskId: e.taskId,
+      status: e.status,
+      role: e.role,
+      ...(e.summary !== undefined ? { summary: e.summary } : {}),
+      ...(e.error !== undefined ? { error: e.error } : {})
+    });
+    // 复用 host 已理解的 tool_start/tool_end 事件呈现子代理生命周期。
+    const eventId = `subagent:${e.taskId}`;
+    const eventName = `subagent_${e.role}`;
+    if (e.status === 'running') {
+      handlers.onEvent?.({ type: 'tool_start', id: eventId, name: eventName });
+    } else if (e.status !== 'queued') {
+      handlers.onEvent?.({
+        type: 'tool_end',
+        id: eventId,
+        name: eventName,
+        ok: e.status === 'ok' || e.status === 'degraded',
+        ...(e.summary !== undefined ? { preview: truncatePreview(e.summary) } : {}),
+        ...(e.error !== undefined ? { error: e.error } : {})
+      });
+      if (e.status !== 'aborted') {
+        // 只回灌 ≤800 token 摘要；子代理原始输出/思考不进主 transcript。
+        deliverToMain(
+          `[子代理 ${e.taskId}（${e.role}）${e.status}]\n${e.summary ?? e.error ?? '（无输出）'}`
+        );
+      }
+    }
+  };
+
+  const subagents: SubagentManager = createSubagentManager({
+    runner: (spec, signal) => runSubagentSession(subagentEnv, spec, signal),
+    onStatus: onSubagentStatus
+  });
+
+  const dispatchSubagent = async (
+    input: SubagentDispatchInput | TaskSpec
+  ): Promise<DispatchSubagentResult> => {
+    const built = buildTaskSpec(normalizeDispatchInput(input));
+    if (!built.ok) {
+      return { taskId: '', status: 'rejected', notice: built.error };
+    }
+    return subagents.dispatch(built.spec);
+  };
 
   let systemPrompt = buildSystemPrompt({});
   const settingsManager = pi.SettingsManager.inMemory();
@@ -376,8 +632,21 @@ async function createPiRuntime(
   });
   await resourceLoader.reload();
 
+  // ops_dispatch_subagent 仅注册在主会话（子会话不注册，禁止递归派发）。
+  const dispatchTool = toPiTool(pi, {
+    name: dispatchToolSpec.name,
+    label: dispatchToolSpec.label,
+    description: dispatchToolSpec.description,
+    parameters: dispatchToolSpec.parameters,
+    execute: async (args) => {
+      await applyToolGate(handlers, dispatchToolSpec.name, args);
+      return JSON.stringify(await dispatchSubagent(args as unknown as SubagentDispatchInput));
+    }
+  });
+
   const customTools = [
     ...buildDiscoveryTools(pi, handlers),
+    dispatchTool,
     ...buildBusinessTools(pi, handlers)
   ];
 
@@ -385,7 +654,7 @@ async function createPiRuntime(
     cwd,
     agentDir,
     modelRuntime,
-    model: model as CreateAgentSessionOptions['model'],
+    model,
     // 不要内置 coding 四件套（read/bash/edit/write）；只保留 custom 工具。
     noTools: 'builtin',
     customTools,
@@ -393,6 +662,7 @@ async function createPiRuntime(
     sessionManager: pi.SessionManager.inMemory(cwd),
     settingsManager
   });
+  mainSession = session;
 
   // 初始 active = 发现工具 + 当前暴露的业务工具；select 变化后即时同步。
   session.setActiveToolsByName(activeToolNames(handlers));
@@ -423,11 +693,15 @@ async function createPiRuntime(
       }
     },
     abort(): void {
+      // 全局停止 = 主会话 + 全部子代理级联中止。
+      subagents.abortAll();
       void session.abort().catch(() => {
         // abort 竞态（会话已结束）无需上报。
       });
     },
     async dispose(): Promise<void> {
+      mainSession = undefined;
+      subagents.abortAll();
       selectionSub.dispose();
       unsubscribe();
       try {
@@ -442,6 +716,10 @@ async function createPiRuntime(
       // 立即生效于下一次 LLM 调用；后续 setActiveToolsByName 触发的
       // rebuild 会经 resourceLoader.systemPromptOverride 读到同一份。
       session.agent.state.systemPrompt = prompt;
+    },
+    dispatchSubagent,
+    abortSubagent(taskId: string): void {
+      subagents.abort(taskId);
     }
   };
 }

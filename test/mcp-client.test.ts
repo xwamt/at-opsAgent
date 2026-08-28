@@ -6,6 +6,7 @@ import {
   findLegacyAtMcpServers,
   shouldSkipAtSeriesMcpServer
 } from '../src/mcp-client/atSeriesDedup';
+import { filterMcpServerMap, filterMcpServers } from '../src/mcp-client/third-party';
 
 describe('AT Series MCP server constants', () => {
   it('re-exports the Hub display name and it equals "AT Series"', () => {
@@ -112,5 +113,55 @@ describe('findLegacyAtMcpServers', () => {
         'AT Series': { command: 'node', args: ['/home/me/.at-series/mcp/hub.js'] }
       })
     ).toEqual([]);
+  });
+});
+
+describe('filterMcpServers (phase-4 helper, classification only)', () => {
+  const atSeriesByName = { name: MCP_SERVER_DISPLAY_NAME };
+  const atSeriesByPath = {
+    name: 'renamed-hub',
+    command: 'node',
+    args: ['/home/me/.at-series/mcp/hub.js']
+  };
+  const filesystem = {
+    name: 'filesystem',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp']
+  };
+  const legacyTerminal = {
+    name: 'AT Terminal',
+    command: 'node',
+    args: ['/home/me/.vscode/extensions/local.at-terminal-1.0.0/dist/mcp-server.js']
+  };
+
+  it('splits servers into keep/skipped using shouldSkipAtSeriesMcpServer as the only truth', () => {
+    const input = [atSeriesByName, atSeriesByPath, filesystem, legacyTerminal];
+    const { keep, skipped } = filterMcpServers(input);
+    for (const server of input) {
+      expect(skipped.includes(server)).toBe(shouldSkipAtSeriesMcpServer(server));
+    }
+    expect(skipped).toEqual([atSeriesByName, atSeriesByPath]);
+    // Legacy per-plugin entries are kept (reported elsewhere, never taken over).
+    expect(keep).toEqual([filesystem, legacyTerminal]);
+  });
+
+  it('passes kept servers through by reference — it never copies, connects, or spawns', () => {
+    const { keep, skipped } = filterMcpServers([filesystem]);
+    expect(keep[0]).toBe(filesystem);
+    expect(skipped).toEqual([]);
+  });
+
+  it('handles an empty list', () => {
+    expect(filterMcpServers([])).toEqual({ keep: [], skipped: [] });
+  });
+
+  it('filterMcpServerMap uses the mcpServers map key as the server name', () => {
+    const { keep, skipped } = filterMcpServerMap({
+      'AT Series': { command: 'node', args: ['/home/me/.at-series/mcp/hub.js'] },
+      filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] },
+      'no-command-entry': {}
+    });
+    expect(skipped.map((s) => s.name)).toEqual(['AT Series']);
+    expect(keep.map((s) => s.name).sort()).toEqual(['filesystem', 'no-command-entry']);
   });
 });

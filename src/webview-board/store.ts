@@ -2,6 +2,18 @@ import { defineStore } from 'pinia';
 import type { Envelope } from '../protocol/host-protocol';
 import { getVsCodeApi, isMockHost } from '../webview-chat/vscode-api';
 
+export interface TimelinePipelineView {
+  job: string;
+  build?: string;
+  result: string;
+}
+
+export interface TimelineHostView {
+  pluginId: string;
+  label: string;
+  connected: boolean;
+}
+
 export interface TimelineEventView {
   id: string;
   ts: number;
@@ -11,6 +23,12 @@ export interface TimelineEventView {
   incidentId?: string;
   kind?: string;
   status?: string;
+  /** 证据三态（存在才渲染，颜色+文字双通道）。 */
+  confidence?: 'confirmed' | 'hypothesis' | 'pending';
+  /** kind=pipeline 事件的构建点。 */
+  pipeline?: TimelinePipelineView;
+  /** 目标主机/终端（数据存在才渲染）。 */
+  host?: TimelineHostView;
 }
 
 type AnyRecord = Record<string, unknown>;
@@ -46,6 +64,44 @@ function toTimestamp(rec: AnyRecord): number {
   return Date.now();
 }
 
+function toConfidence(value: unknown): TimelineEventView['confidence'] {
+  const raw = String(value ?? '').toLowerCase();
+  return raw === 'confirmed' || raw === 'hypothesis' || raw === 'pending' ? raw : undefined;
+}
+
+/** pipeline 点：优先结构化字段，kind=pipeline 时兜底从标题猜 #build / result。 */
+function toPipeline(rec: AnyRecord, title: string): TimelinePipelineView | undefined {
+  const raw = asRecord(rec.pipeline);
+  if (typeof raw.job === 'string' && raw.job) {
+    return {
+      job: raw.job,
+      build: raw.build !== undefined ? String(raw.build) : undefined,
+      result: String(raw.result ?? 'building')
+    };
+  }
+  if (String(rec.kind ?? '') !== 'pipeline') {
+    return undefined;
+  }
+  const build = title.match(/#(\d+)/)?.[1];
+  const result =
+    title.match(/\b(SUCCESS|FAILURE|BUILDING|UNSTABLE|ABORTED)\b/i)?.[1]?.toLowerCase() ??
+    'building';
+  return { job: (build ? title.slice(0, title.indexOf('#')) : title).trim() || title, build, result };
+}
+
+function toHost(rec: AnyRecord): TimelineHostView | undefined {
+  const raw = asRecord(rec.host);
+  const label = raw.label ?? raw.assetName ?? raw.serverId;
+  if (label === undefined && raw.pluginId === undefined) {
+    return undefined;
+  }
+  return {
+    pluginId: String(raw.pluginId ?? 'at.terminal'),
+    label: String(label ?? ''),
+    connected: raw.connected !== false
+  };
+}
+
 function normalizeEvent(payload: unknown): TimelineEventView | null {
   const outer = asRecord(payload);
   const rec = outer.event ? asRecord(outer.event) : outer;
@@ -53,15 +109,19 @@ function normalizeEvent(payload: unknown): TimelineEventView | null {
   if (id === undefined || id === null || id === '') {
     return null;
   }
+  const title = String(rec.title ?? rec.summary ?? rec.text ?? '（无标题）');
   return {
     id: String(id),
     ts: toTimestamp(rec),
-    title: String(rec.title ?? rec.summary ?? rec.text ?? '（无标题）'),
+    title,
     detail: typeof rec.detail === 'string' ? rec.detail : undefined,
     severity: toSeverity(rec.severity ?? rec.level),
     incidentId: rec.incidentId !== undefined ? String(rec.incidentId) : undefined,
     kind: rec.kind !== undefined ? String(rec.kind) : undefined,
-    status: rec.status !== undefined ? String(rec.status) : undefined
+    status: rec.status !== undefined ? String(rec.status) : undefined,
+    confidence: toConfidence(rec.confidence),
+    pipeline: toPipeline(rec, title),
+    host: toHost(rec)
   };
 }
 

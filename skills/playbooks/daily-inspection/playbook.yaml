@@ -7,10 +7,13 @@ triggers:
   - kind: command
 stages:
   - id: triage
+    prompt: references/triage.md
   - id: selecting
+    prompt: references/selecting.md
     select: { mode: replace, pluginIds: [at.grafana] }
     escalateSelect: { mode: add, pluginIds: [at.nacos, at.terminal, at.jenkins] }
   - id: investigating
+    prompt: references/investigating.md
     parallelGroup:
       - id: inv-metrics
         role: investigator
@@ -25,6 +28,8 @@ stages:
         riskCeiling: read
         goal: 主机组有界巡检
   - id: synthesizing
+    prompt: references/synthesizing.md
   - id: reporting
+    prompt: references/reporting.md
     artifact: service-inspection
   - id: closed

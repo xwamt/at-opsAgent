@@ -1,0 +1,36 @@
+{
+  "protocolVersion": 1,
+  "bridgeId": "fixture-bridge-terminal",
+  "pluginId": "at.terminal",
+  "pluginDisplayName": "AT Terminal",
+  "pluginVersion": "2.0.1",
+  "hostApp": "vscode",
+  "port": 45182,
+  "token": "test-token-redacted",
+  "pid": 1,
+  "updatedAt": 0,
+  "tools": [
+    {
+      "name": "terminal_list_sessions",
+      "title": "List terminal sessions",
+      "description": "List connected SSH/terminal sessions.",
+      "risk": "read",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "terminal_run_command",
+      "title": "Run command",
+      "description": "Run a shell command on a connected host (requires approval).",
+      "risk": "exec",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sessionId": { "type": "string" },
+          "command": { "type": "string" }
+        },
+        "required": ["command"]
+      }
+    }
+  ],
+  "capabilities": { "connectedTargets": 2 }
+}

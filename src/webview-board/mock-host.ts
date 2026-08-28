@@ -28,7 +28,27 @@ export function installBoardMockHost(): void {
       severity: 'warn',
       title: 'Jenkins #482 于 09:02 部署 api-gateway v2.14.1（疑似关联）',
       incidentId: 'inc-20260828-01',
-      kind: 'pipeline'
+      kind: 'pipeline',
+      confidence: 'hypothesis',
+      pipeline: { job: 'api-gateway', build: 482, result: 'success' }
+    },
+    {
+      id: 'ev-2b',
+      ts: now - 8 * 60_000,
+      severity: 'info',
+      title: '5xx 尖峰窄窗复核完成：0.2% → 14%（09:05 起）',
+      incidentId: 'inc-20260828-01',
+      kind: 'evidence',
+      confidence: 'confirmed'
+    },
+    {
+      id: 'ev-2c',
+      ts: now - 6 * 60_000,
+      severity: 'info',
+      title: 'inv-host 已连接目标主机做只读取证',
+      incidentId: 'inc-20260828-01',
+      kind: 'host',
+      host: { pluginId: 'at.jumpserver', label: 'prod-gw-01 (ssh)', connected: true }
     },
     {
       id: 'ev-3',
@@ -37,6 +57,7 @@ export function installBoardMockHost(): void {
       title: '回滚审批已提交，等待用户批准',
       incidentId: 'inc-20260828-01',
       kind: 'approval',
+      confidence: 'pending',
       detail: 'kubectl -n prod rollout undo deploy/api-gateway'
     }
   ];

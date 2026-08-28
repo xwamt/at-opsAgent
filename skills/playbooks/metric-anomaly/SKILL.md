@@ -6,3 +6,6 @@ description: 仅指标/告警异常、尚未升级为事故时使用。只读 Gr
 # 指标异常诊断
 
 默认只选 `at.grafana`。结论多为证据便签，不开长报告。指标相关不得写成根因。
+
+阶段细则见 `references/`；Grafana 纪律见
+`../../vendor/super-ops@0.1.0/references/grafana.md`。

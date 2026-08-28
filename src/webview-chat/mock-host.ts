@@ -149,6 +149,31 @@ function demoBrief() {
   };
 }
 
+/** GuidedManual 简报（pb.config-change：Nacos 写操作走 IDE）。 */
+function guidedBrief() {
+  return {
+    id: 'brief-guided-1',
+    risk: 'read' as const,
+    targetLabel: '发布 Nacos 配置 gateway-route.yaml（prod）',
+    dualConfirmHint: true,
+    elements: {
+      goal: '更新网关路由配置以修复超时阈值',
+      evidence: 'listeners 3 个实例已确认；diff 草案已生成',
+      impact: 'prod 网关 3 实例热更新，无重启',
+      prechecks: '当前 md5 已记录；回滚 nid=4127',
+      backup: 'list_config_history 保留回滚点 nid=4127',
+      guidedManual: {
+        label: '去 IDE 操作',
+        command: 'command:at-nacos.publishConfig',
+        hint: 'MCP 工具全只读：请在 At-Nacos 面板完成发布，完成后点「我已在 UI 完成」'
+      },
+      successCriteria: '监听端 md5 收敛到新版本，网关无 5xx 抖动',
+      rollback: '在 At-Nacos 面板回滚到 nid=4127',
+      unknowns: '无'
+    }
+  };
+}
+
 export function installMockHost(): void {
   (window as unknown as Record<string, unknown>).__opsMockPostMessage = (raw: unknown) => {
     const msg = raw as Partial<Envelope>;
@@ -156,6 +181,17 @@ export function installMockHost(): void {
     if (msg.type === 'chat/prompt') {
       const payload = (msg.payload ?? {}) as { text?: string };
       const stamp = Date.now().toString(36);
+      // /spam：一次性灌 150 条，用来验证 ChatTranscript 虚拟化
+      if ((payload.text ?? '').trim() === '/spam') {
+        for (let i = 0; i < 150; i += 1) {
+          emit('transcript/append', {
+            kind: i % 2 === 0 ? 'user' : 'assistant',
+            id: `spam-${stamp}-${i}`,
+            text: `虚拟化压测消息 #${i + 1}`
+          });
+        }
+        return;
+      }
       emit('transcript/append', { kind: 'user', id: `u-${stamp}`, text: payload.text ?? '' });
       const assistantId = `a-${stamp}`;
       emit('transcript/append', { kind: 'assistant', id: assistantId, text: '', streaming: true });
@@ -167,6 +203,40 @@ export function installMockHost(): void {
             emit('transcript/patch', { itemId: assistantId, patch: { streaming: false } });
           }
         }, 350 * (i + 1));
+      });
+    } else if (msg.type === 'playbook/start') {
+      const payload = (msg.payload ?? {}) as { playbookId?: string };
+      const playbookId = payload.playbookId ?? 'pb.incident';
+      emit('playbook/stage', { id: playbookId, stage: 'Triage' });
+      emit('transcript/append', {
+        kind: 'assistant',
+        id: `a-pb-${Date.now().toString(36)}`,
+        text: `已启动 ${playbookId}，进入分诊阶段。`
+      });
+      // pb.config-change 演示 GuidedManual 审批变体
+      if (playbookId === 'pb.config-change') {
+        window.setTimeout(() => {
+          emit('playbook/stage', { id: playbookId, stage: 'GuidedManual' });
+          emit('approval/request', guidedBrief());
+        }, 700);
+      }
+    } else if (msg.type === 'model/set') {
+      const payload = (msg.payload ?? {}) as { provider?: string; model?: string };
+      emit('capabilities/snapshot', {
+        providers: [
+          { id: 'at.grafana', label: 'AT Grafana', connected: true },
+          { id: 'at.terminal', label: 'AT Terminal', connected: true },
+          { id: 'at.jenkins', label: 'AT Jenkins', connected: false }
+        ],
+        model: payload.model,
+        models: MOCK_MODELS
+      });
+    } else if (msg.type === 'guidedManual/complete') {
+      emit('playbook/stage', { id: 'pb.config-change', stage: 'Verifying' });
+      emit('transcript/append', {
+        kind: 'assistant',
+        id: `a-gm-${Date.now().toString(36)}`,
+        text: '收到，开始验证：复读配置版本并确认监听端 md5 收敛。'
       });
     } else if (msg.type === 'subagent/abort') {
       const payload = (msg.payload ?? {}) as { taskId?: string };
@@ -206,9 +276,16 @@ export function installMockHost(): void {
           { id: 'at.terminal', label: 'AT Terminal', connected: true },
           { id: 'at.jenkins', label: 'AT Jenkins', connected: false }
         ],
-        model: 'qwen3-max'
+        model: 'qwen3-max',
+        models: MOCK_MODELS
       },
       pendingApproval: demoBrief()
     });
   }, 60);
 }
+
+const MOCK_MODELS = [
+  { provider: 'custom', model: 'qwen3-max', label: 'Qwen3 Max' },
+  { provider: 'custom', model: 'qwen3-coder-plus', label: 'Qwen3 Coder Plus' },
+  { provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }
+];

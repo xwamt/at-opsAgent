@@ -1,0 +1,36 @@
+{
+  "protocolVersion": 1,
+  "bridgeId": "fixture-bridge-database",
+  "pluginId": "at.database",
+  "pluginDisplayName": "AT Database",
+  "pluginVersion": "0.9.7",
+  "hostApp": "vscode",
+  "port": 45183,
+  "token": "test-token-redacted",
+  "pid": 1,
+  "updatedAt": 0,
+  "tools": [
+    {
+      "name": "database_list_tables",
+      "title": "List tables",
+      "description": "List tables in the connected database.",
+      "risk": "read",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "database_execute_sql",
+      "title": "Execute SQL",
+      "description": "Execute a SQL statement (SELECTs must carry LIMIT; writes need session approval).",
+      "risk": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sql": { "type": "string" },
+          "limit": { "type": "number" }
+        },
+        "required": ["sql"]
+      }
+    }
+  ],
+  "capabilities": { "connectedTargets": 1 }
+}

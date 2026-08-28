@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import HostSessionChip from '../../webview-chat/components/HostSessionChip.vue';
+import PipelineStatus from '../../webview-chat/components/PipelineStatus.vue';
 import { useBoardStore, type TimelineEventView } from '../store';
 
 const store = useBoardStore();
@@ -7,6 +9,16 @@ const SEVERITY_META: Record<TimelineEventView['severity'], { icon: string; label
   info: { icon: '○', label: 'info', cls: 'tl__sev--info' },
   warn: { icon: '△', label: 'warn', cls: 'tl__sev--warn' },
   crit: { icon: '✗', label: 'crit', cls: 'tl__sev--crit' }
+};
+
+/** 证据三态：颜色 + 文字（不只靠颜色）。 */
+const CONFIDENCE_META: Record<
+  NonNullable<TimelineEventView['confidence']>,
+  { label: string; cls: string }
+> = {
+  confirmed: { label: '已确证 confirmed', cls: 'ops-confidence-confirmed' },
+  hypothesis: { label: '假设 hypothesis', cls: 'ops-confidence-hypothesis' },
+  pending: { label: '待定 pending', cls: 'ops-confidence-pending' }
 };
 
 function fmtTime(ts: number): string {
@@ -30,10 +42,29 @@ function fmtTime(ts: number): string {
           <div class="tl__title">
             {{ event.title }}
             <span v-if="event.status" class="ops-badge ops-muted tl__status">{{ event.status }}</span>
+            <span
+              v-if="event.confidence"
+              class="ops-badge tl__confidence"
+              :class="CONFIDENCE_META[event.confidence].cls"
+            >{{ CONFIDENCE_META[event.confidence].label }}</span>
           </div>
           <div class="tl__meta ops-muted ops-mono">
             <span v-if="event.incidentId">{{ event.incidentId }}</span>
             <span v-if="event.kind">{{ event.kind }}</span>
+          </div>
+          <PipelineStatus
+            v-if="event.pipeline"
+            class="tl__pipeline"
+            :job="event.pipeline.job"
+            :build="event.pipeline.build"
+            :result="event.pipeline.result"
+          />
+          <div v-if="event.host" class="tl__host">
+            <HostSessionChip
+              :plugin-id="event.host.pluginId"
+              :label="event.host.label"
+              :connected="event.host.connected"
+            />
           </div>
           <pre v-if="event.detail" class="ops-codeblock tl__detail">{{ event.detail.slice(0, 4096) }}</pre>
         </div>
@@ -113,6 +144,19 @@ function fmtTime(ts: number): string {
   display: flex;
   gap: calc(var(--ops-density) * 2);
   font-size: calc(var(--ops-font-size) - 3px);
+}
+
+.tl__confidence {
+  margin-left: var(--ops-density);
+  font-size: calc(var(--ops-font-size) - 3px);
+}
+
+.tl__pipeline {
+  margin-top: var(--ops-density);
+}
+
+.tl__host {
+  margin-top: var(--ops-density);
 }
 
 .tl__detail {

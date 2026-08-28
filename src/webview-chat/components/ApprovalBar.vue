@@ -5,6 +5,43 @@ import { useOpsStore } from '../store';
 const store = useOpsStore();
 const expanded = ref(false);
 
+/**
+ * GuidedManual 变体（docs/research/06 §B.1）：写操作属只读插件域（Nacos 发布、
+ * Jenkins 触发构建）时，Agent 不代执行——引导去 IDE 操作，用户完成后回报。
+ * 命中条件：brief.risk 运行时为 read，或 elements.guidedManual 已给出。
+ */
+const guided = computed(() => {
+  const brief = store.pendingApproval;
+  if (!brief) {
+    return null;
+  }
+  const gm = (brief.elements ?? {}).guidedManual;
+  if (String(brief.risk) !== 'read' && gm === undefined) {
+    return null;
+  }
+  if (typeof gm === 'string') {
+    return {
+      label: '去 IDE 操作',
+      commandUri: gm.startsWith('command:') ? gm : '',
+      hint: gm.startsWith('command:') ? '' : gm
+    };
+  }
+  const rec = (gm ?? {}) as Record<string, unknown>;
+  const link = String(rec.command ?? rec.href ?? rec.link ?? '');
+  return {
+    label: String(rec.label ?? '去 IDE 操作'),
+    commandUri: link.startsWith('command:') ? link : '',
+    hint: typeof rec.hint === 'string' ? rec.hint : link.startsWith('command:') ? '' : link
+  };
+});
+
+function openGuided(): void {
+  if (!store.pendingApproval) {
+    return;
+  }
+  store.post('guidedManual/open', { briefId: store.pendingApproval.id });
+}
+
 const ELEMENT_LABELS: Array<{ key: string; label: string }> = [
   { key: 'goal', label: '目标' },
   { key: 'evidence', label: '证据' },
@@ -54,6 +91,7 @@ const rows = computed<ElementRow[]>(() => {
     return { key, label, text, commands: null };
   });
   const extras = Object.keys(elements)
+    .filter((key) => key !== 'guidedManual')
     .filter((key) => !ELEMENT_LABELS.some((entry) => entry.key === key))
     .map((key) => ({
       key,
@@ -64,9 +102,16 @@ const rows = computed<ElementRow[]>(() => {
   return [...known, ...extras];
 });
 
-const riskLabel = computed(() =>
-  store.pendingApproval?.risk === 'exec' ? '执行 exec' : '写 write'
-);
+const riskLabel = computed(() => {
+  const risk = String(store.pendingApproval?.risk ?? '');
+  if (risk === 'exec') {
+    return '执行 exec';
+  }
+  if (risk === 'read') {
+    return '只读 read';
+  }
+  return '写 write';
+});
 </script>
 
 <template>
@@ -80,10 +125,22 @@ const riskLabel = computed(() =>
       <button type="button" class="ops-btn ops-btn--secondary" :aria-expanded="expanded" @click="expanded = !expanded">
         简报 {{ expanded ? '▾' : '▸' }}
       </button>
-      <button type="button" class="ops-btn" @click="store.respondApproval('approved')">批准</button>
-      <button type="button" class="ops-btn ops-btn--danger" @click="store.respondApproval('rejected')">拒绝</button>
+      <!-- GuidedManual：Agent 不代执行，引导去 IDE，完成后回报 -->
+      <template v-if="guided">
+        <a v-if="guided.commandUri" class="ops-btn approval__deeplink" :href="guided.commandUri">{{ guided.label }}</a>
+        <button v-else type="button" class="ops-btn" @click="openGuided">{{ guided.label }}</button>
+        <button type="button" class="ops-btn ops-btn--secondary" @click="store.completeGuidedManual()">
+          我已在 UI 完成
+        </button>
+        <button type="button" class="ops-btn ops-btn--danger" @click="store.respondApproval('rejected')">拒绝</button>
+      </template>
+      <template v-else>
+        <button type="button" class="ops-btn" @click="store.respondApproval('approved')">批准</button>
+        <button type="button" class="ops-btn ops-btn--danger" @click="store.respondApproval('rejected')">拒绝</button>
+      </template>
     </div>
 
+    <p v-if="guided && guided.hint" class="approval__guided-hint ops-muted">{{ guided.hint }}</p>
     <p class="approval__hint">批准后插件仍可能再次确认。插件弹窗不是本次批准。</p>
 
     <dl v-if="expanded" class="approval__brief">
@@ -109,6 +166,21 @@ const riskLabel = computed(() =>
 
 .approval--exec {
   border-left-color: var(--ops-exec);
+}
+
+.approval--read {
+  border-left-color: var(--ops-read);
+}
+
+.approval__deeplink {
+  text-decoration: none;
+  line-height: 1.7;
+}
+
+.approval__guided-hint {
+  margin: var(--ops-density) 0 0;
+  font-size: calc(var(--ops-font-size) - 2px);
+  overflow-wrap: anywhere;
 }
 
 .approval__row {

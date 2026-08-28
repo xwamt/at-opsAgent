@@ -16,6 +16,7 @@ stages:
   - id: triage
     prompt: references/triage.md
   - id: selecting
+    prompt: references/selecting.md
     select:
       mode: replace
       pluginIds: [at.grafana]
@@ -23,6 +24,7 @@ stages:
       mode: add
       pluginIds: [at.jumpserver, at.terminal, at.jenkins]
   - id: investigating
+    prompt: references/investigating.md
     parallelGroup:
       - id: inv-metrics
         role: investigator
@@ -52,14 +54,19 @@ stages:
           - jenkins_get_build
         goal: 窗口内可疑发布或失败构建
   - id: synthesizing
+    prompt: references/synthesizing.md
   - id: awaitingApproval
+    prompt: references/approval.md
   - id: executing
+    prompt: references/executing.md
   - id: verifying
+    prompt: references/verifying.md
     parallelGroup:
       - id: verify
         role: verifier
         riskCeiling: read
         goal: 独立复核健康与监控是否回归
   - id: reporting
+    prompt: references/reporting.md
     artifact: troubleshooting-report
   - id: closed

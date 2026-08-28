@@ -14,6 +14,54 @@ export interface ProviderChip {
   connected: boolean;
 }
 
+export interface PlaybookMeta {
+  id: string;
+  title: string;
+  maxRisk: 'read' | 'write' | 'exec';
+  description?: string;
+}
+
+export interface ModelOption {
+  provider: string;
+  model: string;
+  label: string;
+}
+
+export interface SkillMeta {
+  name: string;
+  description?: string;
+}
+
+/** host 未下发 playbook 列表时的兜底：设计稿 8 条一等链路（docs/research/06 §B.3）。 */
+export const DEFAULT_PLAYBOOKS: PlaybookMeta[] = [
+  { id: 'pb.incident', title: '故障排查', maxRisk: 'exec', description: '5xx/超时/事故 · 证据优先' },
+  { id: 'pb.metric-anomaly', title: '指标异常诊断', maxRisk: 'read', description: 'Grafana/Prometheus 单指标' },
+  { id: 'pb.release', title: '发布与回滚', maxRisk: 'exec', description: 'Jenkins + 主机验证' },
+  { id: 'pb.config-change', title: '配置变更', maxRisk: 'read', description: 'Nacos · 写操作走 IDE' },
+  { id: 'pb.db', title: '数据库慢查询 / 容量', maxRisk: 'exec', description: '堡垒机 SQL · 全部带 LIMIT' },
+  { id: 'pb.host-emergency', title: '主机应急', maxRisk: 'exec', description: '磁盘/CPU/服务挂死' },
+  { id: 'pb.inspection', title: '日常巡检', maxRisk: 'read', description: '清单逐项 · 未检查≠正常' },
+  { id: 'pb.security-triage', title: '安全事件初判', maxRisk: 'read', description: '证据保全 · 不做清理' }
+];
+
+/** host 未下发模型列表时的兜底（models.json 模板同款）。 */
+export const DEFAULT_MODELS: ModelOption[] = [
+  { provider: 'custom', model: 'qwen3-max', label: 'Qwen3 Max' }
+];
+
+/** host 未下发技能列表时的兜底（skills/ 目录同名）。 */
+export const DEFAULT_SKILLS: SkillMeta[] = [
+  { name: 'ops-agent-core', description: '核心纪律：证据优先、审批简报、输出契约' },
+  { name: 'incident-response', description: '故障排查链路细则' },
+  { name: 'metric-anomaly', description: '指标异常诊断细则' },
+  { name: 'release-rollback', description: '发布与回滚细则' },
+  { name: 'config-change', description: 'Nacos 配置变更细则' },
+  { name: 'db-slow-and-capacity', description: '数据库慢查询与容量细则' },
+  { name: 'host-emergency', description: '主机应急细则' },
+  { name: 'daily-inspection', description: '日常巡检清单' },
+  { name: 'security-triage', description: '安全事件初判细则' }
+];
+
 interface HydratePayload {
   sessionId?: string;
   playbook?: { id: string; stage: string } | null;
@@ -62,6 +110,10 @@ export const useOpsStore = defineStore('ops-chat', {
     streaming: false,
     streamingId: null as string | null,
     modelLabel: '' as string,
+    playbooks: [...DEFAULT_PLAYBOOKS] as PlaybookMeta[],
+    modelOptions: [...DEFAULT_MODELS] as ModelOption[],
+    skills: [...DEFAULT_SKILLS] as SkillMeta[],
+    activePicker: null as 'playbook' | 'skill' | null,
     mock: false
   }),
 
@@ -123,6 +175,35 @@ export const useOpsStore = defineStore('ops-chat', {
       this.pendingApproval = null;
     },
 
+    /** GuidedManual：用户已在插件 UI 完成写操作。 */
+    completeGuidedManual(): void {
+      if (!this.pendingApproval) {
+        return;
+      }
+      this.post('guidedManual/complete', { briefId: this.pendingApproval.id });
+      this.pendingApproval = null;
+    },
+
+    startPlaybook(playbookId: string): void {
+      this.post('playbook/start', { playbookId });
+      this.activePicker = null;
+    },
+
+    setModel(provider: string, model: string): void {
+      this.post('model/set', { provider, model });
+      // 乐观更新；host capabilities/snapshot 到达后覆盖。
+      this.modelLabel = model;
+    },
+
+    runSkill(name: string): void {
+      this.post('skill/run', { name });
+      this.activePicker = null;
+    },
+
+    togglePicker(kind: 'playbook' | 'skill'): void {
+      this.activePicker = this.activePicker === kind ? null : kind;
+    },
+
     abortSubagent(taskId: string): void {
       this.post('subagent/abort', { taskId });
     },
@@ -173,14 +254,79 @@ export const useOpsStore = defineStore('ops-chat', {
         }
         case 'capabilities/snapshot': {
           this.providers = payload;
-          const rec = asRecord(payload);
-          if (typeof rec.model === 'string') {
-            this.modelLabel = rec.model;
-          }
+          this.absorbCapabilities(asRecord(payload));
           break;
         }
         default:
           break;
+      }
+    },
+
+    /** capabilities/hydrate payload 里可选的 model/models/playbooks/skills 提取（缺省保留兜底）。 */
+    absorbCapabilities(rec: AnyRecord): void {
+      if (typeof rec.model === 'string') {
+        this.modelLabel = rec.model;
+      }
+      if (Array.isArray(rec.models)) {
+        const models = rec.models
+          .map((entry) => {
+            const m = asRecord(entry);
+            const model = String(m.model ?? m.id ?? '');
+            if (!model) {
+              return null;
+            }
+            return {
+              provider: String(m.provider ?? 'custom'),
+              model,
+              label: String(m.label ?? m.name ?? model)
+            };
+          })
+          .filter((m): m is ModelOption => m !== null);
+        if (models.length > 0) {
+          this.modelOptions = models;
+        }
+      }
+      if (Array.isArray(rec.playbooks)) {
+        const playbooks = rec.playbooks
+          .map((entry) => {
+            const p = asRecord(entry);
+            const id = String(p.id ?? '');
+            if (!id) {
+              return null;
+            }
+            const fallback = DEFAULT_PLAYBOOKS.find((d) => d.id === id);
+            const risk = String(p.maxRisk ?? '');
+            return {
+              id,
+              title: String(p.title ?? fallback?.title ?? id),
+              maxRisk: (risk === 'read' || risk === 'write' || risk === 'exec'
+                ? risk
+                : fallback?.maxRisk ?? 'read') as PlaybookMeta['maxRisk'],
+              description:
+                typeof p.description === 'string' ? p.description : fallback?.description
+            };
+          })
+          .filter((p): p is PlaybookMeta => p !== null);
+        if (playbooks.length > 0) {
+          this.playbooks = playbooks;
+        }
+      }
+      if (Array.isArray(rec.skills)) {
+        const skills = rec.skills
+          .map((entry) => {
+            if (typeof entry === 'string') {
+              return { name: entry };
+            }
+            const s = asRecord(entry);
+            const name = String(s.name ?? '');
+            return name
+              ? { name, description: typeof s.description === 'string' ? s.description : undefined }
+              : null;
+          })
+          .filter((s): s is SkillMeta => s !== null);
+        if (skills.length > 0) {
+          this.skills = skills;
+        }
       }
     },
 
@@ -190,6 +336,7 @@ export const useOpsStore = defineStore('ops-chat', {
       this.playbook = snapshot.playbook ?? null;
       this.items = Array.isArray(snapshot.items) ? [...snapshot.items] : [];
       this.providers = snapshot.providers ?? null;
+      this.absorbCapabilities(asRecord(snapshot.providers));
       this.pendingApproval = snapshot.pendingApproval ?? null;
       const streamingItem = this.items.find(
         (item) => item.kind === 'assistant' && item.streaming

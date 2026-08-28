@@ -150,6 +150,10 @@ export class SessionStore {
 
   // ── 子代理 ─────────────────────────────────────────────────────────────
 
+  getSubagent(taskId: string): SubagentCard | undefined {
+    return this._subagents.get(taskId);
+  }
+
   upsertSubagent(card: SubagentCard): void {
     this._subagents.set(card.taskId, card);
     const existing = this._items.find((i) => i.kind === 'subagents');

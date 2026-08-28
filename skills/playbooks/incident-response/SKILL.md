@@ -14,3 +14,6 @@ description: >
 3. 并行取证：指标、日志、近期变更。指标相关 ≠ 根因。
 4. 需要主机或构建证据时 **add** 一次第二 provider，调查中禁止 clear。
 5. 变更必须 9 要素审批；Grafana/Jenkins 写操作走 GuidedManual。
+
+阶段细则（L4 注入）见 `references/`（每阶段一个文件）；provider 纪律见
+`../../vendor/super-ops@0.1.0/`（每假设 1 附录 + 1 reference）。

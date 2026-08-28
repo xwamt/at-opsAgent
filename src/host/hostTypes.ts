@@ -35,12 +35,27 @@ export interface HubHostModule {
 
 // ── orchestrator 模块 ────────────────────────────────────────────────────
 
+/** 阶段级 guidedManual 指令（MCP 无写工具时引导用户走插件命令/面板）。 */
+export interface GuidedManualMeta {
+  command?: string;
+  hint?: string;
+}
+
+/** playbook.yaml 阶段中 host 需要的最小面。 */
+export interface PlaybookStageMeta {
+  id: string;
+  /** 阶段提示词文件（相对 playbook 目录，如 references/triage.md），L4 注入用。 */
+  prompt?: string;
+  select?: SelectToolsInput;
+  guidedManual?: GuidedManualMeta;
+}
+
 /** playbook.yaml 中 host 需要的最小面（真 Playbook 类型是其超集）。 */
 export interface PlaybookMeta {
   id: string;
   title?: string;
   description?: string;
-  stages?: Array<{ id: string; select?: SelectToolsInput }>;
+  stages?: PlaybookStageMeta[];
 }
 
 export interface PlaybookRunLike {
@@ -71,7 +86,12 @@ export interface OrchestratorLike {
     brief: { briefId: string; runId: string };
     decision: 'approved' | 'rejected';
   }): unknown;
+  getRun?(id: string): PlaybookRunLike | undefined;
   advanceTo?(runOrId: PlaybookRunLike | string, stage: string): PlaybookRunLike;
+  /** runtime 实际执行了一轮 select 后登记（policy 的 selectCountThisTask）。 */
+  recordSelect?(runOrId: PlaybookRunLike | string): number;
+  /** 当前阶段 parallelGroup → TaskSpec[]（真形状见 src/orchestrator/index.ts）。 */
+  spawnSubagentSpecs?(runOrId: PlaybookRunLike | string): unknown[];
   abortSubagent?(taskId: string): void;
   dispose?(): void;
 }
@@ -110,6 +130,14 @@ export interface RuntimeHandlers {
     args: Record<string, unknown>;
   }) => Promise<{ block: boolean; reason?: string }>;
   onEvent?: (e: RuntimeEventLike) => void;
+  /** 子代理生命周期；runtime 可选发出，host 用来刷新 SubagentBoard。 */
+  onSubagentEvent?: (e: {
+    taskId: string;
+    status: string;
+    role?: string;
+    summary?: string;
+    error?: string;
+  }) => void;
 }
 
 export interface RuntimeLike {
@@ -117,6 +145,10 @@ export interface RuntimeLike {
   abort(): void;
   dispose(): void | Promise<void>;
   setSystemPrompt?(prompt: string): void;
+  /** 派发一个子代理任务（TaskSpec）；并行 runtime 工作落地前可能缺席。 */
+  dispatchSubagent?(spec: unknown): Promise<{ taskId: string; status: string }>;
+  /** 中止单个子代理，不牵连主会话。 */
+  abortSubagent?(taskId: string): void;
 }
 
 export interface RuntimeCreateOptions {

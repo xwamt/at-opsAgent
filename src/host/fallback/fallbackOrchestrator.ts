@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import { load as parseYaml } from 'js-yaml';
 import type { SelectToolsInput } from '../../protocol';
 import type {
+  GuidedManualMeta,
   OrchestratorEventLike,
   OrchestratorLike,
   PlaybookMeta,
@@ -33,6 +34,14 @@ function toSelect(value: unknown): SelectToolsInput | undefined {
   return select;
 }
 
+function toGuidedManual(value: unknown): GuidedManualMeta | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    command: typeof value.command === 'string' ? value.command : undefined,
+    hint: typeof value.hint === 'string' ? value.hint : undefined
+  };
+}
+
 export async function loadPlaybooksFallback(rootDir: string): Promise<PlaybookMeta[]> {
   let entries: string[];
   try {
@@ -53,7 +62,9 @@ export async function loadPlaybooksFallback(rootDir: string): Promise<PlaybookMe
     const stages = Array.isArray(raw.stages)
       ? raw.stages.filter(isRecord).map((stage) => ({
           id: typeof stage.id === 'string' ? stage.id : '',
-          select: toSelect(stage.select)
+          prompt: typeof stage.prompt === 'string' ? stage.prompt : undefined,
+          select: toSelect(stage.select),
+          guidedManual: toGuidedManual(stage.guidedManual)
         }))
       : undefined;
     playbooks.push({
@@ -100,6 +111,30 @@ export class FallbackOrchestrator implements OrchestratorLike {
     if (!run) return undefined;
     const playbook = this.playbooks.find((p) => p.id === run.playbookId);
     return playbook?.stages?.find((s) => s.id === run.stage)?.select;
+  }
+
+  getRun(id: string): PlaybookRunLike | undefined {
+    return this.runs.get(id);
+  }
+
+  /** 兜底不校验迁移表（assertTransition 属于真 orchestrator），只更新并广播。 */
+  advanceTo(runOrId: PlaybookRunLike | string, stage: string): PlaybookRunLike {
+    const id = typeof runOrId === 'string' ? runOrId : runOrId.id;
+    const run = this.runs.get(id);
+    if (!run) throw new Error(`未知 playbook run ${id}`);
+    const from = run.stage;
+    run.stage = stage;
+    this.onEvent({ type: 'playbook/stage', runId: run.id, playbookId: run.playbookId, from, stage });
+    return run;
+  }
+
+  spawnSubagentSpecs(): unknown[] {
+    // TaskSpec 构造（预算/风险顶/输出契约）属于真 orchestrator；兜底不建子代理。
+    return [];
+  }
+
+  abortSubagent(): void {
+    // 兜底编排没有登记任何子代理，无事可做。
   }
 
   applyApproval(input: {

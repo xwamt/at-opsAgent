@@ -6,10 +6,13 @@ triggers:
     patterns: ["慢查询", "数据库", "QPS 尖", "锁等待", "连接数"]
 stages:
   - id: triage
+    prompt: references/triage.md
   - id: selecting
+    prompt: references/selecting.md
     select: { mode: replace, pluginIds: [at.jumpserver] }
     escalateSelect: { mode: add, pluginIds: [at.grafana, at.database] }
   - id: investigating
+    prompt: references/investigating.md
     parallelGroup:
       - id: inv-sql
         role: investigator
@@ -20,8 +23,14 @@ stages:
         riskCeiling: read
         goal: 窄窗 Com_* / 连接 / 锁指标
   - id: synthesizing
+    prompt: references/synthesizing.md
   - id: awaitingApproval
+    prompt: references/approval.md
   - id: executing
+    prompt: references/executing.md
+  - id: verifying
+    prompt: references/verifying.md
   - id: reporting
+    prompt: references/reporting.md
     artifact: operation-record
   - id: closed

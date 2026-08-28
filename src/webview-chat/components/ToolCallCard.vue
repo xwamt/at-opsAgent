@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { ToolCallView } from '../../protocol/host-protocol';
+import LogViewer from './LogViewer.vue';
 
 const props = defineProps<{ call: ToolCallView }>();
 
@@ -57,15 +58,20 @@ const artifactHref = computed(() =>
       <span v-if="duration" class="ops-muted ops-mono">{{ duration }}</span>
     </header>
 
-    <pre v-if="preview" class="ops-codeblock tool__preview">{{ preview }}</pre>
-
-    <div v-if="clipped" class="tool__truncated">
-      <span class="ops-muted">已截断</span>
-      <a v-if="artifactHref" class="tool__artifact" :href="artifactHref">在编辑器打开</a>
-    </div>
-    <div v-else-if="artifactHref" class="tool__truncated">
-      <a class="tool__artifact" :href="artifactHref">在编辑器打开完整结果</a>
-    </div>
+    <!-- 截断结果统一走 LogViewer（自带「已截断 · 在编辑器打开」） -->
+    <LogViewer
+      v-if="clipped"
+      class="tool__logv"
+      :text="props.call.preview"
+      :uri="props.call.artifactUri"
+      :truncated="true"
+    />
+    <template v-else>
+      <pre v-if="preview" class="ops-codeblock tool__preview">{{ preview }}</pre>
+      <div v-if="artifactHref" class="tool__truncated">
+        <a class="tool__artifact" :href="artifactHref">在编辑器打开完整结果</a>
+      </div>
+    </template>
 
     <div v-if="props.call.status === 'error'" class="tool__error">
       <span v-if="props.call.errorCode" class="ops-mono">{{ props.call.errorCode }}</span>
@@ -144,6 +150,10 @@ const artifactHref = computed(() =>
 .tool__preview {
   margin-top: var(--ops-density);
   max-height: 180px;
+}
+
+.tool__logv {
+  margin-top: var(--ops-density);
 }
 
 .tool__truncated {

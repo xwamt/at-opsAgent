@@ -1,0 +1,51 @@
+{
+  "protocolVersion": 1,
+  "bridgeId": "fixture-bridge-grafana",
+  "pluginId": "at.grafana",
+  "pluginDisplayName": "AT Grafana",
+  "pluginVersion": "1.2.3",
+  "hostApp": "vscode",
+  "port": 45181,
+  "token": "test-token-redacted",
+  "pid": 1,
+  "updatedAt": 0,
+  "tools": [
+    {
+      "name": "grafana_list_instances",
+      "title": "List Grafana instances",
+      "description": "List registered Grafana instances.",
+      "risk": "read",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "grafana_query_prometheus",
+      "title": "Query Prometheus",
+      "description": "Run a bounded PromQL query against a Grafana datasource.",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "expr": { "type": "string" },
+          "from": { "type": "string" },
+          "to": { "type": "string" }
+        },
+        "required": ["expr"]
+      }
+    },
+    {
+      "name": "grafana_query_loki",
+      "title": "Query Loki",
+      "description": "Run a bounded LogQL query (limit must be <= 100).",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "limit": { "type": "number" }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "capabilities": { "connectedTargets": 1 }
+}

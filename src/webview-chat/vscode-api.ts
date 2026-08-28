@@ -13,6 +13,23 @@ declare const acquireVsCodeApi: undefined | (() => VsCodeApi);
 
 let cached: VsCodeApi | null = null;
 let mocked = false;
+let envSeq = 0;
+
+/**
+ * 组件级上行 req（不经 Pinia store），chat / board 两个 webview 通用。
+ * host 对未知 type 可以忽略。
+ */
+export function postEnvelope(type: string, payload: unknown = {}): void {
+  envSeq += 1;
+  getVsCodeApi().postMessage({
+    v: 1,
+    id: `wvc-${Date.now().toString(36)}-${envSeq}`,
+    dir: 'req',
+    type,
+    payload,
+    ts: Date.now()
+  });
+}
 
 export function isMockHost(): boolean {
   getVsCodeApi();

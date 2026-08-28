@@ -24,6 +24,14 @@ export class FallbackRuntime implements RuntimeLike {
     // 无 in-flight 工作可取消。
   }
 
+  abortSubagent(): void {
+    // 无子代理在跑。
+  }
+
+  setSystemPrompt(): void {
+    // 无真会话；模块就绪后重建 runtime 时 L4 再生效。
+  }
+
   dispose(): void {
     // 无资源可释放。
   }

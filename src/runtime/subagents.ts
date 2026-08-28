@@ -1,0 +1,553 @@
+/**
+ * 子代理派发（ops_dispatch_subagent）：TaskSpec 校验、工具白名单过滤、
+ * 并行调度（investigator ≤4、exec 并行度 =1）、Abort 级联与输出契约解析。
+ *
+ * 本文件不依赖 pi SDK（也不 import vscode）：真正跑 LLM 的 runner 由
+ * src/runtime/index.ts 注入，因此可以在 vitest 中用假 runner 单测调度语义。
+ * 仅主会话注册 ops_dispatch_subagent；子会话不注册（禁止递归派发，docs/03 §2）。
+ */
+import { randomUUID } from 'node:crypto';
+
+import type { EvidenceNote, RiskLevel, SubagentRole, TaskSpec } from '../orchestrator';
+import type { AgentToolDescriptor } from '../protocol';
+import { isBusinessToolName } from './discovery-tools';
+
+// ── 常量 ─────────────────────────────────────────────────────────────────
+
+export const DISPATCH_TOOL_NAME = 'ops_dispatch_subagent';
+
+/** 子代理摘要截断上限（≈800 token，按字符近似；docs/04 §3.3）。 */
+export const SUBAGENT_SUMMARY_CHAR_LIMIT = 3200;
+
+/** 角色并行上限：investigator 硬顶 4；exec 并行度 1（docs/04 §3.3）。 */
+export const ROLE_PARALLEL_LIMITS: Readonly<Record<SubagentRole, number>> = {
+  investigator: 4,
+  executor: 1,
+  writer: 2,
+  verifier: 2
+};
+
+export const DEFAULT_SUBAGENT_BUDGET: Readonly<TaskSpec['toolPolicy']['budget']> = {
+  maxToolCalls: 15,
+  maxWallMs: 180_000
+};
+
+const MAX_TOOL_CALLS = 40;
+const MIN_WALL_MS = 1000;
+
+const RISK_RANK: Readonly<Record<RiskLevel, number>> = { read: 0, write: 1, exec: 2 };
+
+const ROLES: readonly SubagentRole[] = ['investigator', 'executor', 'writer', 'verifier'];
+
+const OUTPUT_CONTRACT_BY_ROLE: Readonly<Record<SubagentRole, TaskSpec['output']['contract']>> = {
+  investigator: 'evidence-note@1',
+  executor: 'exec-report@1',
+  verifier: 'verify-report@1',
+  writer: 'ops-doc'
+};
+
+/** 这些契约要求消息末尾出现 fenced JSON（ops-doc 是自由 markdown，不要求）。 */
+const JSON_CONTRACTS: ReadonlySet<TaskSpec['output']['contract']> = new Set([
+  'evidence-note@1',
+  'exec-report@1',
+  'verify-report@1'
+]);
+
+// ── 派发参数（TaskSpec 子集）与校验 ─────────────────────────────────────
+
+export interface SubagentDispatchInput {
+  role: SubagentRole;
+  goal: string;
+  riskCeiling: RiskLevel;
+  allowTools?: string[];
+  budget?: Partial<TaskSpec['toolPolicy']['budget']>;
+  approvalToken?: TaskSpec['approvalToken'];
+  plan?: TaskSpec['plan'];
+  inputs?: TaskSpec['inputs'];
+  taskId?: string;
+  sessionId?: string;
+  playbookId?: string;
+  stage?: string;
+}
+
+/** 兼容完整 TaskSpec（orchestrator spawnSubagentSpecs 产物）与工具参数子集。 */
+export function normalizeDispatchInput(input: SubagentDispatchInput | TaskSpec): SubagentDispatchInput {
+  if (!('toolPolicy' in input)) return input;
+  const spec = input;
+  return {
+    role: spec.role,
+    goal: spec.goal,
+    riskCeiling: spec.toolPolicy.riskCeiling,
+    ...(spec.toolPolicy.allowTools !== undefined ? { allowTools: [...spec.toolPolicy.allowTools] } : {}),
+    budget: { ...spec.toolPolicy.budget },
+    ...(spec.approvalToken !== undefined && spec.approvalToken !== null
+      ? { approvalToken: spec.approvalToken }
+      : {}),
+    ...(spec.plan !== undefined ? { plan: spec.plan } : {}),
+    ...(spec.inputs !== undefined ? { inputs: spec.inputs } : {}),
+    taskId: spec.taskId,
+    sessionId: spec.sessionId,
+    ...(spec.playbookId !== undefined ? { playbookId: spec.playbookId } : {}),
+    ...(spec.stage !== undefined ? { stage: spec.stage } : {})
+  };
+}
+
+export type BuildTaskSpecOutcome = { ok: true; spec: TaskSpec } | { ok: false; error: string };
+
+function clampInt(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(Math.floor(value), min), max);
+}
+
+/**
+ * 把派发参数补全成完整 TaskSpec 并校验角色规则（docs/04 §3.1）：
+ * - Investigator 的 riskCeiling 必须是 read（硬顶，违规直接拒绝）；
+ * - Executor 必须携带 approvalToken（briefId + commandSetSha256 绑定已批简报）；
+ * - Writer 没有业务工具（allowTools 强制清空，riskCeiling 收紧为 read）；
+ * - Verifier 只读（riskCeiling 静默收紧为 read）。
+ */
+export function buildTaskSpec(input: SubagentDispatchInput): BuildTaskSpecOutcome {
+  if (!ROLES.includes(input.role)) {
+    return {
+      ok: false,
+      error: `未知子代理角色 ${JSON.stringify(input.role)}；只支持 ${ROLES.join(' / ')}`
+    };
+  }
+  const goal = typeof input.goal === 'string' ? input.goal.trim() : '';
+  if (goal.length === 0) {
+    return { ok: false, error: 'goal 不能为空：写清楚这次子任务要取证/执行/验证/撰写什么' };
+  }
+  if (!(input.riskCeiling in RISK_RANK)) {
+    return { ok: false, error: `未知 riskCeiling ${JSON.stringify(input.riskCeiling)}；只支持 read / write / exec` };
+  }
+  if (input.role === 'investigator' && input.riskCeiling !== 'read') {
+    return { ok: false, error: 'Investigator 的 riskCeiling 必须是 read（只读硬顶，不能派发 write/exec 调查）' };
+  }
+  let approvalToken = input.approvalToken ?? undefined;
+  if (input.role === 'executor') {
+    if (
+      approvalToken === undefined ||
+      approvalToken === null ||
+      typeof approvalToken.briefId !== 'string' ||
+      approvalToken.briefId.length === 0 ||
+      typeof approvalToken.commandSetSha256 !== 'string' ||
+      approvalToken.commandSetSha256.length === 0
+    ) {
+      return {
+        ok: false,
+        error: 'Executor 必须携带 approvalToken（briefId + commandSetSha256，与已批 9 要素简报的命令集绑定）'
+      };
+    }
+  } else {
+    approvalToken = undefined;
+  }
+
+  // Writer 无业务工具；Verifier 只读（静默收紧而非报错）。
+  const riskCeiling: RiskLevel =
+    input.role === 'writer' || input.role === 'verifier' ? 'read' : input.riskCeiling;
+  const allowTools =
+    input.role === 'writer'
+      ? []
+      : input.allowTools?.filter((name) => typeof name === 'string' && name.length > 0);
+
+  const budget: TaskSpec['toolPolicy']['budget'] = {
+    maxToolCalls: clampInt(input.budget?.maxToolCalls, 1, MAX_TOOL_CALLS, DEFAULT_SUBAGENT_BUDGET.maxToolCalls),
+    maxWallMs: clampInt(
+      input.budget?.maxWallMs,
+      MIN_WALL_MS,
+      Number.MAX_SAFE_INTEGER,
+      DEFAULT_SUBAGENT_BUDGET.maxWallMs
+    )
+  };
+
+  const taskId =
+    typeof input.taskId === 'string' && input.taskId.length > 0
+      ? input.taskId
+      : `sub-${input.role}-${randomUUID().slice(0, 8)}`;
+
+  const spec: TaskSpec = {
+    specVersion: 1,
+    taskId,
+    sessionId: typeof input.sessionId === 'string' && input.sessionId.length > 0 ? input.sessionId : 'main',
+    ...(input.playbookId !== undefined ? { playbookId: input.playbookId } : {}),
+    ...(input.stage !== undefined ? { stage: input.stage } : {}),
+    role: input.role,
+    goal,
+    ...(input.inputs !== undefined ? { inputs: input.inputs } : {}),
+    toolPolicy: {
+      select: { mode: 'inherit' },
+      ...(allowTools !== undefined ? { allowTools } : {}),
+      riskCeiling,
+      budget
+    },
+    ...(approvalToken !== undefined ? { approvalToken } : {}),
+    ...(input.plan !== undefined ? { plan: input.plan } : {}),
+    output: { contract: OUTPUT_CONTRACT_BY_ROLE[input.role], maxSummaryTokens: 800 },
+    escalation: { retries: 1, onFail: 'degrade' }
+  };
+  return { ok: true, spec };
+}
+
+// ── 工具面过滤 ───────────────────────────────────────────────────────────
+
+/**
+ * 子代理可见工具 = 业务工具 ∩ allowTools 白名单 ∩ riskCeiling；Writer 恒为空。
+ * 调用方传入 hub.listExposedTools()（暴露集），即「allowlist ∩ hub exposed ∩ riskCeiling」。
+ */
+export function filterToolsForSubagent(
+  tools: readonly AgentToolDescriptor[],
+  spec: Pick<TaskSpec, 'role' | 'toolPolicy'>
+): AgentToolDescriptor[] {
+  if (spec.role === 'writer') return [];
+  const ceiling = RISK_RANK[spec.toolPolicy.riskCeiling] ?? 0;
+  const allow = spec.toolPolicy.allowTools;
+  return tools.filter(
+    (tool) =>
+      isBusinessToolName(tool.name) &&
+      RISK_RANK[tool.risk] <= ceiling &&
+      (allow === undefined || allow.includes(tool.name))
+  );
+}
+
+// ── 输出契约解析 ─────────────────────────────────────────────────────────
+
+const FENCED_BLOCK_RE = /```[a-zA-Z]*[ \t]*\n?([\s\S]*?)```/g;
+
+export type ContractJson = Record<string, unknown> & { contract: string };
+
+function tryParseObject(raw: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw.trim());
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 非 JSON 内容，继续尝试其它候选块。
+  }
+  return undefined;
+}
+
+/** 从消息文本中解析契约 JSON：优先取最后一个 fenced 块，兜底整段裸 JSON。 */
+export function parseContractJson(text: string): ContractJson | undefined {
+  const blocks = [...text.matchAll(FENCED_BLOCK_RE)].map((m) => m[1]);
+  blocks.unshift(text); // 整条消息就是裸 JSON 的情况（优先级最低，放队首）
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const value = tryParseObject(blocks[i]);
+    if (value !== undefined && typeof value.contract === 'string') {
+      return value as ContractJson;
+    }
+  }
+  return undefined;
+}
+
+/** 解析 evidence-note@1；形状不完整（缺 confidence/summary）返回 undefined。 */
+export function parseEvidenceNote(text: string, fallbackTaskId = ''): EvidenceNote | undefined {
+  const json = parseContractJson(text);
+  if (json === undefined || json.contract !== 'evidence-note@1') return undefined;
+  const confidence = json.confidence;
+  if (confidence !== 'confirmed' && confidence !== 'hypothesis' && confidence !== 'pending') {
+    return undefined;
+  }
+  if (typeof json.summary !== 'string' || json.summary.length === 0) return undefined;
+  const taskId = typeof json.taskId === 'string' && json.taskId.length > 0 ? json.taskId : fallbackTaskId;
+  const rawWindow = json.timeWindow;
+  const timeWindow =
+    rawWindow !== null &&
+    typeof rawWindow === 'object' &&
+    typeof (rawWindow as { from?: unknown }).from === 'string' &&
+    typeof (rawWindow as { to?: unknown }).to === 'string'
+      ? (rawWindow as { from: string; to: string })
+      : undefined;
+  return {
+    id: typeof json.id === 'string' && json.id.length > 0 ? json.id : `note-${taskId}`,
+    taskId,
+    confidence,
+    summary: json.summary,
+    ...(timeWindow !== undefined ? { timeWindow } : {}),
+    ...(typeof json.subject === 'string' ? { subject: json.subject } : {}),
+    ...(Array.isArray(json.refs) ? { refs: json.refs as EvidenceNote['refs'] } : {}),
+    conflicts: Array.isArray(json.conflicts)
+      ? json.conflicts.filter((c): c is string => typeof c === 'string')
+      : []
+  };
+}
+
+export function truncateSummary(text: string, limit = SUBAGENT_SUMMARY_CHAR_LIMIT): string {
+  return text.length > limit ? `${text.slice(0, limit)}…[truncated]` : text;
+}
+
+// ── 调度器 ───────────────────────────────────────────────────────────────
+
+export type SubagentRunStatus = 'queued' | 'running' | 'ok' | 'degraded' | 'failed' | 'aborted';
+
+export interface SubagentStatusEvent {
+  taskId: string;
+  role: SubagentRole;
+  status: SubagentRunStatus;
+  /** 终态时的摘要（≤SUBAGENT_SUMMARY_CHAR_LIMIT 字符；原始大输出不进事件）。 */
+  summary?: string;
+  error?: string;
+  /** output.contract=evidence-note@1 且解析成功时附上结构化便签。 */
+  evidenceNote?: EvidenceNote;
+}
+
+export interface SubagentRunOutcome {
+  /** 子代理最后一条 assistant 消息文本（契约 JSON 应在其中）。 */
+  finalText: string;
+  /** runner 主动降级的原因（如超出 maxToolCalls 预算被中止）。 */
+  degradedReason?: string;
+}
+
+export type SubagentRunner = (spec: TaskSpec, signal: AbortSignal) => Promise<SubagentRunOutcome>;
+
+export interface CreateSubagentManagerOptions {
+  runner: SubagentRunner;
+  onStatus?: (event: SubagentStatusEvent) => void;
+  /** 覆盖默认角色并行上限（测试用；investigator 仍不应超过硬顶 4）。 */
+  limits?: Partial<Record<SubagentRole, number>>;
+}
+
+export interface SubagentManager {
+  /** 立即返回（queued|running），LLM 在后台跑；重复 taskId 且未终态时幂等返回现状。 */
+  dispatch(spec: TaskSpec): { taskId: string; status: SubagentRunStatus };
+  /** 中止单个任务（AbortSignal 级联到子会话）；不存在或已终态返回 false。 */
+  abort(taskId: string): boolean;
+  abortAll(): void;
+  inflight(role?: SubagentRole): number;
+  statusOf(taskId: string): SubagentRunStatus | undefined;
+}
+
+interface TaskRecord {
+  spec: TaskSpec;
+  controller: AbortController;
+  status: SubagentRunStatus;
+  timer?: ReturnType<typeof setTimeout>;
+  userAborted?: boolean;
+  timedOut?: boolean;
+}
+
+const TERMINAL_STATUSES: ReadonlySet<SubagentRunStatus> = new Set([
+  'ok',
+  'degraded',
+  'failed',
+  'aborted'
+]);
+
+export function createSubagentManager(options: CreateSubagentManagerOptions): SubagentManager {
+  const records = new Map<string, TaskRecord>();
+  /** 仅 queued 状态的等待队列（FIFO）。 */
+  const queue: TaskRecord[] = [];
+
+  const limitOf = (role: SubagentRole): number => options.limits?.[role] ?? ROLE_PARALLEL_LIMITS[role];
+
+  function runningCount(role: SubagentRole): number {
+    let n = 0;
+    for (const record of records.values()) {
+      if (record.status === 'running' && record.spec.role === role) n += 1;
+    }
+    return n;
+  }
+
+  function emit(
+    record: TaskRecord,
+    extra: Pick<SubagentStatusEvent, 'summary' | 'error' | 'evidenceNote'> = {}
+  ): void {
+    options.onStatus?.({
+      taskId: record.spec.taskId,
+      role: record.spec.role,
+      status: record.status,
+      ...extra
+    });
+  }
+
+  function settle(record: TaskRecord, result: { outcome?: SubagentRunOutcome; failure?: unknown }): void {
+    if (TERMINAL_STATUSES.has(record.status)) return;
+    if (record.timer !== undefined) {
+      clearTimeout(record.timer);
+      record.timer = undefined;
+    }
+    let extra: Pick<SubagentStatusEvent, 'summary' | 'error' | 'evidenceNote'> = {};
+    if (record.userAborted) {
+      record.status = 'aborted';
+    } else if (record.timedOut) {
+      record.status = 'failed';
+      extra = { error: `超出 maxWallMs=${record.spec.toolPolicy.budget.maxWallMs} 预算（超时中止）` };
+    } else if (result.failure !== undefined) {
+      record.status = 'failed';
+      extra = { error: result.failure instanceof Error ? result.failure.message : String(result.failure) };
+    } else {
+      const outcome = result.outcome ?? { finalText: '' };
+      const contract = record.spec.output.contract;
+      const note =
+        contract === 'evidence-note@1'
+          ? parseEvidenceNote(outcome.finalText, record.spec.taskId)
+          : undefined;
+      const contractJson = parseContractJson(outcome.finalText);
+      const summary = truncateSummary(note?.summary ?? outcome.finalText);
+      if (outcome.degradedReason !== undefined) {
+        record.status = 'degraded';
+        extra = { summary, error: outcome.degradedReason, ...(note !== undefined ? { evidenceNote: note } : {}) };
+      } else if (JSON_CONTRACTS.has(contract) && contractJson?.contract !== contract) {
+        // 契约 JSON 缺失：结果仍可用但标 degraded（该面按未完整取证处理）。
+        record.status = 'degraded';
+        extra = { summary, error: `输出缺少 ${contract} JSON 契约块` };
+      } else {
+        record.status = 'ok';
+        extra = { summary, ...(note !== undefined ? { evidenceNote: note } : {}) };
+      }
+    }
+    emit(record, extra);
+    pump();
+  }
+
+  function start(record: TaskRecord): void {
+    record.status = 'running';
+    emit(record);
+    record.timer = setTimeout(() => {
+      record.timedOut = true;
+      record.controller.abort();
+      settle(record, {});
+    }, record.spec.toolPolicy.budget.maxWallMs);
+    let runPromise: Promise<SubagentRunOutcome>;
+    try {
+      runPromise = options.runner(record.spec, record.controller.signal);
+    } catch (failure) {
+      settle(record, { failure });
+      return;
+    }
+    runPromise.then(
+      (outcome) => settle(record, { outcome }),
+      (failure: unknown) => settle(record, { failure })
+    );
+  }
+
+  function pump(): void {
+    for (let i = 0; i < queue.length; ) {
+      const record = queue[i];
+      if (record.status !== 'queued') {
+        queue.splice(i, 1);
+        continue;
+      }
+      if (runningCount(record.spec.role) >= limitOf(record.spec.role)) {
+        i += 1;
+        continue;
+      }
+      queue.splice(i, 1);
+      start(record);
+    }
+  }
+
+  function abort(taskId: string): boolean {
+    const record = records.get(taskId);
+    if (record === undefined || TERMINAL_STATUSES.has(record.status)) return false;
+    record.userAborted = true;
+    record.controller.abort();
+    // 立即终态并释放并行位；runner 稍后落定时被 settle 的终态守卫忽略。
+    settle(record, {});
+    return true;
+  }
+
+  return {
+    dispatch(spec: TaskSpec) {
+      const existing = records.get(spec.taskId);
+      if (existing !== undefined && !TERMINAL_STATUSES.has(existing.status)) {
+        return { taskId: spec.taskId, status: existing.status };
+      }
+      const record: TaskRecord = { spec, controller: new AbortController(), status: 'queued' };
+      records.set(spec.taskId, record);
+      queue.push(record);
+      emit(record);
+      pump();
+      return { taskId: spec.taskId, status: record.status };
+    },
+    abort,
+    abortAll(): void {
+      for (const taskId of [...records.keys()]) {
+        abort(taskId);
+      }
+    },
+    inflight(role?: SubagentRole): number {
+      if (role !== undefined) return runningCount(role);
+      let n = 0;
+      for (const record of records.values()) {
+        if (record.status === 'running') n += 1;
+      }
+      return n;
+    },
+    statusOf(taskId: string): SubagentRunStatus | undefined {
+      return records.get(taskId)?.status;
+    }
+  };
+}
+
+// ── ops_dispatch_subagent 工具 spec（execute 由 runtime 注入 manager 后包装） ──
+
+export const dispatchToolSpec = {
+  name: DISPATCH_TOOL_NAME,
+  label: 'Ops：派发子代理',
+  description:
+    '把 TaskSpec 子集派发给后台子代理（investigator/executor/writer/verifier），' +
+    '立即返回 { taskId, status: queued|running }，结果完成后异步回传摘要。' +
+    'Investigator 只读（riskCeiling 必须 read）；Executor 必须携带 approvalToken；' +
+    'Writer 无业务工具。仅主会话可用，子代理禁止递归派发。',
+  parameters: {
+    type: 'object',
+    properties: {
+      role: {
+        type: 'string',
+        enum: ['investigator', 'executor', 'writer', 'verifier'],
+        description: '子代理角色'
+      },
+      goal: { type: 'string', description: '本次子任务目标（一句话，含对象与时间窗）' },
+      riskCeiling: {
+        type: 'string',
+        enum: ['read', 'write', 'exec'],
+        description: 'investigator/verifier/writer 必须 read；executor 按已批简报'
+      },
+      allowTools: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '工具白名单（与 Hub 暴露集、riskCeiling 取交集）'
+      },
+      budget: {
+        type: 'object',
+        properties: {
+          maxToolCalls: { type: 'integer', description: `默认 ${DEFAULT_SUBAGENT_BUDGET.maxToolCalls}，最大 ${MAX_TOOL_CALLS}` },
+          maxWallMs: { type: 'integer', description: `默认 ${DEFAULT_SUBAGENT_BUDGET.maxWallMs}` }
+        },
+        additionalProperties: false
+      },
+      approvalToken: {
+        type: 'object',
+        properties: {
+          briefId: { type: 'string' },
+          commandSetSha256: { type: 'string' }
+        },
+        required: ['briefId', 'commandSetSha256'],
+        additionalProperties: false,
+        description: 'executor 必填：已批 9 要素简报的令牌（命令集哈希绑定）'
+      },
+      plan: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            step: { type: 'integer' },
+            kind: {
+              type: 'string',
+              enum: ['backup', 'verifyBackup', 'change', 'readback', 'verify', 'other']
+            },
+            tool: { type: 'string' },
+            command: { type: 'string' },
+            args: { type: 'object' }
+          },
+          required: ['step', 'kind', 'tool'],
+          additionalProperties: false
+        },
+        description: 'executor 的确切执行步骤（与已批命令集一致）'
+      }
+    },
+    required: ['role', 'goal', 'riskCeiling'],
+    additionalProperties: false
+  } as Record<string, unknown>
+} as const;

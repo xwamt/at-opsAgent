@@ -58,6 +58,16 @@ const stageLabel = computed(() => {
         <span class="pb-header__bar" aria-hidden="true"></span>
         <span class="pb-header__id ops-mono">{{ store.playbook.id }}</span>
         <span class="ops-muted">· {{ stageLabel }}</span>
+        <span class="pb-header__spacer"></span>
+        <button
+          type="button"
+          class="ops-btn ops-btn--secondary pb-header__pick"
+          :aria-expanded="store.activePicker === 'playbook'"
+          aria-label="选择 Playbook"
+          @click="store.togglePicker('playbook')"
+        >
+          ▤ Playbook
+        </button>
       </div>
       <ol class="pb-header__chips" aria-label="Playbook 阶段">
         <li
@@ -74,7 +84,19 @@ const stageLabel = computed(() => {
         </li>
       </ol>
     </template>
-    <div v-else class="pb-header__empty ops-muted">未启动 Playbook · 直接提问或粘贴告警</div>
+    <div v-else class="pb-header__title">
+      <span class="pb-header__empty ops-muted">未启动 Playbook · 直接提问或粘贴告警</span>
+      <span class="pb-header__spacer"></span>
+      <button
+        type="button"
+        class="ops-btn ops-btn--secondary pb-header__pick"
+        :aria-expanded="store.activePicker === 'playbook'"
+        aria-label="选择 Playbook"
+        @click="store.togglePicker('playbook')"
+      >
+        ▤ Playbook
+      </button>
+    </div>
   </header>
 </template>
 
@@ -100,6 +122,17 @@ const stageLabel = computed(() => {
 
 .pb-header__id {
   font-weight: 600;
+}
+
+.pb-header__spacer {
+  flex: 1;
+}
+
+.pb-header__pick {
+  padding: 0 calc(var(--ops-density) * 1.5);
+  font-size: calc(var(--ops-font-size) - 2px);
+  line-height: 1.7;
+  white-space: nowrap;
 }
 
 .pb-header__chips {

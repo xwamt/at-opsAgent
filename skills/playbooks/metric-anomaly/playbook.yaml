@@ -8,15 +8,20 @@ defaults:
   maxParallelInvestigators: 2
 stages:
   - id: triage
+    prompt: references/triage.md
   - id: selecting
+    prompt: references/selecting.md
     select: { mode: replace, pluginIds: [at.grafana] }
   - id: investigating
+    prompt: references/investigating.md
     parallelGroup:
       - id: inv-metrics
         role: investigator
         riskCeiling: read
         goal: 窄窗基线 vs 峰值与 firing alerts
   - id: synthesizing
+    prompt: references/synthesizing.md
   - id: reporting
+    prompt: references/reporting.md
     artifact: evidence-only
   - id: closed

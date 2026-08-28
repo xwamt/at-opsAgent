@@ -4,11 +4,14 @@ import { useOpsStore } from '../store';
 import ApprovalBar from './ApprovalBar.vue';
 import ChatTranscript from './ChatTranscript.vue';
 import Composer from './Composer.vue';
+import HostSessionChip from './HostSessionChip.vue';
+import ModelSelector from './ModelSelector.vue';
 import PlaybookHeader from './PlaybookHeader.vue';
+import PlaybookPicker from './PlaybookPicker.vue';
+import SkillPicker from './SkillPicker.vue';
 
 const store = useOpsStore();
 
-const modelLabel = computed(() => store.modelLabel || '模型未设置');
 const runState = computed(() => (store.streaming ? '运行中' : '空闲'));
 const sessionShort = computed(() =>
   store.sessionId ? store.sessionId.slice(0, 12) : '无会话'
@@ -19,24 +22,26 @@ const sessionShort = computed(() =>
   <div class="chat-app">
     <PlaybookHeader />
     <ChatTranscript class="chat-app__transcript" />
-    <ApprovalBar v-if="store.pendingApproval" />
-    <Composer />
+    <div class="chat-app__dock">
+      <PlaybookPicker v-if="store.activePicker === 'playbook'" class="chat-app__picker" />
+      <SkillPicker v-else-if="store.activePicker === 'skill'" class="chat-app__picker" />
+      <ApprovalBar v-if="store.pendingApproval" />
+      <Composer />
+    </div>
     <footer class="chat-app__statusbar" aria-label="会话状态">
-      <span class="chat-app__model" :title="'当前模型 · 会话 ' + store.sessionId">{{ modelLabel }}</span>
+      <ModelSelector />
       <span aria-hidden="true">·</span>
       <span :class="{ 'chat-app__running': store.streaming }">{{ runState }}</span>
       <span aria-hidden="true">·</span>
       <span class="ops-muted">{{ sessionShort }}</span>
       <span class="chat-app__providers">
-        <span
+        <HostSessionChip
           v-for="p in store.providerChips"
           :key="p.id"
-          class="chat-app__provider"
-          :class="p.connected ? 'chat-app__provider--ok' : 'chat-app__provider--off'"
-          :title="p.label + (p.connected ? ' 已连接' : ' 未连接')"
-        >
-          {{ p.id }} {{ p.connected ? '✓' : '✗' }}
-        </span>
+          :plugin-id="p.id"
+          :label="p.label"
+          :connected="p.connected"
+        />
         <span v-if="store.providerChips.length === 0" class="ops-muted">无能力插件</span>
       </span>
       <span v-if="store.mock" class="chat-app__mock" title="未检测到 acquireVsCodeApi，使用本地 mock host">mock</span>
@@ -57,6 +62,18 @@ const sessionShort = computed(() =>
   min-height: 0;
 }
 
+.chat-app__dock {
+  position: relative;
+}
+
+.chat-app__picker {
+  position: absolute;
+  bottom: calc(100% + var(--ops-density));
+  left: calc(var(--ops-density) * 2);
+  right: calc(var(--ops-density) * 2);
+  z-index: 10;
+}
+
 .chat-app__statusbar {
   display: flex;
   align-items: center;
@@ -69,10 +86,6 @@ const sessionShort = computed(() =>
   white-space: nowrap;
 }
 
-.chat-app__model {
-  color: var(--ops-fg);
-}
-
 .chat-app__running {
   color: var(--ops-accent);
 }
@@ -82,14 +95,6 @@ const sessionShort = computed(() =>
   gap: calc(var(--ops-density) * 1.5);
   margin-left: auto;
   overflow: hidden;
-}
-
-.chat-app__provider--ok {
-  color: var(--ops-healthy);
-}
-
-.chat-app__provider--off {
-  color: var(--ops-pending);
 }
 
 .chat-app__mock {

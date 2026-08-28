@@ -6,20 +6,26 @@ triggers:
     patterns: ["nacos", "配置中心", "dataid", "配置回滚"]
 stages:
   - id: triage
+    prompt: references/triage.md
   - id: selecting
+    prompt: references/selecting.md
     select: { mode: replace, pluginIds: [at.nacos] }
     escalateSelect: { mode: add, pluginIds: [at.grafana] }
   - id: investigating
+    prompt: references/investigating.md
     parallelGroup:
       - id: inv-config
         role: investigator
         riskCeiling: read
         goal: 列出命名空间/配置/历史/监听者，默认脱敏
   - id: synthesizing
+    prompt: references/synthesizing.md
   - id: guidedManual
+    prompt: references/guided-manual.md
     guidedManual:
       command: atNacos.publishConfig
       hint: 发布、删除、回滚、实例上下线在 AT Nacos 编辑器/树视图完成。
   - id: reporting
+    prompt: references/reporting.md
     artifact: operation-record
   - id: closed
