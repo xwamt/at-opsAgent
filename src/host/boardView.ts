@@ -34,6 +34,8 @@ export class BoardViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     this.view = view;
     view.webview.options = {
       enableScripts: true,
+      // 看板卡片同样可经 command: 深链打开产物 / 日志。
+      enableCommandUris: true,
       localResourceRoots: [
         vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview'),
         vscode.Uri.joinPath(this.extensionUri, 'media')

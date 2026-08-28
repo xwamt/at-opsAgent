@@ -36,6 +36,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.view = view;
     view.webview.options = {
       enableScripts: true,
+      // ToolCallCard 等经 command:atOpsAgent.openArtifact 深链打开产物。
+      enableCommandUris: true,
       localResourceRoots: [
         vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview'),
         vscode.Uri.joinPath(this.extensionUri, 'media')

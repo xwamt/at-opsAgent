@@ -113,13 +113,24 @@ function extractErrorBody(value: unknown): { code: string; message: string; deta
   return undefined;
 }
 
+const DATABASE_PLUGIN_ID = 'at.database';
+const DATABASE_TOOL_PREFIX = 'db_';
+
 /**
  * At-Database compat (docs/02 §2): the plugin reports app-level failures as a
  * 2xx body carrying `ok:false` instead of a Bridge error. Anything that made
  * it through as a "success" but says `ok !== true` must not be surfaced to
  * the model as a good result.
+ *
+ * Scoped strictly to At-Database tools (winner pluginId `at.database`, or the
+ * plugin's `db_` name prefix when no winner is known): every other plugin is
+ * contract-compliant, so an `ok` field in its payload is business data, not
+ * an error envelope, and must not be rewritten to `OPS_DATABASE_OK_FALSE`.
  */
-function isOkFalseResult(value: unknown): boolean {
+export function isOkFalseResult(name: string, pluginId: string | undefined, value: unknown): boolean {
+  if (pluginId !== DATABASE_PLUGIN_ID && !name.startsWith(DATABASE_TOOL_PREFIX)) {
+    return false;
+  }
   return isRecord(value) && 'ok' in value && value.ok !== true;
 }
 
@@ -354,7 +365,8 @@ class AtSeriesHubHost implements HubHost {
       };
     }
     const result = payload !== undefined ? payload : text === '' ? undefined : text;
-    if (!META_TOOL_NAMES.has(name) && isOkFalseResult(result)) {
+    const winnerPluginId = this.catalog?.winners.get(name)?.pluginId;
+    if (!META_TOOL_NAMES.has(name) && isOkFalseResult(name, winnerPluginId, result)) {
       const nested = extractErrorBody(result);
       const fallbackMessage =
         isRecord(result) && typeof result.message === 'string'

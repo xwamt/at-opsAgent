@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import { load as parseYaml } from 'js-yaml';
 import type { SelectToolsInput } from '../../protocol';
 import type {
+  ApprovalBriefLike,
   GuidedManualMeta,
   OrchestratorEventLike,
   OrchestratorLike,
@@ -131,6 +132,23 @@ export class FallbackOrchestrator implements OrchestratorLike {
   spawnSubagentSpecs(): unknown[] {
     // TaskSpec 构造（预算/风险顶/输出契约）属于真 orchestrator；兜底不建子代理。
     return [];
+  }
+
+  requestApproval(
+    runOrId: PlaybookRunLike | string,
+    input: { risk: 'write' | 'exec'; commandSet: unknown; elements?: Record<string, string> }
+  ): ApprovalBriefLike {
+    const run = typeof runOrId === 'string' ? this.runs.get(runOrId) : runOrId;
+    const runId = run?.id ?? (typeof runOrId === 'string' ? runOrId : runOrId.id);
+    const brief: ApprovalBriefLike = {
+      briefId: `fallback-brief-${++this.runSeq}`,
+      runId,
+      risk: input.risk,
+      commandSet: input.commandSet,
+      elements: input.elements
+    };
+    this.onEvent({ type: 'approval/request', runId, brief });
+    return brief;
   }
 
   abortSubagent(): void {

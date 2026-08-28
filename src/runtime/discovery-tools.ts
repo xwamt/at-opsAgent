@@ -10,6 +10,7 @@
  */
 import type {
   AgentToolDescriptor,
+  Event,
   ListProvidersResult,
   SelectionController,
   ToolInvocation,
@@ -24,6 +25,11 @@ export interface DiscoveryHub {
   getProviders(): ListProvidersResult;
   invoke(inv: ToolInvocation): Promise<ToolInvocationResult>;
   selection: SelectionController;
+  /**
+   * 工具目录变化事件（插件桥接上线/下线）。可选：HubHost 的
+   * Event<ToolChangeEvent> 可直接赋值（Event 对 T 逆变安全）。
+   */
+  onDidChangeTools?: Event<unknown>;
 }
 
 export const DESCRIPTION_PREVIEW_LIMIT = 120;

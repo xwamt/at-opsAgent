@@ -121,6 +121,8 @@ export type HydrateEvt = {
   items: TranscriptItem[];
   providers: unknown;
   pendingApproval?: ApprovalBriefView;
+  /** playbook 元数据列表（已缓存时随快照下发；缺省 webview 用兜底清单）。 */
+  playbooks?: unknown;
 };
 
 export type HostRequestType =

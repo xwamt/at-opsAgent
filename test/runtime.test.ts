@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import type {
   ListProvidersResult,
   SelectToolsInput,
   SelectionState,
+  ToolChangeEvent,
   ToolInvocation,
   ToolInvocationResult
 } from '../src/protocol';
@@ -42,23 +43,30 @@ import {
   DEFAULT_SUBAGENT_BUDGET,
   DISPATCH_TOOL_NAME,
   FALLBACK_NOTICE,
+  MODEL_RESULT_CHAR_LIMIT,
   ROLE_PARALLEL_LIMITS,
   SUBAGENT_SUMMARY_CHAR_LIMIT,
   TOOL_END_PREVIEW_LIMIT,
+  TOOL_RESULTS_DIRNAME,
   buildSystemPrompt,
   buildTaskSpec,
   createFallbackRuntime,
   createOpsRuntime,
   createSubagentManager,
   dispatchToolSpec,
+  executeBusinessTool,
   filterToolsForSubagent,
+  isCancelledInvocation,
   normalizeDispatchInput,
   parseContractJson,
   parseEvidenceNote,
+  truncateForModel,
   truncatePreview,
   truncateSummary,
+  type CreateOpsRuntimeOptions,
   type OpsRuntimeEvent,
   type OpsRuntimeHandlers,
+  type OpsSubagentEvent,
   type SubagentRunOutcome,
   type SubagentStatusEvent
 } from '../src/runtime';
@@ -120,6 +128,9 @@ function makeFakeHub(): FakeHub {
 
   const exposed = tools.filter((t) => t.pluginId === 'at.grafana');
   const emitter = new Emitter<SelectionState>();
+  // HubHost.onDidChangeTools 是 Event<ToolChangeEvent>；这里验证它可直接
+  // 赋给 DiscoveryHub / OpsRuntimeHandlers['hub'] 的 Event<unknown> 可选位。
+  const toolsEmitter = new Emitter<ToolChangeEvent>();
   const state: SelectionState = {
     mode: 'auto',
     threshold: 20,
@@ -158,6 +169,7 @@ function makeFakeHub(): FakeHub {
       hub.invokeCalls.push(inv);
       return { ok: true, result: { echoed: inv.name }, attemptCount: 1, durationMs: 5 };
     },
+    onDidChangeTools: toolsEmitter.event,
     selection: {
       state: () => state,
       select: async (input: SelectToolsInput) => {
@@ -379,6 +391,192 @@ describe('truncatePreview', () => {
     expect(preview.startsWith('x'.repeat(100))).toBe(true);
     expect(preview.endsWith('…[truncated]')).toBe(true);
     expect(preview.slice(0, TOOL_END_PREVIEW_LIMIT)).toBe('x'.repeat(TOOL_END_PREVIEW_LIMIT));
+  });
+});
+
+// ── P0：getApiKey 选项 ───────────────────────────────────────────────────
+
+describe('CreateOpsRuntimeOptions.getApiKey', () => {
+  it('类型接受 getApiKey（host 后续从 SecretStorage 注入）', async () => {
+    const options: CreateOpsRuntimeOptions = {
+      agentDir: '/tmp/x',
+      getApiKey: async () => 'sk-secret-value'
+    };
+    expect(typeof options.getApiKey).toBe('function');
+    await expect(options.getApiKey!()).resolves.toBe('sk-secret-value');
+    // undefined 表示 SecretStorage 里没有 key，同样合法
+    const empty: CreateOpsRuntimeOptions = { getApiKey: async () => undefined };
+    await expect(empty.getApiKey!()).resolves.toBeUndefined();
+  });
+
+  it('createOpsRuntime 带 getApiKey 仍安全回退，key 绝不出现在事件文本里', async () => {
+    const events: OpsRuntimeEvent[] = [];
+    const handlers: OpsRuntimeHandlers = { hub: makeFakeHub(), onEvent: (e) => events.push(e) };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-key-test-'));
+    let keyReads = 0;
+    const runtime = await createOpsRuntime(handlers, {
+      agentDir,
+      cwd: agentDir,
+      model: { provider: 'no-such-provider', id: 'no-such-model' },
+      getApiKey: async () => {
+        keyReads += 1;
+        return 'sk-secret-value';
+      }
+    });
+
+    // 创建路径确实读取了 SecretStorage（在 ModelRuntime.create 之后）
+    expect(keyReads).toBeGreaterThanOrEqual(1);
+
+    await runtime.prompt('hello');
+    const text = events
+      .filter((e): e is Extract<OpsRuntimeEvent, { type: 'text_delta' }> => e.type === 'text_delta')
+      .map((e) => e.text)
+      .join('\n');
+    expect(text).toContain(FALLBACK_NOTICE);
+    // 密钥绝不落入用户可见文本（含 fallback 原因）
+    expect(text).not.toContain('sk-secret-value');
+    await runtime.dispose();
+  }, 30_000);
+});
+
+// ── P1：模型侧结果截断（truncateForModel / executeBusinessTool）─────────
+
+describe('truncateForModel', () => {
+  it('8KB 以内原样返回', () => {
+    expect(truncateForModel('short')).toBe('short');
+    const exact = 'x'.repeat(MODEL_RESULT_CHAR_LIMIT);
+    expect(truncateForModel(exact)).toBe(exact);
+  });
+
+  it('超限时总长 ≤ 8192，带中文提示与 pluginId/name/落盘路径', () => {
+    const big = 'z'.repeat(MODEL_RESULT_CHAR_LIMIT * 2);
+    const out = truncateForModel(big, {
+      pluginId: 'at.grafana',
+      name: 'grafana_query_prometheus',
+      savedPath: '/tmp/agent/tool-results/call-1.json'
+    });
+    expect(out.length).toBeLessThanOrEqual(MODEL_RESULT_CHAR_LIMIT);
+    expect(out).toContain('截断');
+    expect(out).toContain('at.grafana/grafana_query_prometheus');
+    expect(out).toContain('/tmp/agent/tool-results/call-1.json');
+    expect(out).toContain('…[truncated]');
+  });
+
+  it('无落盘路径时不提写入位置', () => {
+    const out = truncateForModel('z'.repeat(MODEL_RESULT_CHAR_LIMIT + 1));
+    expect(out.length).toBeLessThanOrEqual(MODEL_RESULT_CHAR_LIMIT);
+    expect(out).not.toContain('已写入');
+  });
+});
+
+describe('executeBusinessTool', () => {
+  const bizDescriptor = descriptor({
+    name: 'grafana_query_prometheus',
+    pluginId: 'at.grafana'
+  });
+
+  it('小结果原样返回完整 JSON；abort signal 透传给 hub.invoke', async () => {
+    const hub = makeFakeHub();
+    const handlers: OpsRuntimeHandlers = { hub };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+    const controller = new AbortController();
+    const text = await executeBusinessTool(
+      handlers,
+      bizDescriptor,
+      { query: 'up' },
+      controller.signal,
+      agentDir,
+      'call-small'
+    );
+    expect(JSON.parse(text)).toMatchObject({ ok: true, result: { echoed: 'grafana_query_prometheus' } });
+    expect(hub.invokeCalls).toHaveLength(1);
+    expect(hub.invokeCalls[0].abort).toBe(controller.signal);
+  });
+
+  it('超限结果：模型侧截断到 8KB，完整 JSON 落盘 tool-results/<toolCallId>.json', async () => {
+    const hub = makeFakeHub();
+    const bigResult: ToolInvocationResult = {
+      ok: true,
+      result: { blob: 'y'.repeat(MODEL_RESULT_CHAR_LIMIT * 3) },
+      attemptCount: 1,
+      durationMs: 7
+    };
+    hub.invoke = async () => bigResult;
+    const handlers: OpsRuntimeHandlers = { hub };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+
+    const text = await executeBusinessTool(handlers, bizDescriptor, {}, undefined, agentDir, 'call-1');
+    expect(text.length).toBeLessThanOrEqual(MODEL_RESULT_CHAR_LIMIT);
+    expect(text).toContain('截断');
+    expect(text).toContain('at.grafana/grafana_query_prometheus');
+
+    const dir = join(agentDir, TOOL_RESULTS_DIRNAME);
+    expect(readdirSync(dir)).toEqual(['call-1.json']);
+    const full = JSON.parse(readFileSync(join(dir, 'call-1.json'), 'utf8')) as ToolInvocationResult;
+    expect(full).toEqual(bigResult);
+    // 截断提示里告知了完整 JSON 的落盘路径
+    expect(text).toContain(join(dir, 'call-1.json'));
+  });
+
+  it('落盘失败（agentDir 是普通文件）不影响工具调用，仍返回截断文本', async () => {
+    const hub = makeFakeHub();
+    hub.invoke = async () => ({
+      ok: true,
+      result: { blob: 'y'.repeat(MODEL_RESULT_CHAR_LIMIT * 2) },
+      attemptCount: 1,
+      durationMs: 7
+    });
+    const handlers: OpsRuntimeHandlers = { hub };
+    const tmp = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+    const notADir = join(tmp, 'not-a-dir');
+    writeFileSync(notADir, 'occupied');
+
+    const text = await executeBusinessTool(handlers, bizDescriptor, {}, undefined, notADir, 'call-2');
+    expect(text.length).toBeLessThanOrEqual(MODEL_RESULT_CHAR_LIMIT);
+    expect(text).toContain('截断');
+    expect(text).not.toContain('已写入');
+  });
+
+  it('USER_CANCELLED → 抛错走 isError 路径，UI 不呈现为成功', async () => {
+    const hub = makeFakeHub();
+    const cancelled: ToolInvocationResult = {
+      ok: false,
+      error: { code: 'USER_CANCELLED', message: '调用已被用户取消' },
+      attemptCount: 1,
+      durationMs: 3
+    };
+    hub.invoke = async () => cancelled;
+    const handlers: OpsRuntimeHandlers = { hub };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+
+    expect(isCancelledInvocation(cancelled)).toBe(true);
+    expect(isCancelledInvocation({ ok: true, attemptCount: 1, durationMs: 1 })).toBe(false);
+    // ok=false 但非取消（普通错误）仍作为结果 JSON 回给模型，让模型自行处理
+    expect(
+      isCancelledInvocation({
+        ok: false,
+        error: { code: 'OPS_RISK_CEILING', message: 'x' },
+        attemptCount: 1,
+        durationMs: 1
+      })
+    ).toBe(false);
+
+    await expect(
+      executeBusinessTool(handlers, bizDescriptor, {}, undefined, agentDir)
+    ).rejects.toThrow(/取消/);
+  });
+
+  it('策略闸门 block=true 时直接拒绝，不 invoke', async () => {
+    const hub = makeFakeHub();
+    const handlers: OpsRuntimeHandlers = {
+      hub,
+      beforeToolCall: async () => ({ block: true, reason: '调查中禁止该操作' })
+    };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+    await expect(
+      executeBusinessTool(handlers, bizDescriptor, {}, undefined, agentDir)
+    ).rejects.toThrow('调查中禁止该操作');
+    expect(hub.invokeCalls).toHaveLength(0);
   });
 });
 
@@ -809,6 +1007,38 @@ describe('createSubagentManager', () => {
     expect(events.find((e) => e.taskId === 'inv-slow' && e.status === 'failed')?.error).toContain(
       'maxWallMs'
     );
+  });
+
+  it('evidenceNote 沿事件链转发：manager 事件 → OpsSubagentEvent（host 消费）', async () => {
+    const forwarded: OpsSubagentEvent[] = [];
+    const manager = createSubagentManager({
+      runner: async () => ({
+        finalText:
+          '```json\n{"contract":"evidence-note@1","taskId":"inv-ev","confidence":"confirmed","summary":"应用日志确认连接池打满"}\n```'
+      }),
+      // 与 runtime 内部 onSubagentStatus 相同的字段映射（含 evidenceNote 透传）
+      onStatus: (e) => {
+        forwarded.push({
+          taskId: e.taskId,
+          status: e.status,
+          role: e.role,
+          ...(e.summary !== undefined ? { summary: e.summary } : {}),
+          ...(e.error !== undefined ? { error: e.error } : {}),
+          ...(e.evidenceNote !== undefined ? { evidenceNote: e.evidenceNote } : {})
+        });
+      }
+    });
+
+    manager.dispatch(makeManagedSpec('investigator', 'inv-ev'));
+    await flush();
+    const done = forwarded.find((e) => e.status === 'ok');
+    expect(done?.evidenceNote).toMatchObject({
+      taskId: 'inv-ev',
+      confidence: 'confirmed',
+      summary: '应用日志确认连接池打满'
+    });
+    // 非终态事件不带 evidenceNote
+    expect(forwarded.find((e) => e.status === 'running')?.evidenceNote).toBeUndefined();
   });
 
   it('runner 抛错 → failed；degradedReason → degraded；重复 taskId 幂等返回现状', async () => {

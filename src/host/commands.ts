@@ -91,6 +91,27 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     await controller.abort();
   });
 
+  // 不进 package.json contributes（也就不进命令面板）：只服务 webview 的
+  // command: 深链（需要 enableCommandUris），registerCommand 即可被调用。
+  const openArtifact = vscode.commands.registerCommand(
+    'atOpsAgent.openArtifact',
+    async (uri?: string | vscode.Uri) => {
+      if (uri === undefined || (typeof uri === 'string' && uri.trim().length === 0)) {
+        void vscode.window.showWarningMessage('没有可打开的产物 URI（结果可能已截断且未落盘）。');
+        return;
+      }
+      try {
+        const parsed = typeof uri === 'string' ? vscode.Uri.parse(uri) : uri;
+        const doc = await vscode.workspace.openTextDocument(parsed);
+        await vscode.window.showTextDocument(doc, { preview: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        output.appendLine(`[artifact/open] 打开失败: ${message}`);
+        void vscode.window.showErrorMessage(`无法打开产物：${message}`);
+      }
+    }
+  );
+
   return [
     newSession,
     pickPlaybook,
@@ -100,7 +121,8 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     diagnose,
     approve,
     reject,
-    abort
+    abort,
+    openArtifact
   ];
 }
 

@@ -5,7 +5,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { createAtSeriesHubHost, mapHubProviders, toolAnnotationsForRisk } from '../src/hub-host';
+import {
+  createAtSeriesHubHost,
+  isOkFalseResult,
+  mapHubProviders,
+  toolAnnotationsForRisk
+} from '../src/hub-host';
 import { createOrchestrator, loadPlaybooks } from '../src/orchestrator';
 import { buildSystemPrompt, createOpsRuntime } from '../src/runtime';
 import { evaluatePolicy } from '../src/policy';
@@ -16,6 +21,7 @@ describe('public factory exports', () => {
     expect(typeof createAtSeriesHubHost).toBe('function');
     expect(typeof mapHubProviders).toBe('function');
     expect(typeof toolAnnotationsForRisk).toBe('function');
+    expect(typeof isOkFalseResult).toBe('function');
   });
 
   it('src/orchestrator exposes createOrchestrator and loadPlaybooks', () => {

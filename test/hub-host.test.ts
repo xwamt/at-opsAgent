@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { BridgeRegistryRecord, ListProvidersResult as HubListProvidersResult, ToolCatalogEntry } from '@at-series/mcp-hub';
 import {
   createAtSeriesHubHost,
+  isOkFalseResult,
   mapHubProviders,
   toolAnnotationsForRisk
 } from '../src/hub-host';
@@ -37,6 +38,13 @@ const BRIDGE_TOOLS: ToolCatalogEntry[] = [
     description: 'Bridge replies 200 with an ok:false body (At-Database compat).',
     risk: 'write',
     inputSchema: { type: 'object', properties: { sql: { type: 'string' } } }
+  },
+  {
+    name: 'grafana_ok_flag_payload',
+    title: 'Payload carrying an ok flag',
+    description: 'Non-database tool whose business payload happens to carry ok:false.',
+    risk: 'read',
+    inputSchema: { type: 'object', properties: {} }
   }
 ];
 
@@ -96,6 +104,15 @@ function fakeBridgeHandler(req: IncomingMessage, res: ServerResponse): void {
           ok: true,
           name: body.name,
           result: { ok: false, error: { code: 'DB_ERROR', message: 'permission denied for table orders' } }
+        });
+        return;
+      }
+      if (body.name === 'grafana_ok_flag_payload') {
+        // Contract-compliant plugin whose payload legitimately contains ok:false.
+        sendJson(res, 200, {
+          ok: true,
+          name: body.name,
+          result: { ok: false, status: 'degraded' }
         });
         return;
       }
@@ -180,7 +197,8 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
     expect(all.map((t) => t.name).sort()).toEqual([
       'db_execute_query',
       'grafana_cancelled_call',
-      'grafana_list_instances'
+      'grafana_list_instances',
+      'grafana_ok_flag_payload'
     ]);
     expect(all.every((t) => !t.name.startsWith('at_'))).toBe(true);
     const listInstances = all.find((t) => t.name === 'grafana_list_instances');
@@ -201,7 +219,8 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
     expect(exposed.map((t) => t.name).sort()).toEqual([
       'db_execute_query',
       'grafana_cancelled_call',
-      'grafana_list_instances'
+      'grafana_list_instances',
+      'grafana_ok_flag_payload'
     ]);
     expect(exposed.every((t) => !t.name.startsWith('at_'))).toBe(true);
   });
@@ -228,6 +247,13 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
     expect(res.ok).toBe(false);
     expect(res.error?.code).toBe('OPS_DATABASE_OK_FALSE');
     expect(res.error?.message).toBe('permission denied for table orders');
+  });
+
+  it('passes ok:false payloads from non-database plugins through as successful results', async () => {
+    const res = await host.invoke({ name: 'grafana_ok_flag_payload', arguments: {} });
+    expect(res.ok).toBe(true);
+    expect(res.result).toEqual({ ok: false, status: 'degraded' });
+    expect(res.error).toBeUndefined();
   });
 
   it('returns NOT_FOUND for unknown tools', async () => {
@@ -287,6 +313,35 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
   it('refresh() re-reads the catalog on demand', async () => {
     await host.refresh();
     expect(host.getProviders().providers.some((p) => p.pluginId === 'at.grafana')).toBe(true);
+  });
+});
+
+describe('isOkFalseResult (Database ok:false scoping, docs/02 §2)', () => {
+  it('flags ok:false bodies when the winner pluginId is at.database', () => {
+    expect(isOkFalseResult('database_run_query', 'at.database', { ok: false })).toBe(true);
+  });
+
+  it('flags ok:false bodies for db_-prefixed tools even when no winner is known', () => {
+    expect(
+      isOkFalseResult('db_execute_query', undefined, {
+        ok: false,
+        error: { code: 'DB_ERROR', message: 'permission denied' }
+      })
+    ).toBe(true);
+  });
+
+  it('does not flag other plugins even when their payload carries ok:false', () => {
+    expect(isOkFalseResult('grafana_ok_flag_payload', 'at.grafana', { ok: false })).toBe(false);
+    expect(isOkFalseResult('terminal_run', 'at.terminal', { ok: false, code: 1 })).toBe(false);
+  });
+
+  it('does not flag At-Database bodies that report ok:true', () => {
+    expect(isOkFalseResult('db_execute_query', 'at.database', { ok: true, rows: [] })).toBe(false);
+  });
+
+  it('does not flag At-Database payloads without an ok field', () => {
+    expect(isOkFalseResult('db_execute_query', 'at.database', { rows: [] })).toBe(false);
+    expect(isOkFalseResult('db_execute_query', 'at.database', 'plain text')).toBe(false);
   });
 });
 

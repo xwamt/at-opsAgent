@@ -82,6 +82,14 @@ export type OrchestratorEventLike =
 export interface OrchestratorLike {
   startPlaybook(playbookId: string, sessionId: string): PlaybookRunLike;
   desiredSelect?(runOrId: PlaybookRunLike | string): SelectToolsInput | undefined;
+  /**
+   * 产出 9 要素审批简报并进入 awaitingApproval（同步 emit approval/request）。
+   * 可选：fallback 编排缺席时 host 退回纯文本拒绝。
+   */
+  requestApproval?(
+    runOrId: PlaybookRunLike | string,
+    input: { risk: 'write' | 'exec'; commandSet: unknown; elements?: Record<string, string> }
+  ): ApprovalBriefLike;
   applyApproval(input: {
     brief: { briefId: string; runId: string };
     decision: 'approved' | 'rejected';
@@ -137,6 +145,13 @@ export interface RuntimeHandlers {
     role?: string;
     summary?: string;
     error?: string;
+    /** evidence-note@1 解析成功时附上（runtime 侧后续开始发送，host 前向兼容）。 */
+    evidenceNote?: {
+      taskId: string;
+      confidence: 'confirmed' | 'hypothesis' | 'pending';
+      summary: string;
+      refs?: Array<{ kind: string; preview: string; artifactUri?: string }>;
+    };
   }) => void;
 }
 
@@ -155,6 +170,8 @@ export interface RuntimeCreateOptions {
   agentDir?: string;
   cwd?: string;
   model?: { provider?: string; id?: string };
+  /** 从 SecretStorage 解析 LLM key；runtime 注入 pi，永不写入日志。 */
+  getApiKey?: () => Promise<string | undefined>;
 }
 
 export interface RuntimeModule {

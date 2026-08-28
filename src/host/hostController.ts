@@ -7,10 +7,12 @@
  * - webview 请求路由（chat/prompt、chat/abort、playbook/start、approval/respond…）
  * - beforeToolCall 权限闸装配（policy.evaluate；orchestrator 侧不重复）
  * - playbook 阶段驱动：首条用户消息 triage → selecting → investigating；
- *   进入 investigating/verifying 时下发子代理；阶段迁移时整体替换 L4；
+ *   进入 investigating/executing/verifying 时下发子代理；阶段迁移时整体替换 L4；
  *   guidedManual（Jenkins/Nacos 人工步骤）发引导提示，completed 后续链路
+ * - 会话审批闭环：write/exec 被策略闸拦下时经 orchestrator 产出 9 要素简报，
+ *   批准后 host 内存签发 HMAC 令牌（不进 LLM/webview），模型重试同一命令集放行
  */
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -22,13 +24,21 @@ import {
   type ChatPromptReq,
   type Envelope,
   type Event,
+  type EvidenceNoteView,
   type HubHost,
   type HydrateEvt,
   type ModelSetReq,
   type SubagentCard,
   type ToolCallView
 } from '../protocol';
-import { evaluatePolicy } from '../policy';
+import {
+  evaluatePolicy,
+  hashCommandSet,
+  issueApprovalToken,
+  verifyApprovalToken,
+  type ApprovalRef
+} from '../policy';
+import { buildApprovalCommandSet, buildApprovalElements } from './approvalGate';
 import { FallbackOrchestrator, loadPlaybooksFallback } from './fallback/fallbackOrchestrator';
 import { FallbackRuntime } from './fallback/fallbackRuntime';
 import { buildGuidedManualNotice, guidedManualCommand, hasGuidedManualStep } from './guidedManual';
@@ -86,6 +96,15 @@ export class HostController {
   private selectCountThisTask = 0;
   /** briefId → runId（applyApproval 需要 runId 定位 run）。 */
   private readonly briefRuns = new Map<string, string>();
+  /** briefId → commandSetSha256（批准时签发令牌用；resolved 后清除）。 */
+  private readonly briefHashes = new Map<string, string>();
+  /**
+   * 会话内当前有效的审批引用。token 只存 host 内存：
+   * 不发给 LLM、不发给 webview、不写日志。
+   */
+  private currentApproval: ApprovalRef | null = null;
+  /** 审批令牌 HMAC 秘钥：进程内随机生成，同样绝不外发/落日志。 */
+  private readonly approvalSecret = randomBytes(32).toString('hex');
   private readonly hubSub: { dispose(): void };
   private readonly timelineSub: { dispose(): void };
 
@@ -137,7 +156,20 @@ export class HostController {
   }
 
   snapshot(): HydrateEvt {
-    return this.store.snapshot(this.safeProviders());
+    const providers = this.safeProviders();
+    const playbooks = this.playbookCache;
+    if (!playbooks) {
+      // 不阻塞快照：后台预热缓存，下一次 hydrate 自然带上。
+      void this.getPlaybooks().catch(() => {});
+      return this.store.snapshot(providers);
+    }
+    // webview 的 absorbCapabilities 从 providers 记录里取 playbooks；
+    // 顶层字段同时下发，供后续消费方直接读取。
+    const providersWithPlaybooks =
+      typeof providers === 'object' && providers !== null && !Array.isArray(providers)
+        ? { ...(providers as Record<string, unknown>), playbooks }
+        : providers;
+    return this.store.snapshot(providersWithPlaybooks, { playbooks });
   }
 
   // ── webview 请求路由 ───────────────────────────────────────────────────
@@ -227,6 +259,8 @@ export class HostController {
     this.store.newSession();
     this.selectCountThisTask = 0;
     this.briefRuns.clear();
+    this.briefHashes.clear();
+    this.currentApproval = null;
     this.activeRun = undefined;
     this.spawnedStageKeys.clear();
     this.guidedNoticeRuns.clear();
@@ -292,6 +326,27 @@ export class HostController {
     if (typeof req?.briefId !== 'string') return { ok: false };
     const orchestrator = await this.ensureOrchestrator();
     const runId = this.briefRuns.get(req.briefId) ?? '';
+    // approval/resolved 事件会同步清 briefHashes，先取哈希。
+    const commandSetSha256 = this.briefHashes.get(req.briefId);
+    // 令牌必须在 orchestrator.applyApproval 之前就位：approved 会同步推进
+    // executing 并触发 executor 下发，届时 spec 合并要读 currentApproval。
+    // token 仅存 host 内存；模型只会收到「已批准，请重试」的语义，不见令牌。
+    if (req.decision === 'approved') {
+      if (commandSetSha256 !== undefined) {
+        this.currentApproval = {
+          briefId: req.briefId,
+          commandSetSha256,
+          token: issueApprovalToken(
+            req.briefId,
+            commandSetSha256,
+            this.store.activeSessionId,
+            this.approvalSecret
+          )
+        };
+      }
+    } else {
+      this.currentApproval = null;
+    }
     try {
       orchestrator.applyApproval({
         brief: { briefId: req.briefId, runId },
@@ -305,6 +360,7 @@ export class HostController {
       this.broadcast('approval/resolve', { briefId: req.briefId, decision: req.decision });
     }
     this.briefRuns.delete(req.briefId);
+    this.briefHashes.delete(req.briefId);
     this.store.appendTimeline({ kind: 'approval', briefId: req.briefId, decision: req.decision });
     return { ok: true };
   }
@@ -369,7 +425,7 @@ export class HostController {
 
   /** 阶段进入钩子：下发子代理、注入 L4、guidedManual 提示。绝不抛出。 */
   private handleStageEntered(runId: string, playbookId: string, stage: string): void {
-    if (stage === 'investigating' || stage === 'verifying') {
+    if (stage === 'investigating' || stage === 'executing' || stage === 'verifying') {
       void this.spawnSubagentsFor(runId, stage).catch((err) =>
         this.log(`[subagent] spawn 失败: ${describeError(err)}`)
       );
@@ -381,9 +437,9 @@ export class HostController {
   }
 
   /**
-   * 进入 investigating / verifying 时把 parallelGroup 转成 TaskSpec 并交
-   * runtime 执行。orchestrator 缺 spawnSubagentSpecs 或 runtime 缺
-   * dispatchSubagent 都静默降级：卡片仍显示（queued），但没有真实子代理。
+   * 进入 investigating / executing / verifying 时把 parallelGroup 转成
+   * TaskSpec 并交 runtime 执行。orchestrator 缺 spawnSubagentSpecs 或 runtime
+   * 缺 dispatchSubagent 都静默降级：卡片仍显示（queued），但没有真实子代理。
    */
   private async spawnSubagentsFor(runId: string, stage: string): Promise<void> {
     const orchestrator = this.orchestrator;
@@ -401,7 +457,10 @@ export class HostController {
     }
     if (specs.length === 0) return;
     const runtime = this.runtime;
-    for (const spec of specs) {
+    for (const rawSpec of specs) {
+      // 已批准的会话内，executor spec 附上 {briefId, commandSetSha256}
+      //（不含 hmac token——token 只留在 host，闸门校验时使用）。
+      const spec = this.attachApprovalToken(rawSpec);
       const taskId = readTaskId(spec);
       if (taskId) this.activeSubagentTaskIds.add(taskId);
       if (!runtime?.dispatchSubagent) continue;
@@ -416,6 +475,18 @@ export class HostController {
     if (!runtime?.dispatchSubagent) {
       this.log(`[subagent] runtime 未提供 dispatchSubagent，${specs.length} 个任务保持 queued`);
     }
+  }
+
+  /** executor spec 合并审批引用（TaskSpec.approvalToken 形状不含 hmac token）。 */
+  private attachApprovalToken(spec: unknown): unknown {
+    const approval = this.currentApproval;
+    if (!approval) return spec;
+    if (typeof spec !== 'object' || spec === null) return spec;
+    if ((spec as { role?: unknown }).role !== 'executor') return spec;
+    return {
+      ...(spec as Record<string, unknown>),
+      approvalToken: { briefId: approval.briefId, commandSetSha256: approval.commandSetSha256 }
+    };
   }
 
   /**
@@ -443,6 +514,37 @@ export class HostController {
     if (card && (card.status === 'queued' || card.status === 'running')) {
       this.patchSubagentCard(taskId, 'aborted', '用户中止');
     }
+  }
+
+  /** 子代理产出的 evidence-note@1 → transcript 证据卡片 + 看板时间线。 */
+  private appendEvidenceNote(note: {
+    taskId: string;
+    confidence: 'confirmed' | 'hypothesis' | 'pending';
+    summary: string;
+    refs?: Array<{ kind: string; preview: string; artifactUri?: string }>;
+  }): void {
+    if (typeof note.taskId !== 'string' || typeof note.summary !== 'string') return;
+    const view: EvidenceNoteView = {
+      taskId: note.taskId,
+      confidence: isEvidenceConfidence(note.confidence) ? note.confidence : 'pending',
+      summary: note.summary,
+      refs: Array.isArray(note.refs)
+        ? note.refs.map((ref) => ({
+            kind: String(ref.kind ?? 'note'),
+            preview: String(ref.preview ?? ''),
+            ...(typeof ref.artifactUri === 'string' ? { artifactUri: ref.artifactUri } : {})
+          }))
+        : []
+    };
+    const item = { kind: 'evidence' as const, id: randomUUID(), note: view };
+    this.store.appendItem(item);
+    this.broadcast('transcript/append', { item });
+    this.store.appendTimeline({
+      kind: 'evidence',
+      taskId: view.taskId,
+      confidence: view.confidence,
+      summary: view.summary
+    });
   }
 
   /** 更新子代理卡片状态并广播；终态任务从全局停止清单摘除。 */
@@ -639,15 +741,18 @@ export class HostController {
               hub: this.hub,
               beforeToolCall: async (ctx) => this.gateToolCall(ctx.toolName, ctx.args),
               onEvent,
-              onSubagentEvent: (e) =>
-                this.patchSubagentCard(e.taskId, e.status, e.summary ?? e.error)
+              onSubagentEvent: (e) => {
+                this.patchSubagentCard(e.taskId, e.status, e.summary ?? e.error);
+                if (e.evidenceNote) this.appendEvidenceNote(e.evidenceNote);
+              }
             },
             {
               agentDir: this.agentDir,
               cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir(),
               model: this.modelSelection
                 ? { provider: this.modelSelection.provider, id: this.modelSelection.model }
-                : undefined
+                : undefined,
+              getApiKey: () => Promise.resolve(this.secrets.getLlmApiKey())
             }
           )
         );
@@ -714,7 +819,7 @@ export class HostController {
         risk,
         pluginId: descriptor?.pluginId,
         stage: this.store.playbook?.stage,
-        approval: null,
+        approval: this.validApproval(),
         sessionRequiredFor: config.get<'write-exec' | 'exec-only' | 'never'>(
           'approval.sessionRequiredFor',
           'write-exec'
@@ -729,11 +834,15 @@ export class HostController {
         this.selectCountThisTask += 1;
       }
       if (decision.needSessionApproval) {
-        // 会话审批闭环由 orchestrator 的 9 要素简报承载；无有效 token 一律拒。
-        return {
-          block: true,
-          reason: `OPS_APPROVAL_REQUIRED: ${decision.reason}。请先产出 9 要素审批简报并等待会话内批准。`
-        };
+        // 会话审批闭环：产出 9 要素简报并拒绝本次调用；批准后模型重试同一
+        // 调用时 approval 命中放行。绝不在批准后代模型自动重放工具。
+        return this.requestSessionApproval(
+          toolName,
+          args,
+          risk === 'exec' ? 'exec' : 'write',
+          descriptor?.pluginId,
+          decision.reason
+        );
       }
       return { block: false };
     } catch (err) {
@@ -741,6 +850,91 @@ export class HostController {
       this.log(`[policy] evaluate 异常，fail-closed: ${describeError(err)}`);
       return { block: true, reason: `策略闸异常，已按拒绝处理（${describeError(err)}）` };
     }
+  }
+
+  /** host 内存中的审批引用；HMAC 与当前会话验证不过即视为无审批。 */
+  private validApproval(): ApprovalRef | null {
+    const approval = this.currentApproval;
+    if (!approval) return null;
+    const ok = verifyApprovalToken(
+      approval.token,
+      approval.briefId,
+      approval.commandSetSha256,
+      this.store.activeSessionId,
+      this.approvalSecret
+    );
+    if (!ok) {
+      // 会话已切换等：引用作废，不留过期令牌。
+      this.currentApproval = null;
+      return null;
+    }
+    return approval;
+  }
+
+  /**
+   * needSessionApproval → 经 orchestrator 产出 9 要素简报（approval/request
+   * 事件由 onOrchestratorEvent 广播为 ApprovalBar），并拒绝本次调用。
+   * orchestrator / run 缺席或状态机不允许进入 awaitingApproval 时退回纯文本拒绝。
+   */
+  private async requestSessionApproval(
+    toolName: string,
+    args: Record<string, unknown>,
+    risk: 'write' | 'exec',
+    pluginId: string | undefined,
+    policyReason: string
+  ): Promise<{ block: boolean; reason?: string }> {
+    const fallback = {
+      block: true,
+      reason: `OPS_APPROVAL_REQUIRED: ${policyReason}。请先产出 9 要素审批简报并等待会话内批准。`
+    };
+    let orchestrator: OrchestratorLike;
+    try {
+      orchestrator = await this.ensureOrchestrator();
+    } catch (err) {
+      this.log(`[orchestrator] ensure 失败: ${describeError(err)}`);
+      return fallback;
+    }
+    const run = this.activeRun;
+    if (!orchestrator.requestApproval || !run) return fallback;
+
+    const commandSet = buildApprovalCommandSet(toolName, args);
+    const commandSetSha256 = hashCommandSet(commandSet);
+    // 同一命令集已有待审简报（模型在批准前重试是常态）：不重复开新简报。
+    for (const [briefId, hash] of this.briefHashes) {
+      if (hash === commandSetSha256 && this.store.pendingBriefs.some((b) => b.id === briefId)) {
+        return {
+          block: true,
+          reason: `OPS_APPROVAL_REQUIRED: 已发出 9 要素简报 ${briefId}，请在会话内批准后再试。`
+        };
+      }
+    }
+    // awaitingApproval 只能从 synthesizing / executing 进入；调查中先推进。
+    if (this.currentStage(run) === 'investigating') {
+      this.tryAdvance(run, 'synthesizing');
+    }
+    let briefId: string;
+    try {
+      const brief = orchestrator.requestApproval(run.id, {
+        risk,
+        commandSet,
+        elements: buildApprovalElements({
+          toolName,
+          args,
+          risk,
+          commandSet,
+          pluginId,
+          stage: this.store.playbook?.stage
+        })
+      });
+      briefId = brief.briefId;
+    } catch (err) {
+      this.log(`[orchestrator] requestApproval 失败: ${describeError(err)}`);
+      return fallback;
+    }
+    return {
+      block: true,
+      reason: `OPS_APPROVAL_REQUIRED: 已发出 9 要素简报 ${briefId}，请在会话内批准后再试。`
+    };
   }
 
   // ── runtime 事件 → host-protocol ──────────────────────────────────────
@@ -832,6 +1026,9 @@ export class HostController {
       case 'approval/request': {
         const view = toBriefView(e.brief);
         this.briefRuns.set(e.brief.briefId, e.brief.runId);
+        if (typeof e.brief.commandSetSha256 === 'string') {
+          this.briefHashes.set(e.brief.briefId, e.brief.commandSetSha256);
+        }
         this.store.addBrief(view);
         const item = { kind: 'approval' as const, id: randomUUID(), briefId: view.id };
         this.store.appendItem(item);
@@ -844,6 +1041,7 @@ export class HostController {
           this.broadcast('approval/resolve', { briefId: e.briefId, decision: e.decision });
         }
         this.briefRuns.delete(e.briefId);
+        this.briefHashes.delete(e.briefId);
         break;
       }
       default:
@@ -883,6 +1081,12 @@ const SUBAGENT_STATUSES: ReadonlySet<string> = new Set([
 
 function isSubagentStatus(value: string | undefined): value is SubagentCard['status'] {
   return value !== undefined && SUBAGENT_STATUSES.has(value);
+}
+
+const EVIDENCE_CONFIDENCES: ReadonlySet<string> = new Set(['confirmed', 'hypothesis', 'pending']);
+
+function isEvidenceConfidence(value: unknown): value is EvidenceNoteView['confidence'] {
+  return typeof value === 'string' && EVIDENCE_CONFIDENCES.has(value);
 }
 
 function readTaskId(spec: unknown): string | undefined {

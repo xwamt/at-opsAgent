@@ -186,13 +186,14 @@ export class SessionStore {
 
   // ── 快照 ───────────────────────────────────────────────────────────────
 
-  snapshot(providers: unknown): HydrateEvt {
+  snapshot(providers: unknown, extra?: Partial<HydrateEvt>): HydrateEvt {
     return {
       sessionId: this._activeSessionId,
       playbook: this._playbook ? { ...this._playbook } : undefined,
       items: [...this._items],
       providers,
-      pendingApproval: this._pendingBriefs[0]
+      pendingApproval: this._pendingBriefs[0],
+      ...(extra ?? {})
     };
   }
 
