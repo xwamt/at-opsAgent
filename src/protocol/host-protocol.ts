@@ -155,6 +155,10 @@ export type SubagentCard = {
   toolCalls: { used: number; max: number };
   wallMs: { used: number; max: number };
   latest?: string;
+  /** 派单目标（一句话），卡片主标题用。 */
+  goal?: string;
+  /** 可见工具名（子会话实际注入的业务工具）。 */
+  visibleTools?: string[];
 };
 
 export type EvidenceNoteView = {
