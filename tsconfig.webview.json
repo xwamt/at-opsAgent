@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["src/webview-chat/**/*", "src/webview-board/**/*"]
+  "include": ["src/webview-chat/**/*", "src/webview-board/**/*", "src/webview-settings/**/*"]
 }

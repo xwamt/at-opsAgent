@@ -4,6 +4,7 @@ import { t } from '../i18n';
 import { useOpsStore } from '../store';
 import type { PromptAttachment } from '../store-helpers';
 import { getVsCodeApi } from '../vscode-api';
+import ModelSelector from './ModelSelector.vue';
 
 const store = useOpsStore();
 const draft = ref('');
@@ -21,6 +22,12 @@ const placeholder = computed(() =>
 const sendLabel = computed(() =>
   store.streaming ? t('composerSteer') : store.canFollowUp ? t('composerFollowUp') : t('composerSend')
 );
+
+// 输入井随内容长高：2–6 行（Cline/Continue 的 composer 手感）
+const rows = computed(() => {
+  const lines = draft.value.split('\n').length;
+  return Math.min(6, Math.max(2, lines));
+});
 
 onMounted(() => {
   const state = getVsCodeApi().getState() as { draft?: string } | undefined;
@@ -117,44 +124,59 @@ function onKeydown(event: KeyboardEvent): void {
         </button>
       </span>
     </div>
-    <div class="composer__row">
+    <div class="composer__well">
       <textarea
         ref="textarea"
         v-model="draft"
         class="composer__input"
-        rows="2"
+        :rows="rows"
         :placeholder="placeholder"
         :aria-label="t('composerInputAria')"
         @keydown="onKeydown"
       ></textarea>
-      <div class="composer__actions">
-        <button
-          type="button"
-          class="ops-btn ops-btn--secondary composer__at"
-          :aria-label="t('composerAttachAria')"
-          :title="t('composerAttachAria')"
-          @click="addAsset"
-        >
-          @
-        </button>
-        <button
-          v-if="store.streaming"
-          type="button"
-          class="ops-btn ops-btn--secondary"
-          :aria-label="t('composerStopAria')"
-          @click="store.abortRun()"
-        >
-          ⏹ {{ t('composerStop') }}
-        </button>
-        <button
-          type="button"
-          class="ops-btn"
-          :disabled="!draft.trim()"
-          :aria-label="sendLabel"
-          @click="send"
-        >
-          {{ sendLabel }}
-        </button>
+      <div class="composer__toolbar">
+        <div class="composer__tools">
+          <ModelSelector />
+          <button
+            type="button"
+            class="composer__tool ops-mono"
+            :aria-label="t('composerAttachAria')"
+            :title="t('composerAttachAria')"
+            @click="addAsset"
+          >
+            @
+          </button>
+          <button
+            type="button"
+            class="composer__tool ops-mono"
+            :aria-expanded="store.activePicker === 'playbook'"
+            :aria-label="t('composerPlaybookHint')"
+            :title="t('composerPlaybookHint')"
+            @click="store.togglePicker('playbook')"
+          >
+            /playbook
+          </button>
+        </div>
+        <div class="composer__actions">
+          <button
+            v-if="store.streaming"
+            type="button"
+            class="ops-btn ops-btn--secondary"
+            :aria-label="t('composerStopAria')"
+            @click="store.abortRun()"
+          >
+            ⏹ {{ t('composerStop') }}
+          </button>
+          <button
+            type="button"
+            class="ops-btn"
+            :disabled="!draft.trim()"
+            :aria-label="sendLabel"
+            @click="send"
+          >
+            {{ sendLabel }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -165,7 +187,7 @@ function onKeydown(event: KeyboardEvent): void {
   display: flex;
   flex-direction: column;
   gap: var(--ops-density);
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  padding: var(--ops-density) calc(var(--ops-density) * 2) calc(var(--ops-density) * 2);
   border-top: 1px solid var(--ops-border);
 }
 
@@ -208,40 +230,81 @@ function onKeydown(event: KeyboardEvent): void {
   outline-offset: 1px;
 }
 
-.composer__row {
+/* 输入井：composer 是一块明确的输入区，不是贴边裸 textarea */
+.composer__well {
   display: flex;
+  flex-direction: column;
   gap: var(--ops-density);
-  align-items: flex-end;
-}
-
-.composer__input {
-  flex: 1;
-  resize: none;
-  min-height: 34px;
-  max-height: 120px;
   background: var(--ops-input-bg);
-  color: var(--ops-input-fg);
   border: 1px solid var(--ops-input-border);
   border-radius: var(--ops-radius);
-  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
-  font-family: inherit;
-  font-size: inherit;
-  line-height: 1.4;
+  padding: 8px 10px;
 }
 
-.composer__input:focus {
+.composer__well:focus-within {
+  border-color: var(--ops-accent);
   outline: 1px solid var(--ops-accent);
   outline-offset: -1px;
 }
 
-.composer__actions {
-  display: flex;
-  gap: var(--ops-density);
+.composer__input {
+  width: 100%;
+  resize: none;
+  background: transparent;
+  color: var(--ops-input-fg);
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
 }
 
-.composer__at {
-  font-family: var(--ops-mono);
-  padding-left: calc(var(--ops-density) * 1.5);
-  padding-right: calc(var(--ops-density) * 1.5);
+.composer__input:focus {
+  outline: none;
+}
+
+/* 井内工具条：左 = 模型/@/playbook，右 = 停止/发送（Continue/Cline 布局） */
+.composer__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ops-density);
+  min-width: 0;
+}
+
+.composer__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-density);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.composer__tool {
+  background: transparent;
+  border: none;
+  border-radius: var(--ops-radius);
+  color: var(--ops-muted);
+  cursor: pointer;
+  padding: 1px var(--ops-density);
+  font-size: calc(var(--ops-font-size) - 2px);
+  white-space: nowrap;
+}
+
+.composer__tool:hover {
+  background: var(--ops-hover-bg);
+  color: var(--ops-fg);
+}
+
+.composer__tool:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: 1px;
+}
+
+.composer__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-density);
+  flex: 0 0 auto;
 }
 </style>

@@ -3,11 +3,19 @@
  * 用假数据回放 hydrate / 流式 / 工具 / 子代理 / 审批事件，postMessage 打回环。
  */
 import type { Envelope, TranscriptItem } from '../protocol/host-protocol';
+import { DEFAULT_PLAYBOOKS } from './store';
 
 function emit(type: string, payload: unknown): void {
   const envelope: Envelope = { v: 1, id: '', dir: 'evt', type, payload, ts: Date.now() };
   window.dispatchEvent(new MessageEvent('message', { data: envelope }));
 }
+
+/** 历史侧滑演示数据：sess-demo 有完整 transcript，其余会话是空态（演示欢迎页）。 */
+const MOCK_SESSIONS = [
+  { id: 'sess-demo', title: '网关 5xx 事故调查', createdAt: Date.now() - 20 * 60_000 },
+  { id: 'sess-inspect', title: '日常巡检 · 全绿', createdAt: Date.now() - 26 * 3_600_000 },
+  { id: 'sess-nacos', title: 'Nacos 路由配置变更', createdAt: Date.now() - 3 * 86_400_000 }
+];
 
 const HYDRATE_ITEMS: TranscriptItem[] = [
   { kind: 'user', id: 'u1', text: '线上网关 5xx 突增，帮我查' },
@@ -174,6 +182,47 @@ function guidedBrief() {
   };
 }
 
+function providersSnapshot(model = 'qwen3-max') {
+  return {
+    providers: [
+      { id: 'at.grafana', label: 'AT Grafana', connected: true },
+      { id: 'at.terminal', label: 'AT Terminal', connected: true },
+      { id: 'at.jenkins', label: 'AT Jenkins', connected: false }
+    ],
+    model,
+    models: MOCK_MODELS,
+    playbooks: DEFAULT_PLAYBOOKS
+  };
+}
+
+/** session/switch、session/new 与启动都走同一个 hydrate 出口。 */
+function emitHydrate(sessionId: string): void {
+  if (sessionId === 'sess-demo') {
+    emit('hydrate', {
+      sessionId,
+      playbook: { id: 'pb.incident', stage: 'Investigating' },
+      items: HYDRATE_ITEMS,
+      // 事件脉络条演示：host 也可能完全不发 timeline（届时仅证据便签撑起条带）
+      timeline: [
+        { id: 'tl-1', ts: Date.now() - 8 * 60_000, title: '09:02 Jenkins #482 发布 api-gateway v2.14.1', severity: 'warn' },
+        { id: 'tl-2', ts: Date.now() - 5 * 60_000, title: '09:05 5xx 比例 0.2%→14%', severity: 'crit' }
+      ],
+      providers: providersSnapshot(),
+      pendingApproval: demoBrief(),
+      sessions: MOCK_SESSIONS
+    });
+    return;
+  }
+  emit('hydrate', {
+    sessionId,
+    playbook: null,
+    items: [],
+    providers: providersSnapshot(),
+    pendingApproval: null,
+    sessions: MOCK_SESSIONS
+  });
+}
+
 export function installMockHost(): void {
   (window as unknown as Record<string, unknown>).__opsMockPostMessage = (raw: unknown) => {
     const msg = raw as Partial<Envelope>;
@@ -222,15 +271,20 @@ export function installMockHost(): void {
       }
     } else if (msg.type === 'model/set') {
       const payload = (msg.payload ?? {}) as { provider?: string; model?: string };
-      emit('capabilities/snapshot', {
-        providers: [
-          { id: 'at.grafana', label: 'AT Grafana', connected: true },
-          { id: 'at.terminal', label: 'AT Terminal', connected: true },
-          { id: 'at.jenkins', label: 'AT Jenkins', connected: false }
-        ],
-        model: payload.model,
-        models: MOCK_MODELS
-      });
+      emit('capabilities/snapshot', providersSnapshot(payload.model));
+    } else if (msg.type === 'session/switch') {
+      const payload = (msg.payload ?? {}) as { sessionId?: string };
+      if (payload.sessionId) {
+        emitHydrate(payload.sessionId);
+      }
+    } else if (msg.type === 'session/new') {
+      const session = {
+        id: `sess-${Date.now().toString(36)}`,
+        title: `会话 ${MOCK_SESSIONS.length + 1}`,
+        createdAt: Date.now()
+      };
+      MOCK_SESSIONS.unshift(session);
+      emitHydrate(session.id);
     } else if (msg.type === 'guidedManual/complete') {
       emit('playbook/stage', { id: 'pb.config-change', stage: 'Verifying' });
       emit('transcript/append', {
@@ -266,26 +320,7 @@ export function installMockHost(): void {
   };
 
   window.setTimeout(() => {
-    emit('hydrate', {
-      sessionId: 'sess-demo',
-      playbook: { id: 'pb.incident', stage: 'Investigating' },
-      items: HYDRATE_ITEMS,
-      // 事件脉络条演示：host 也可能完全不发 timeline（届时仅证据便签撑起条带）
-      timeline: [
-        { id: 'tl-1', ts: Date.now() - 8 * 60_000, title: '09:02 Jenkins #482 发布 api-gateway v2.14.1', severity: 'warn' },
-        { id: 'tl-2', ts: Date.now() - 5 * 60_000, title: '09:05 5xx 比例 0.2%→14%', severity: 'crit' }
-      ],
-      providers: {
-        providers: [
-          { id: 'at.grafana', label: 'AT Grafana', connected: true },
-          { id: 'at.terminal', label: 'AT Terminal', connected: true },
-          { id: 'at.jenkins', label: 'AT Jenkins', connected: false }
-        ],
-        model: 'qwen3-max',
-        models: MOCK_MODELS
-      },
-      pendingApproval: demoBrief()
-    });
+    emitHydrate('sess-demo');
   }, 60);
 }
 

@@ -1,57 +1,60 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { t } from '../i18n';
 import { useOpsStore } from '../store';
 import ApprovalBar from './ApprovalBar.vue';
 import ChatTranscript from './ChatTranscript.vue';
 import Composer from './Composer.vue';
-import HostSessionChip from './HostSessionChip.vue';
-import ModelSelector from './ModelSelector.vue';
+import HistoryOverlay from './HistoryOverlay.vue';
 import PlaybookHeader from './PlaybookHeader.vue';
 import PlaybookPicker from './PlaybookPicker.vue';
 import SkillPicker from './SkillPicker.vue';
+import WelcomeState from './WelcomeState.vue';
 
 const store = useOpsStore();
-
-const runState = computed(() => (store.streaming ? t('statusRunning') : t('statusIdle')));
-const sessionShort = computed(() =>
-  store.sessionId ? store.sessionId.slice(0, 12) : t('statusNoSession')
-);
 </script>
 
 <template>
   <div class="chat-app">
     <PlaybookHeader />
-    <ChatTranscript class="chat-app__transcript" />
+    <!-- 空态走欢迎页（标题 + 建议卡），transcript 不再渲染自己的空提示 -->
+    <WelcomeState v-if="store.items.length === 0" class="chat-app__transcript" />
+    <ChatTranscript v-else class="chat-app__transcript" />
     <div class="chat-app__dock">
       <PlaybookPicker v-if="store.activePicker === 'playbook'" class="chat-app__picker" />
       <SkillPicker v-else-if="store.activePicker === 'skill'" class="chat-app__picker" />
+      <!-- 能力插件健康：composer 上方一条低调的点簇，不再占一整条状态栏 -->
+      <div
+        v-if="store.providerChips.length > 0 || store.mock"
+        class="chat-app__health"
+        aria-label="能力插件状态"
+      >
+        <span
+          v-for="p in store.providerChips"
+          :key="p.id"
+          class="chat-app__health-chip"
+          :class="p.connected ? 'chat-app__health-chip--ok' : 'chat-app__health-chip--off'"
+          :title="p.id + ' · ' + p.label + (p.connected ? ' 已连接' : ' 未连接')"
+        >
+          <span aria-hidden="true">{{ p.connected ? '●' : '○' }}</span>
+          <span class="chat-app__health-label">{{ p.label }}</span>
+        </span>
+        <span
+          v-if="store.mock"
+          class="chat-app__mock"
+          title="未检测到 acquireVsCodeApi，使用本地 mock host"
+        >
+          mock
+        </span>
+      </div>
       <ApprovalBar v-if="store.pendingApproval" />
       <Composer />
     </div>
-    <footer class="chat-app__statusbar" aria-label="会话状态">
-      <ModelSelector />
-      <span aria-hidden="true">·</span>
-      <span :class="{ 'chat-app__running': store.streaming }">{{ runState }}</span>
-      <span aria-hidden="true">·</span>
-      <span class="ops-muted">{{ sessionShort }}</span>
-      <span class="chat-app__providers">
-        <HostSessionChip
-          v-for="p in store.providerChips"
-          :key="p.id"
-          :plugin-id="p.id"
-          :label="p.label"
-          :connected="p.connected"
-        />
-        <span v-if="store.providerChips.length === 0" class="ops-muted">{{ t('statusNoProviders') }}</span>
-      </span>
-      <span v-if="store.mock" class="chat-app__mock" title="未检测到 acquireVsCodeApi，使用本地 mock host">mock</span>
-    </footer>
+    <HistoryOverlay v-if="store.historyOpen" />
   </div>
 </template>
 
 <style scoped>
 .chat-app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -75,27 +78,38 @@ const sessionShort = computed(() =>
   z-index: 10;
 }
 
-.chat-app__statusbar {
+.chat-app__health {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: calc(var(--ops-density) * 1.5);
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
-  border-top: 1px solid var(--ops-border);
-  font-size: calc(var(--ops-font-size) - 2px);
+  padding: 2px calc(var(--ops-density) * 2);
+  font-size: calc(var(--ops-font-size) - 3px);
+  color: var(--ops-muted);
+  min-width: 0;
+}
+
+/* 连接态双通道：●/○ 图标 + title 里的「已连接/未连接」文字 */
+.chat-app__health-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.chat-app__health-chip--ok {
+  color: var(--ops-healthy);
+}
+
+.chat-app__health-chip--off {
+  color: var(--ops-pending);
+}
+
+.chat-app__health-label {
   color: var(--ops-muted);
   overflow: hidden;
-  white-space: nowrap;
-}
-
-.chat-app__running {
-  color: var(--ops-accent);
-}
-
-.chat-app__providers {
-  display: flex;
-  gap: calc(var(--ops-density) * 1.5);
-  margin-left: auto;
-  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-app__mock {

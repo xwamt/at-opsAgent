@@ -28,12 +28,17 @@ const board = await esbuild.context({
   outfile: 'dist/webview/board.js'
 });
 
+const settings = await esbuild.context({
+  ...common,
+  entryPoints: ['src/webview-settings/main.ts'],
+  outfile: 'dist/webview/settings.js'
+});
+
+const contexts = [chat, board, settings];
+
 if (watch) {
-  await chat.watch();
-  await board.watch();
+  await Promise.all(contexts.map((ctx) => ctx.watch()));
 } else {
-  await chat.rebuild();
-  await board.rebuild();
-  await chat.dispose();
-  await board.dispose();
+  await Promise.all(contexts.map((ctx) => ctx.rebuild()));
+  await Promise.all(contexts.map((ctx) => ctx.dispose()));
 }

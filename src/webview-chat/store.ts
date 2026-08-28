@@ -8,17 +8,25 @@ import type {
 } from '../protocol/host-protocol';
 import { setLocale } from './i18n';
 import {
+  buildHistoryList,
   buildPromptPayload,
   buildTimelineStrip,
   canFollowUpFrom,
+  normalizeSessions,
   normalizeTimelineEvent,
   type ChatTimelineEvent,
   type PromptAttachment,
+  type SessionMeta,
   type TimelineStripEntry
 } from './store-helpers';
 import { getVsCodeApi, isMockHost } from './vscode-api';
 
-export type { ChatTimelineEvent, PromptAttachment, TimelineStripEntry } from './store-helpers';
+export type {
+  ChatTimelineEvent,
+  PromptAttachment,
+  SessionMeta,
+  TimelineStripEntry
+} from './store-helpers';
 
 export interface ProviderChip {
   id: string;
@@ -84,6 +92,8 @@ interface HydratePayload {
   locale?: unknown;
   /** 可选时间线快照（host 目前只发给看板；chat 侧证据便签兜底）。 */
   timeline?: unknown;
+  /** 可选会话列表（历史侧滑数据源；host 未下发时退化为仅当前会话）。 */
+  sessions?: unknown;
 }
 
 type AnyRecord = Record<string, unknown>;
@@ -131,6 +141,8 @@ export const useOpsStore = defineStore('ops-chat', {
     skills: [...DEFAULT_SKILLS] as SkillMeta[],
     activePicker: null as 'playbook' | 'skill' | null,
     timeline: [] as ChatTimelineEvent[],
+    sessions: [] as SessionMeta[],
+    historyOpen: false,
     mock: false
   }),
 
@@ -143,6 +155,11 @@ export const useOpsStore = defineStore('ops-chat', {
     /** 紧凑事件脉络条：timeline 事件 + 证据便签（host 不发 timeline 也能渲染）。 */
     timelineStrip(state): TimelineStripEntry[] {
       return buildTimelineStrip(state.timeline, state.items);
+    },
+
+    /** 历史侧滑列表：hydrate.sessions 新→旧；host 未下发时退化为仅当前会话。 */
+    historySessions(state): SessionMeta[] {
+      return buildHistoryList(state.sessions, state.sessionId);
     },
 
     providerChips(state): ProviderChip[] {
@@ -232,6 +249,23 @@ export const useOpsStore = defineStore('ops-chat', {
       this.activePicker = this.activePicker === kind ? null : kind;
     },
 
+    toggleHistory(force?: boolean): void {
+      this.historyOpen = force ?? !this.historyOpen;
+    },
+
+    /** host 未接线 session/switch 时该 req 会被忽略——UI 只关闭侧滑，不乐观切换。 */
+    switchSession(sessionId: string): void {
+      if (sessionId && sessionId !== this.sessionId) {
+        this.post('session/switch', { sessionId });
+      }
+      this.historyOpen = false;
+    },
+
+    newSession(): void {
+      this.post('session/new', {});
+      this.historyOpen = false;
+    },
+
     abortSubagent(taskId: string): void {
       this.post('subagent/abort', { taskId });
     },
@@ -275,6 +309,12 @@ export const useOpsStore = defineStore('ops-chat', {
         case 'approval/request':
           this.pendingApproval = asRecord(payload) as unknown as ApprovalBriefView;
           break;
+        case 'history/toggle': {
+          // 工作台 view/title 按钮等 host 入口：payload.open 为布尔时定向开合，否则翻转
+          const open = asRecord(payload).open;
+          this.historyOpen = typeof open === 'boolean' ? open : !this.historyOpen;
+          break;
+        }
         case 'playbook/stage': {
           const rec = asRecord(payload);
           this.playbook = {
@@ -376,6 +416,10 @@ export const useOpsStore = defineStore('ops-chat', {
         for (const entry of snapshot.timeline) {
           this.upsertTimeline(entry);
         }
+      }
+      // sessions 同为可选字段：下发数组时整体覆盖，缺省保留（切会话 hydrate 不清列表）
+      if (Array.isArray(snapshot.sessions)) {
+        this.sessions = normalizeSessions(snapshot.sessions);
       }
       const streamingItem = this.items.find(
         (item) => item.kind === 'assistant' && item.streaming

@@ -29,6 +29,15 @@ export interface TimelineEventView {
   [key: string]: unknown;
 }
 
+/** 每会话的内存包：switchSession 保存/恢复 transcript 等全部会话态。 */
+interface SessionBag {
+  items: TranscriptItem[];
+  playbook: PlaybookState | undefined;
+  pendingBriefs: ApprovalBriefView[];
+  subagents: Map<string, SubagentCard>;
+  timeline: TimelineEventView[];
+}
+
 export class SessionStore {
   private readonly sessionsEmitter = new Emitter<void>();
   private readonly approvalsEmitter = new Emitter<void>();
@@ -39,11 +48,12 @@ export class SessionStore {
   readonly onDidAppendTimeline: Event<TimelineEventView> = this.timelineEmitter.event;
 
   private readonly _sessions: SessionInfo[] = [];
+  private readonly _bags = new Map<string, SessionBag>();
   private _activeSessionId = '';
   private _items: TranscriptItem[] = [];
   private _playbook: PlaybookState | undefined;
   private _pendingBriefs: ApprovalBriefView[] = [];
-  private readonly _subagents = new Map<string, SubagentCard>();
+  private _subagents = new Map<string, SubagentCard>();
   private _timeline: TimelineEventView[] = [];
 
   constructor() {
@@ -61,6 +71,7 @@ export class SessionStore {
   }
 
   newSession(title?: string): SessionInfo {
+    this.saveActiveBag();
     const session: SessionInfo = {
       id: randomUUID(),
       title: title ?? `会话 ${this._sessions.length + 1}`,
@@ -71,10 +82,44 @@ export class SessionStore {
     this._items = [];
     this._playbook = undefined;
     this._pendingBriefs = [];
-    this._subagents.clear();
+    this._subagents = new Map();
+    this._timeline = [];
     this.sessionsEmitter.fire();
     this.approvalsEmitter.fire();
     return session;
+  }
+
+  /**
+   * 切换会话：先把当前会话态存回内存包，再整体载入目标会话包
+   * （transcript / playbook / 简报 / 子代理卡片 / 时间线）。
+   * 目标不存在返回 false；切到当前会话是 no-op（返回 true）。
+   */
+  switchSession(id: string): boolean {
+    if (!this._sessions.some((s) => s.id === id)) return false;
+    if (id === this._activeSessionId) return true;
+    this.saveActiveBag();
+    const bag = this._bags.get(id);
+    this._activeSessionId = id;
+    this._items = bag?.items ?? [];
+    this._playbook = bag?.playbook;
+    this._pendingBriefs = bag?.pendingBriefs ?? [];
+    this._subagents = bag?.subagents ?? new Map();
+    this._timeline = bag?.timeline ?? [];
+    this.sessionsEmitter.fire();
+    this.approvalsEmitter.fire();
+    return true;
+  }
+
+  /** 当前会话态存回 _bags（live 引用直接入包；载回时同一引用继续生效）。 */
+  private saveActiveBag(): void {
+    if (this._activeSessionId.length === 0) return;
+    this._bags.set(this._activeSessionId, {
+      items: this._items,
+      playbook: this._playbook,
+      pendingBriefs: this._pendingBriefs,
+      subagents: this._subagents,
+      timeline: this._timeline
+    });
   }
 
   // ── transcript ─────────────────────────────────────────────────────────
@@ -193,6 +238,7 @@ export class SessionStore {
       items: [...this._items],
       providers,
       pendingApproval: this._pendingBriefs[0],
+      sessions: this._sessions.map((s) => ({ ...s })),
       ...(extra ?? {})
     };
   }

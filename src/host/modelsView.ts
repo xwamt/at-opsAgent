@@ -66,7 +66,7 @@ const MODELS_TEMPLATE = `{
 }
 `;
 
-interface ModelsFormState {
+export interface ModelsFormState {
   providerId: string;
   baseUrl: string;
   modelId: string;
@@ -85,7 +85,7 @@ interface ModelsFormState {
   oauthNote: string;
 }
 
-interface SavePayload {
+export interface ModelsSavePayload {
   baseUrl?: unknown;
   modelId?: unknown;
   modelName?: unknown;
@@ -96,7 +96,7 @@ interface SavePayload {
   thinkingLevel?: unknown;
 }
 
-interface SaveOutcome {
+export interface ModelsSaveOutcome {
   error?: string;
   applied?: { provider: string; model: string; thinkingLevel: ThinkingLevel };
 }
@@ -153,7 +153,7 @@ async function handleMessage(
   }
   if (type === 'save') {
     const payload = isRecord(message) && isRecord(message.payload) ? message.payload : {};
-    const outcome = await saveModels(deps, payload);
+    const outcome = await saveModelsForm(deps, payload);
     if (outcome.error !== undefined) {
       void panel.webview.postMessage({ type: 'error', payload: outcome.error });
       return;
@@ -194,11 +194,13 @@ async function postState(
   deps: ModelsPanelDeps,
   type: 'init' | 'saved'
 ): Promise<void> {
-  void panel.webview.postMessage({ type, payload: await readFormState(deps) });
+  void panel.webview.postMessage({ type, payload: await readModelsFormState(deps) });
 }
 
 /** 读第一个 provider 的现值预填表单；文件缺失/坏 JSON → 空表单。 */
-async function readFormState(deps: ModelsPanelDeps): Promise<ModelsFormState> {
+export async function readModelsFormState(
+  deps: Pick<ModelsPanelDeps, 'modelsPath' | 'agentDir' | 'secrets'>
+): Promise<ModelsFormState> {
   const state: ModelsFormState = {
     providerId: DEFAULT_PROVIDER_ID,
     baseUrl: '',
@@ -246,7 +248,10 @@ async function readFormState(deps: ModelsPanelDeps): Promise<ModelsFormState> {
  * compat 只管理 thinkingFormat / supportsDeveloperRole 两个键（默认值删除、
  * 未知键保留）；thinkingLevel 合并写 agentDir/settings.json。
  */
-async function saveModels(deps: ModelsPanelDeps, payload: SavePayload): Promise<SaveOutcome> {
+export async function saveModelsForm(
+  deps: Pick<ModelsPanelDeps, 'modelsPath' | 'agentDir' | 'secrets'>,
+  payload: ModelsSavePayload
+): Promise<ModelsSaveOutcome> {
   const baseUrl = typeof payload.baseUrl === 'string' ? payload.baseUrl.trim() : '';
   const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
   const modelName = typeof payload.modelName === 'string' ? payload.modelName.trim() : '';

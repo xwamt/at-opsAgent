@@ -1,29 +1,40 @@
 /**
- * package.json contributes.commands 中九条命令的实现与注册，
+ * package.json contributes.commands 中命令的实现与注册，
  * 外加两条不进 contributes 的程序化命令（escalateSelect / openArtifact）。
+ *
+ * UI 收敛后：openSettings / openModels 打开自有设置页（settingsView.ts，
+ * openModels 聚焦 Models 页签）；openBoard 以编辑器页打开 Ops 看板；
+ * toggleHistory 让 chat webview 开关历史抽屉。
  */
 import * as vscode from 'vscode';
+import { showBoardPanel } from './boardView';
+import type { ChatViewProvider } from './chatView';
 import { diagnoseHub } from './diagnose';
 import type { HostController } from './hostController';
-import { showModelsPanel } from './modelsView';
-import type { ApprovalTreeItem } from './trees/approvalsTree';
-import type { ChatViewProvider } from './chatView';
+import { showSettingsPanel } from './settingsView';
 
 export interface CommandDeps {
   controller: HostController;
   chatView: ChatViewProvider;
   hostApp: string;
   output: vscode.OutputChannel;
-  refreshTrees: () => void;
+  /** 状态栏 + 技能缓存刷新（原 refreshTrees；树视图已收敛到设置页）。 */
+  refresh: () => void;
+  extensionUri: vscode.Uri;
 }
 
 export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
-  const { controller, chatView, hostApp, output, refreshTrees } = deps;
+  const { controller, chatView, hostApp, output, refresh, extensionUri } = deps;
+  const settingsDeps = { extensionUri, controller };
 
   const newSession = vscode.commands.registerCommand('atOpsAgent.newSession', () => {
     controller.newSession();
     chatView.postHydrate();
-    refreshTrees();
+    refresh();
+  });
+
+  const toggleHistory = vscode.commands.registerCommand('atOpsAgent.toggleHistory', () => {
+    chatView.postHistoryToggle();
   });
 
   const pickPlaybook = vscode.commands.registerCommand('atOpsAgent.pickPlaybook', async () => {
@@ -50,21 +61,15 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
   });
 
   const openSettings = vscode.commands.registerCommand('atOpsAgent.openSettings', () => {
-    void vscode.commands.executeCommand('workbench.action.openSettings', 'atOpsAgent');
+    showSettingsPanel(settingsDeps);
   });
 
   const openModels = vscode.commands.registerCommand('atOpsAgent.openModels', () => {
-    // 配置页 webview（表单 + SecretStorage key + Compat/OAuth 页签）；
-    // 「打开 models.json」是页内次级动作。
-    showModelsPanel({
-      modelsPath: controller.modelsPath,
-      agentDir: controller.agentDir,
-      secrets: controller.secrets,
-      output,
-      refreshTrees,
-      loginOAuth: (providerId) => controller.loginOAuth(providerId),
-      applyModelSelection: (req) => controller.setModel(req)
-    });
+    showSettingsPanel(settingsDeps, 'models');
+  });
+
+  const openBoard = vscode.commands.registerCommand('atOpsAgent.openBoard', () => {
+    showBoardPanel({ extensionUri, controller });
   });
 
   const refreshBridges = vscode.commands.registerCommand('atOpsAgent.refreshBridges', async () => {
@@ -75,21 +80,19 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
         `[hub] refresh 失败: ${err instanceof Error ? err.message : String(err)}`
       );
     }
-    refreshTrees();
+    refresh();
   });
 
   const diagnose = vscode.commands.registerCommand('atOpsAgent.diagnoseHub', async () => {
     await diagnoseHub({ hostApp, hub: controller.hub, output });
   });
 
-  const approve = vscode.commands.registerCommand(
-    'atOpsAgent.approveChange',
-    (item?: ApprovalTreeItem) => respondToApproval(controller, 'approved', item)
+  const approve = vscode.commands.registerCommand('atOpsAgent.approveChange', () =>
+    respondToApproval(controller, 'approved')
   );
 
-  const reject = vscode.commands.registerCommand(
-    'atOpsAgent.rejectChange',
-    (item?: ApprovalTreeItem) => respondToApproval(controller, 'rejected', item)
+  const reject = vscode.commands.registerCommand('atOpsAgent.rejectChange', () =>
+    respondToApproval(controller, 'rejected')
   );
 
   const abort = vscode.commands.registerCommand('atOpsAgent.abort', async () => {
@@ -131,9 +134,11 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
 
   return [
     newSession,
+    toggleHistory,
     pickPlaybook,
     openSettings,
     openModels,
+    openBoard,
     refreshBridges,
     diagnose,
     approve,
@@ -144,31 +149,29 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
   ];
 }
 
+/** 审批命令（命令面板兜底入口；审批主路径是聊天内 ApprovalBar）。 */
 async function respondToApproval(
   controller: HostController,
-  decision: 'approved' | 'rejected',
-  item?: ApprovalTreeItem
+  decision: 'approved' | 'rejected'
 ): Promise<void> {
-  let briefId = item?.brief.id;
-  if (!briefId) {
-    const pending = controller.store.pendingBriefs;
-    if (pending.length === 0) {
-      void vscode.window.showInformationMessage('没有待审批的变更简报。');
-      return;
-    }
-    if (pending.length === 1) {
-      briefId = pending[0].id;
-    } else {
-      const picked = await vscode.window.showQuickPick(
-        pending.map((b) => ({
-          label: b.targetLabel,
-          description: `${b.risk} · ${b.id.slice(0, 8)}`,
-          briefId: b.id
-        })),
-        { placeHolder: `选择要${decision === 'approved' ? '批准' : '拒绝'}的简报` }
-      );
-      briefId = picked?.briefId;
-    }
+  let briefId: string | undefined;
+  const pending = controller.store.pendingBriefs;
+  if (pending.length === 0) {
+    void vscode.window.showInformationMessage('没有待审批的变更简报。');
+    return;
+  }
+  if (pending.length === 1) {
+    briefId = pending[0].id;
+  } else {
+    const picked = await vscode.window.showQuickPick(
+      pending.map((b) => ({
+        label: b.targetLabel,
+        description: `${b.risk} · ${b.id.slice(0, 8)}`,
+        briefId: b.id
+      })),
+      { placeHolder: `选择要${decision === 'approved' ? '批准' : '拒绝'}的简报` }
+    );
+    briefId = picked?.briefId;
   }
   if (!briefId) return;
   await controller.applyApproval({ briefId, decision });

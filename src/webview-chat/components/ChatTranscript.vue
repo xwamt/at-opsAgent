@@ -140,19 +140,17 @@ onMounted(async () => {
       </span>
     </div>
 
+    <!-- 空态由 ChatApp 的欢迎页承接（items 为空时本组件不渲染），避免双重空态 -->
     <div ref="scroller" class="transcript" role="log" aria-label="会话记录" @scroll="onScroll">
-    <div v-if="store.items.length === 0" class="transcript__empty ops-muted">
-      {{ t('transcriptEmpty') }}
-    </div>
     <div v-if="padTop > 0" class="transcript__pad" :style="{ height: padTop + 'px' }" aria-hidden="true"></div>
     <template v-for="item in visibleItems" :key="item.id">
-      <div v-if="item.kind === 'user'" class="transcript__row transcript__row--user">
-        <span class="transcript__who">你</span>
-        <div class="transcript__text">{{ item.text }}</div>
+      <div v-if="item.kind === 'user'" class="transcript__msg transcript__msg--user">
+        <span class="transcript__who">{{ t('roleUser') }}</span>
+        <div class="transcript__text transcript__well">{{ item.text }}</div>
       </div>
 
-      <div v-else-if="item.kind === 'assistant'" class="transcript__row">
-        <span class="transcript__who transcript__who--agent">Agent</span>
+      <div v-else-if="item.kind === 'assistant'" class="transcript__msg transcript__msg--agent">
+        <span class="transcript__who transcript__who--agent">{{ t('roleAgent') }}</span>
         <div class="transcript__text">
           {{ item.text }}<span v-if="item.streaming" class="transcript__caret" aria-label="生成中">▍</span>
         </div>
@@ -241,52 +239,56 @@ onMounted(async () => {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: calc(var(--ops-density) * 2);
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: calc(var(--ops-density) * 2);
-}
-
-.transcript__empty {
-  padding: calc(var(--ops-density) * 4) var(--ops-density);
-  text-align: center;
+  gap: 12px;
 }
 
 .transcript__pad {
   flex: 0 0 auto;
 }
 
-.transcript__row {
+/* Copilot 式分组：角色标签在上，正文在下；用户消息右侧成井，Agent 左侧全宽 */
+.transcript__msg {
   display: flex;
-  gap: calc(var(--ops-density) * 2);
-  align-items: baseline;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.transcript__msg--user {
+  align-self: flex-end;
+  align-items: flex-end;
+  max-width: 88%;
+}
+
+.transcript__msg--agent {
+  align-self: stretch;
 }
 
 .transcript__who {
-  flex: 0 0 auto;
   font-size: calc(var(--ops-font-size) - 2px);
   color: var(--ops-muted);
-  border: 1px solid var(--ops-border);
-  border-radius: var(--ops-radius);
-  padding: 0 var(--ops-density);
-  line-height: 1.6;
+  line-height: 1.4;
 }
 
 .transcript__who--agent {
   color: var(--ops-accent);
-  border-color: var(--ops-accent);
+  font-weight: 600;
 }
 
-.transcript__row--user .transcript__text {
-  color: var(--ops-fg);
-  font-weight: 500;
+.transcript__well {
+  background: var(--ops-user-msg-bg);
+  border-radius: var(--ops-radius);
+  padding: calc(var(--ops-density) + 2px) calc(var(--ops-density) * 2);
 }
 
 .transcript__text {
   white-space: pre-wrap;
   word-break: break-word;
   min-width: 0;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .transcript__caret {

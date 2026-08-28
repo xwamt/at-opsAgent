@@ -33,6 +33,14 @@ export type PlaybookStartReq = { playbookId: string };
 export type ApprovalRespondReq = { briefId: string; decision: 'approved' | 'rejected' };
 export type SubagentAbortReq = { taskId: string };
 
+export type SessionSummary = { id: string; title: string; createdAt: number };
+export type SessionSwitchReq = { id: string };
+/** Only known atOpsAgent.* keys are accepted (host-side allowlist). */
+export type SettingsPatchConfigReq = { key: string; value: unknown };
+/** mcp/save: full mcp.json text; '***' placeholder values are restored from the existing file. */
+export type McpSaveReq = { text: string };
+export type SettingsOpenJsonReq = { kind: 'models' | 'mcp' | 'auth' | 'vscode' };
+
 export type TranscriptItem =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean }
@@ -88,6 +96,8 @@ export type HydrateEvt = {
   items: TranscriptItem[];
   providers: unknown;
   pendingApproval?: ApprovalBriefView;
+  /** Session list (history drawer / settings Sessions tab). */
+  sessions?: SessionSummary[];
 };
 
 export type HostRequestType =
@@ -96,7 +106,24 @@ export type HostRequestType =
   | 'model/set'
   | 'playbook/start'
   | 'approval/respond'
-  | 'subagent/abort';
+  | 'subagent/abort'
+  | 'session/list'
+  | 'session/switch'
+  | 'session/new'
+  | 'settings/hydrate'
+  | 'settings/patchConfig'
+  | 'mcp/get'
+  | 'mcp/save'
+  | 'settings/openJson'
+  | 'history/toggle'
+  | 'models/state'
+  | 'models/save'
+  | 'models/oauth'
+  | 'models/openFile'
+  | 'models/openAuth'
+  | 'capabilities/refresh'
+  | 'diagnose'
+  | 'skill/open';
 
 export type HostEventType =
   | 'hydrate'
@@ -110,4 +137,8 @@ export type HostEventType =
   | 'timeline/upsert'
   | 'approval/request'
   | 'capabilities/snapshot'
-  | 'playbook/stage';
+  | 'playbook/stage'
+  /** Titlebar History button → chat webview toggles the history drawer. */
+  | 'history/toggle'
+  /** Settings panel: host asks the webview to switch to a tab. */
+  | 'settings/tab';

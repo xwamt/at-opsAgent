@@ -2,14 +2,18 @@
  * 扩展入口（src/extension.ts re-export 自此）。
  *
  * activate 保持廉价（docs/08-performance.md）：
- * detectHostApp → Output Channel → 注册命令/TreeView/WebviewView →
+ * detectHostApp → Output Channel → 注册命令/Chat WebviewView → 状态栏 →
  * 创建 HubHost 并 void start()。不 await LLM / createOpsRuntime——
  * runtime 由首个 chat/prompt 懒创建（HostController.ensureRuntime）。
+ *
+ * UI 收敛（Cline 式单视图）：活动栏只保留 atOpsAgent.chat 一个 webview；
+ * 会话/能力/审批/技能/模型不再注册 TreeView，全部收敛到设置页
+ * （settingsView.ts）与聊天内卡片；Ops 看板经 atOpsAgent.openBoard
+ * 以编辑器页（WebviewPanel）按需打开。
  */
 import * as vscode from 'vscode';
 import { detectHostApp } from '@at-series/mcp-hub';
 import type { HubHost } from '../protocol';
-import { BOARD_VIEW_ID, BoardViewProvider } from './boardView';
 import { CHAT_VIEW_ID, ChatViewProvider } from './chatView';
 import { registerCommands } from './commands';
 import { FallbackHubHost } from './fallback/fallbackHub';
@@ -17,11 +21,6 @@ import { HostController } from './hostController';
 import { loadHubHostModule } from './modules';
 import { OpsSecrets } from './secrets';
 import { SessionStore } from './sessionStore';
-import { ApprovalsTreeProvider } from './trees/approvalsTree';
-import { CapabilitiesTreeProvider } from './trees/capabilitiesTree';
-import { ModelsTreeProvider } from './trees/modelsTree';
-import { SessionsTreeProvider } from './trees/sessionsTree';
-import { SkillsTreeProvider } from './trees/skillsTree';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const startedAt = Date.now();
@@ -79,77 +78,55 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   context.subscriptions.push({ dispose: () => controller.dispose() });
 
-  // ── TreeViews ───────────────────────────────────────────────────────────
-  const capabilitiesProvider = new CapabilitiesTreeProvider(() => hubRef);
-  const capabilitiesView = vscode.window.createTreeView('atOpsAgent.capabilities', {
-    treeDataProvider: capabilitiesProvider,
-    showCollapseAll: true
-  });
-  const sessionsProvider = new SessionsTreeProvider(store);
-  const approvalsProvider = new ApprovalsTreeProvider(store);
-  const approvalsView = vscode.window.createTreeView('atOpsAgent.approvals', {
-    treeDataProvider: approvalsProvider
-  });
-  const skillsProvider = new SkillsTreeProvider(context.extensionPath);
-  const modelsProvider = new ModelsTreeProvider(controller.modelsPath);
-  context.subscriptions.push(
-    capabilitiesProvider,
-    capabilitiesView,
-    sessionsProvider,
-    vscode.window.registerTreeDataProvider('atOpsAgent.sessions', sessionsProvider),
-    approvalsProvider,
-    approvalsView,
-    skillsProvider,
-    vscode.window.registerTreeDataProvider('atOpsAgent.skills', skillsProvider),
-    modelsProvider,
-    vscode.window.registerTreeDataProvider('atOpsAgent.models', modelsProvider)
-  );
-
-  // context key atOpsAgent.bridgeCount（viewsWelcome 空态依赖）+ unhealthy badge
-  const updateCapabilities = () => {
-    capabilitiesProvider.refresh();
-    const { bridges, unhealthy } = capabilitiesProvider.counts();
-    void vscode.commands.executeCommand('setContext', 'atOpsAgent.bridgeCount', bridges);
-    capabilitiesView.badge =
-      unhealthy > 0 ? { value: unhealthy, tooltip: `${unhealthy} 个能力插件不健康` } : undefined;
-  };
-  void vscode.commands.executeCommand('setContext', 'atOpsAgent.bridgeCount', 0);
-  context.subscriptions.push(hubRef.onDidChangeTools(() => updateCapabilities()));
-
-  // 审批 badge
-  const updateApprovalsBadge = () => {
-    const count = store.pendingBriefs.length;
-    approvalsView.badge =
-      count > 0 ? { value: count, tooltip: `${count} 条待审批简报` } : undefined;
-  };
-  context.subscriptions.push(store.onDidChangeApprovals(() => updateApprovalsBadge()));
-
-  // ── WebviewViews ───────────────────────────────────────────────────────
+  // ── Chat WebviewView（活动栏唯一视图） ─────────────────────────────────
   const chatView = new ChatViewProvider(context.extensionUri, controller);
-  const boardView = new BoardViewProvider(context.extensionUri, controller);
   context.subscriptions.push(
     chatView,
     vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, chatView, {
       webviewOptions: { retainContextWhenHidden: true }
-    }),
-    boardView,
-    vscode.window.registerWebviewViewProvider(BOARD_VIEW_ID, boardView)
+    })
   );
 
+  // ── 状态栏：AT Ops + 待审批数；点击聚焦对话视图 ────────────────────────
+  const statusBar = vscode.window.createStatusBarItem(
+    'atOpsAgent.status',
+    vscode.StatusBarAlignment.Right,
+    100
+  );
+  statusBar.name = 'AT Ops Agent';
+  // 视图贡献自动生成的 focus 命令：聚焦活动栏 chat 视图。
+  statusBar.command = `${CHAT_VIEW_ID}.focus`;
+  const updateStatusBar = () => {
+    const pending = store.pendingBriefs.length;
+    statusBar.text = pending > 0 ? `$(shield) AT Ops ${pending}` : '$(shield) AT Ops';
+    statusBar.tooltip =
+      pending > 0
+        ? `AT Ops Agent：${pending} 条待审批简报（点击打开对话处理）`
+        : 'AT Ops Agent：点击打开对话';
+  };
+  updateStatusBar();
+  statusBar.show();
+  context.subscriptions.push(statusBar, store.onDidChangeApprovals(() => updateStatusBar()));
+
   // ── 命令 ───────────────────────────────────────────────────────────────
-  const refreshTrees = () => {
-    updateCapabilities();
-    updateApprovalsBadge();
-    skillsProvider.refresh();
-    modelsProvider.refresh();
+  const refresh = () => {
+    updateStatusBar();
+    controller.refreshSkills();
   };
   context.subscriptions.push(
-    ...registerCommands({ controller, chatView, hostApp, output, refreshTrees })
+    ...registerCommands({
+      controller,
+      chatView,
+      hostApp,
+      output,
+      refresh,
+      extensionUri: context.extensionUri
+    })
   );
 
   log(`[activate] 完成，耗时 ${Date.now() - startedAt}ms`);
 }
 
 export function deactivate(): void {
-  // 清理走 context.subscriptions；Bridge registry 由各插件自持（Agent 不写）。
+  // 清理走 context.subscriptions（含状态栏）；Bridge registry 由各插件自持（Agent 不写）。
 }

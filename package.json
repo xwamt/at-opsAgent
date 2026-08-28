@@ -41,13 +41,6 @@
           "title": "%view.container.title%",
           "icon": "media/icons/ops-agent.svg"
         }
-      ],
-      "panel": [
-        {
-          "id": "atOpsAgentBoard",
-          "title": "%view.board.title%",
-          "icon": "media/icons/ops-board.svg"
-        }
       ]
     },
     "views": {
@@ -57,55 +50,19 @@
           "type": "webview",
           "name": "%view.chat%",
           "contextualTitle": "AT Ops Agent"
-        },
-        {
-          "id": "atOpsAgent.sessions",
-          "name": "%view.sessions%",
-          "visibility": "collapsed"
-        },
-        {
-          "id": "atOpsAgent.capabilities",
-          "name": "%view.capabilities%"
-        },
-        {
-          "id": "atOpsAgent.approvals",
-          "name": "%view.approvals%"
-        },
-        {
-          "id": "atOpsAgent.skills",
-          "name": "%view.skills%",
-          "visibility": "collapsed"
-        },
-        {
-          "id": "atOpsAgent.models",
-          "name": "%view.models%",
-          "visibility": "collapsed"
-        }
-      ],
-      "atOpsAgentBoard": [
-        {
-          "id": "atOpsAgent.incidentBoard",
-          "type": "webview",
-          "name": "%view.incidentBoard%"
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "atOpsAgent.capabilities",
-        "contents": "%welcome.noBridges%",
-        "when": "atOpsAgent.bridgeCount == 0"
-      },
-      {
-        "view": "atOpsAgent.approvals",
-        "contents": "%welcome.noApprovals%"
-      }
-    ],
     "commands": [
       {
         "command": "atOpsAgent.newSession",
         "title": "%cmd.newSession%",
         "icon": "$(add)"
+      },
+      {
+        "command": "atOpsAgent.toggleHistory",
+        "title": "%cmd.toggleHistory%",
+        "icon": "$(history)"
       },
       {
         "command": "atOpsAgent.pickPlaybook",
@@ -120,6 +77,10 @@
       {
         "command": "atOpsAgent.openModels",
         "title": "%cmd.openModels%"
+      },
+      {
+        "command": "atOpsAgent.openBoard",
+        "title": "%cmd.openBoard%"
       },
       {
         "command": "atOpsAgent.refreshBridges",
@@ -154,41 +115,24 @@
           "group": "navigation@1"
         },
         {
-          "command": "atOpsAgent.pickPlaybook",
+          "command": "atOpsAgent.toggleHistory",
           "when": "view == atOpsAgent.chat",
           "group": "navigation@2"
         },
         {
-          "command": "atOpsAgent.abort",
+          "command": "atOpsAgent.pickPlaybook",
           "when": "view == atOpsAgent.chat",
           "group": "navigation@3"
+        },
+        {
+          "command": "atOpsAgent.abort",
+          "when": "view == atOpsAgent.chat",
+          "group": "navigation@4"
         },
         {
           "command": "atOpsAgent.openSettings",
           "when": "view == atOpsAgent.chat",
           "group": "navigation@9"
-        },
-        {
-          "command": "atOpsAgent.refreshBridges",
-          "when": "view == atOpsAgent.capabilities",
-          "group": "navigation@1"
-        },
-        {
-          "command": "atOpsAgent.diagnoseHub",
-          "when": "view == atOpsAgent.capabilities",
-          "group": "navigation@2"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "atOpsAgent.approveChange",
-          "when": "view == atOpsAgent.approvals && viewItem == approval.pending",
-          "group": "inline@1"
-        },
-        {
-          "command": "atOpsAgent.rejectChange",
-          "when": "view == atOpsAgent.approvals && viewItem == approval.pending",
-          "group": "inline@2"
         }
       ]
     },

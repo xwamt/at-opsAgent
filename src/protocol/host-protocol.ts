@@ -66,6 +66,14 @@ export type PlaybookStartReq = { playbookId: string };
 export type ApprovalRespondReq = { briefId: string; decision: 'approved' | 'rejected' };
 export type SubagentAbortReq = { taskId: string };
 
+export type SessionSummary = { id: string; title: string; createdAt: number };
+export type SessionSwitchReq = { id: string };
+/** 只允许 atOpsAgent.* 已知键（host 侧白名单校验）。 */
+export type SettingsPatchConfigReq = { key: string; value: unknown };
+/** mcp/save：完整 mcp.json 文本；'***' 占位值由 host 从现有文件回填。 */
+export type McpSaveReq = { text: string };
+export type SettingsOpenJsonReq = { kind: 'models' | 'mcp' | 'auth' | 'vscode' };
+
 export type TranscriptItem =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean }
@@ -123,6 +131,8 @@ export type HydrateEvt = {
   pendingApproval?: ApprovalBriefView;
   /** playbook 元数据列表（已缓存时随快照下发；缺省 webview 用兜底清单）。 */
   playbooks?: unknown;
+  /** 会话列表（历史抽屉 / 设置页 Sessions 页签消费）。 */
+  sessions?: SessionSummary[];
 };
 
 export type HostRequestType =
@@ -131,7 +141,24 @@ export type HostRequestType =
   | 'model/set'
   | 'playbook/start'
   | 'approval/respond'
-  | 'subagent/abort';
+  | 'subagent/abort'
+  | 'session/list'
+  | 'session/switch'
+  | 'session/new'
+  | 'settings/hydrate'
+  | 'settings/patchConfig'
+  | 'mcp/get'
+  | 'mcp/save'
+  | 'settings/openJson'
+  | 'history/toggle'
+  | 'models/state'
+  | 'models/save'
+  | 'models/oauth'
+  | 'models/openFile'
+  | 'models/openAuth'
+  | 'capabilities/refresh'
+  | 'diagnose'
+  | 'skill/open';
 
 export type HostEventType =
   | 'hydrate'
@@ -145,7 +172,11 @@ export type HostEventType =
   | 'timeline/upsert'
   | 'approval/request'
   | 'capabilities/snapshot'
-  | 'playbook/stage';
+  | 'playbook/stage'
+  /** 标题栏 History 按钮 → chat webview 开关历史抽屉。 */
+  | 'history/toggle'
+  /** 设置面板：host 要求切换到指定页签。 */
+  | 'settings/tab';
 
 export const OPS_ERROR = {
   SELECTION_FORBIDDEN: 'OPS_SELECTION_FORBIDDEN',

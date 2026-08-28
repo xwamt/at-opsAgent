@@ -16,7 +16,7 @@ AT 系列运维专属 VS Code / Cursor Agent 扩展。**这是运维 Agent，不
 
 ### 2. 接入能力插件（零配置）
 
-安装任意 AT 系列能力插件即可——插件把 Bridge 描述写入 `~/.at-series/bridges/<hostApp>/`，本 Agent 自动发现并注册其工具，**不需要**再写 MCP server 配置。装上 At-grafana 后打开 Capabilities 树即可看到 `at.grafana`。
+安装任意 AT 系列能力插件即可——插件把 Bridge 描述写入 `~/.at-series/bridges/<hostApp>/`，本 Agent 自动发现并注册其工具，**不需要**再写 MCP server 配置。装上 At-grafana 后打开设置页的「能力插件」即可看到 `at.grafana`。
 
 ### 3. 配置模型
 
@@ -24,7 +24,7 @@ AT 系列运维专属 VS Code / Cursor Agent 扩展。**这是运维 Agent，不
 
 ### 4. 开始会话
 
-「AT Ops Agent: New Session」发起对话，或「AT Ops Agent: Start Playbook」直接进入运维链路。设置项统一在 `atOpsAgent.*`（渐进发现、审批门槛、子代理并行上限、流式合批等）。
+侧栏只保留对话。点齿轮打开设置页（模型 / 能力插件 / MCP / 技能 / 会话 / 常规）。「AT Ops Agent: New Session」发起对话，或标题栏 Playbook / 「AT Ops Agent: Start Playbook」进入运维链路。VS Code 设置里仍有 `atOpsAgent.*` 作为存储后端。
 
 ## 内置运维链路（Playbook）
 
@@ -73,7 +73,7 @@ npm run package      # compile 后经 npx @vscode/vsce 生成本地 .vsix
 
 本仓库是[已冻结设计](docs/README.md)的实现。施工计划见 [docs/10-implementation-plan.md](docs/10-implementation-plan.md)：
 
-- **阶段 0–3 已落地**：扩展骨架与 TreeView / Webview、pi 会话 + Hub 工具调用 + 模型配置、审批安全闸与 Database 兼容、Playbook 状态机 + 子代理编排 + SuperOps 技能包。
+- **阶段 0–3 已落地**：Cline 式单 Chat 侧栏 + 设置 Webview、pi 会话 + Hub 工具调用 + 模型配置、审批安全闸与 Database 兼容、Playbook 状态机 + 子代理编排 + SuperOps 技能包。
 - **阶段 4–5 进行中**（由并行分支补齐）：运维看板 UI 打磨、Models 全页、第三方 MCP、性能合批、中英 i18n 与发布收尾。
 
 ## 设计文档

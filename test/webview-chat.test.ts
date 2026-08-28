@@ -8,6 +8,7 @@
  * - i18n 启动包（<html lang> 检测 + hydrate locale 切换）
  * - Composer/store 的 prompt 组装（steer / followUp / attachments）
  * - ChatTranscript 事件脉络条（timeline 事件 + 证据便签）
+ * - HistoryOverlay/WelcomeState 的会话归一化与建议卡（sessions / suggestions）
  *
  * @vitest-environment jsdom
  */
@@ -20,11 +21,15 @@ import {
 } from '../src/webview-chat/confidence';
 import { detectLocale, dualConfirmText, normalizeLocale, setLocale, t } from '../src/webview-chat/i18n';
 import {
+  buildHistoryList,
   buildPromptPayload,
   buildTimelineStrip,
+  buildWelcomeSuggestions,
   canFollowUpFrom,
+  normalizeSessions,
   normalizeTimelineEvent,
-  type ChatTimelineEvent
+  type ChatTimelineEvent,
+  type SessionMeta
 } from '../src/webview-chat/store-helpers';
 
 // root tsconfig 无 DOM lib：jsdom 的 document 通过 globalThis 收窄访问
@@ -218,5 +223,67 @@ describe('ChatTranscript 事件脉络条（timeline + 证据便签）', () => {
       'tl-t2',
       'ev-ev1'
     ]);
+  });
+});
+
+describe('HistoryOverlay 会话列表（hydrate.sessions 归一化 + 退化路径）', () => {
+  it('normalizeSessions：无 id 丢弃，title 缺省回退 id 前缀，createdAt 缺省 0', () => {
+    expect(
+      normalizeSessions([
+        { id: 's1', title: '网关 5xx 事故', createdAt: 1700 },
+        { sessionId: 's2-very-long-session-id' },
+        { title: '没有 id，丢弃' },
+        'garbage'
+      ])
+    ).toEqual([
+      { id: 's1', title: '网关 5xx 事故', createdAt: 1700 },
+      { id: 's2-very-long-session-id', title: 's2-very-long', createdAt: 0 }
+    ]);
+    expect(normalizeSessions(undefined)).toEqual([]);
+    expect(normalizeSessions({ not: 'an array' })).toEqual([]);
+  });
+
+  it('buildHistoryList：有 sessions 时新→旧排序', () => {
+    const sessions: SessionMeta[] = [
+      { id: 'old', title: '昨日巡检', createdAt: 100 },
+      { id: 'new', title: '今日事故', createdAt: 900 }
+    ];
+    expect(buildHistoryList(sessions, 'new').map((s) => s.id)).toEqual(['new', 'old']);
+  });
+
+  it('host 未下发 sessions 时退化为仅当前会话；无会话则为空', () => {
+    expect(buildHistoryList([], 'sess-current-abcdef')).toEqual([
+      { id: 'sess-current-abcdef', title: 'sess-current', createdAt: 0 }
+    ]);
+    expect(buildHistoryList([], '')).toEqual([]);
+  });
+});
+
+describe('WelcomeState 建议卡（playbook 空态入口）', () => {
+  const playbooks = Array.from({ length: 10 }, (_, i) => ({ id: `pb.${i}` }));
+
+  it('默认取前 6 条；cap 收敛到 4–8', () => {
+    expect(buildWelcomeSuggestions(playbooks)).toHaveLength(6);
+    expect(buildWelcomeSuggestions(playbooks, 2)).toHaveLength(4);
+    expect(buildWelcomeSuggestions(playbooks, 20)).toHaveLength(8);
+  });
+
+  it('playbook 不足 cap 时全部展示', () => {
+    expect(buildWelcomeSuggestions(playbooks.slice(0, 3), 6)).toHaveLength(3);
+  });
+});
+
+describe('i18n：欢迎页 / 历史会话新键（zh-CN + en）', () => {
+  it('zh-CN 文案', () => {
+    expect(t('historyButton')).toBe('历史');
+    expect(t('welcomeTitle')).toBe('开始一次运维调查');
+    expect(t('historyNew')).toBe('新会话');
+  });
+
+  it('en 文案', () => {
+    setLocale('en');
+    expect(t('historyButton')).toBe('History');
+    expect(t('welcomeTitle')).toBe('Start an ops investigation');
+    expect(t('roleUser')).toBe('You');
   });
 });

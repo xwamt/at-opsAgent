@@ -14,6 +14,7 @@
  *   批准后 host 内存签发 HMAC 令牌（不进 LLM/webview），模型重试同一命令集放行
  */
 import { randomBytes, randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -28,7 +29,12 @@ import {
   type EvidenceNoteView,
   type HubHost,
   type HydrateEvt,
+  type McpSaveReq,
   type ModelSetReq,
+  type SessionSummary,
+  type SessionSwitchReq,
+  type SettingsOpenJsonReq,
+  type SettingsPatchConfigReq,
   type SubagentCard,
   type ToolCallView
 } from '../protocol';
@@ -54,13 +60,54 @@ import type {
   RuntimeLike,
   ThinkingLevel
 } from './hostTypes';
+import { diagnoseHub } from './diagnose';
+import { openModelsJson, readModelsFormState, saveModelsForm } from './modelsView';
 import { loadOrchestratorModule, loadRuntimeModule } from './modules';
-import { loginOAuthViaPi } from './oauthLogin';
+import { loginOAuthViaPi, openAuthJson } from './oauthLogin';
 import { PlaybookLayerSource } from './playbookLayer';
 import type { OpsSecrets } from './secrets';
 import type { SessionStore } from './sessionStore';
+import { listSkills, type SkillInfo } from './skillsScan';
 
 const SELECT_TOOL_NAMES = new Set(['ops_select_tools', 'at_select_tools']);
+
+/** settings/patchConfig 白名单：与 package.json contributes.configuration 对齐。 */
+const KNOWN_CONFIG_KEYS: readonly string[] = [
+  'discovery.mode',
+  'discovery.threshold',
+  'plugins.autoEnableNew',
+  'approval.sessionRequiredFor',
+  'approval.dedupePluginModal',
+  'models.defaultThinkingLevel',
+  'models.toolCallPromptFallback',
+  'workspaceShell.enabled',
+  'subagent.maxParallel',
+  'streaming.batchMs'
+];
+
+/** mcp/get 脱敏占位；mcp/save 时同值从现有文件回填，不会抹掉真实凭证。 */
+const MCP_REDACTED = '***';
+
+/** 「打开 mcp.json」文件缺失时写入的模板（无任何凭证）。 */
+const MCP_TEMPLATE = `{
+  "servers": {}
+}
+`;
+
+/** settings/hydrate 的载荷（设置页 webview 全量快照）。 */
+export interface SettingsSnapshot {
+  /** atOpsAgent.* 已知键的当前值。 */
+  config: Record<string, unknown>;
+  modelsPath: string;
+  agentDir: string;
+  /** hub.getProviders() 结果（能力插件清单）。 */
+  capabilities: unknown;
+  skills: SkillInfo[];
+  sessions: SessionSummary[];
+  /** mcp.json 脱敏文本（env/header/bearer 值 → ***）。 */
+  mcp: { path: string; exists: boolean; text: string; error?: string };
+  pendingApprovals: number;
+}
 
 export interface HostControllerOptions {
   hub: HubHost;
@@ -257,6 +304,45 @@ export class HostController {
         return this.runSkill((payload as { name?: string } | undefined)?.name);
       case 'hydrate':
         return this.snapshot();
+      case 'session/list':
+        return { sessions: this.sessionSummaries() };
+      case 'session/new': {
+        this.newSession();
+        return { ok: true, sessionId: this.store.activeSessionId };
+      }
+      case 'session/switch':
+        return this.switchSession((payload as SessionSwitchReq | undefined)?.id);
+      case 'settings/hydrate':
+        return this.settingsSnapshot();
+      case 'settings/patchConfig':
+        return this.patchConfig(payload as SettingsPatchConfigReq);
+      case 'mcp/get':
+        return this.readMcpRedacted();
+      case 'mcp/save':
+        return this.saveMcp((payload as McpSaveReq | undefined)?.text);
+      case 'settings/openJson':
+        return this.openJson((payload as SettingsOpenJsonReq | undefined)?.kind);
+      case 'history/toggle':
+        // controller 侧 no-op：标题栏命令由 chatView 直接向 chat webview 发 evt。
+        return { ok: true };
+      case 'models/state':
+        return this.modelsFormState();
+      case 'models/save':
+        return this.saveModelsFromSettings(payload);
+      case 'models/oauth': {
+        const providerId = (payload as { providerId?: string } | undefined)?.providerId;
+        return this.loginOAuth(typeof providerId === 'string' ? providerId : '');
+      }
+      case 'models/openFile':
+        return this.openJson('models');
+      case 'models/openAuth':
+        return this.openJson('auth');
+      case 'capabilities/refresh':
+        return this.refreshCapabilities();
+      case 'diagnose':
+        return this.runDiagnose();
+      case 'skill/open':
+        return this.openSkill(payload as { name?: string; path?: string } | undefined);
       default:
         return { ok: false, error: `未知请求类型 ${type}` };
     }
@@ -313,6 +399,26 @@ export class HostController {
 
   newSession(): void {
     this.store.newSession();
+    this.resetSessionScopedState();
+    this.broadcast('hydrate', this.snapshot());
+  }
+
+  /**
+   * 切换会话：store 恢复目标会话的内存包（transcript / 简报 / 时间线），
+   * controller 侧会话态（审批引用、playbook run、runtime）全部重置——
+   * 审批令牌绑定 sessionId，跨会话绝不复用。切换后广播 hydrate。
+   */
+  switchSession(id: string | undefined): { ok: boolean } {
+    if (typeof id !== 'string' || id.length === 0) return { ok: false };
+    if (id === this.store.activeSessionId) return { ok: true };
+    if (!this.store.switchSession(id)) return { ok: false };
+    this.resetSessionScopedState();
+    this.broadcast('hydrate', this.snapshot());
+    return { ok: true };
+  }
+
+  /** newSession / switchSession 共用：清空绑定旧会话的运行态。 */
+  private resetSessionScopedState(): void {
     this.selectCountThisTask = 0;
     this.nlTriggerConsumed = false;
     this.briefRuns.clear();
@@ -325,7 +431,235 @@ export class HostController {
     this.lastLayerKey = undefined;
     this.lastLayerRuntime = undefined;
     this.disposeRuntime();
-    this.broadcast('hydrate', this.snapshot());
+  }
+
+  private sessionSummaries(): SessionSummary[] {
+    return this.store.sessions.map((s) => ({ ...s }));
+  }
+
+  // ── 设置页 ─────────────────────────────────────────────────────────────
+
+  /** 技能清单缓存：refresh 命令 / 设置页刷新时失效重扫。 */
+  private skillsCache: SkillInfo[] | undefined;
+
+  refreshSkills(): void {
+    this.skillsCache = undefined;
+  }
+
+  /** settings/hydrate：设置页全量快照（不含任何明文凭证）。 */
+  async settingsSnapshot(): Promise<SettingsSnapshot> {
+    if (!this.skillsCache) {
+      try {
+        this.skillsCache = await listSkills(this.extensionPath);
+      } catch (err) {
+        this.log(`[settings] 技能扫描失败: ${describeError(err)}`);
+        this.skillsCache = [];
+      }
+    }
+    const config = vscode.workspace.getConfiguration('atOpsAgent');
+    const configValues: Record<string, unknown> = {};
+    for (const key of KNOWN_CONFIG_KEYS) configValues[key] = config.get(key);
+    return {
+      config: configValues,
+      modelsPath: this.modelsPath,
+      agentDir: this.agentDir,
+      capabilities: this.safeProviders(),
+      skills: this.skillsCache,
+      sessions: this.sessionSummaries(),
+      mcp: await this.readMcpRedacted(),
+      pendingApprovals: this.store.pendingBriefs.length
+    };
+  }
+
+  private async modelsFormState(): Promise<Record<string, unknown>> {
+    const state = await readModelsFormState({
+      modelsPath: this.modelsPath,
+      agentDir: this.agentDir,
+      secrets: this.secrets
+    });
+    return { ...state };
+  }
+
+  private async saveModelsFromSettings(payload: unknown): Promise<{
+    ok: boolean;
+    error?: string;
+    state?: Record<string, unknown>;
+  }> {
+    const outcome = await saveModelsForm(
+      { modelsPath: this.modelsPath, agentDir: this.agentDir, secrets: this.secrets },
+      isPlainRecord(payload) ? payload : {}
+    );
+    if (outcome.error !== undefined) {
+      return { ok: false, error: outcome.error };
+    }
+    if (outcome.applied) {
+      try {
+        await this.setModel(outcome.applied);
+      } catch (err) {
+        this.log(`[models] setModel 同步失败: ${describeError(err)}`);
+      }
+    }
+    return { ok: true, state: await this.modelsFormState() };
+  }
+
+  private async refreshCapabilities(): Promise<SettingsSnapshot> {
+    try {
+      await this.hub.refresh();
+    } catch (err) {
+      this.log(`[hub] refresh 失败: ${describeError(err)}`);
+    }
+    this.refreshSkills();
+    return this.settingsSnapshot();
+  }
+
+  private async runDiagnose(): Promise<{ ok: boolean }> {
+    await diagnoseHub({ hostApp: this.hub.hostApp, hub: this.hub, output: this.output });
+    this.output.show(true);
+    return { ok: true };
+  }
+
+  private async openSkill(
+    payload: { name?: string; path?: string } | undefined
+  ): Promise<{ ok: boolean; error?: string }> {
+    const skills = this.skillsCache ?? (await listSkills(this.extensionPath));
+    this.skillsCache = skills;
+    const requestedPath = typeof payload?.path === 'string' ? payload.path : undefined;
+    const requestedName = typeof payload?.name === 'string' ? payload.name : undefined;
+    const hit = skills.find(
+      (s) =>
+        (requestedPath !== undefined && s.skillFile === requestedPath) ||
+        (requestedName !== undefined && (s.label === requestedName || s.skillFile === requestedName))
+    );
+    if (!hit) {
+      return { ok: false, error: '未找到该技能文件' };
+    }
+    const skillsRoot = path.join(this.extensionPath, 'skills');
+    const resolved = path.resolve(hit.skillFile);
+    if (!resolved.startsWith(path.resolve(skillsRoot))) {
+      return { ok: false, error: '技能路径越界' };
+    }
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(resolved));
+    await vscode.window.showTextDocument(doc, { preview: true });
+    return { ok: true };
+  }
+
+  /** settings/patchConfig：只接受 atOpsAgent.* 已知键，写用户级配置。 */
+  private async patchConfig(req: SettingsPatchConfigReq): Promise<{ ok: boolean; error?: string }> {
+    const key = typeof req?.key === 'string' ? req.key.replace(/^atOpsAgent\./, '') : '';
+    if (!KNOWN_CONFIG_KEYS.includes(key)) {
+      return { ok: false, error: `未知配置键 "${key}"（只允许 atOpsAgent.* 已知键）` };
+    }
+    try {
+      await vscode.workspace
+        .getConfiguration('atOpsAgent')
+        .update(key, req.value, vscode.ConfigurationTarget.Global);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
+    }
+  }
+
+  private mcpPath(): string {
+    return path.join(this.agentDir, 'mcp.json');
+  }
+
+  /** mcp/get：读 ~/.at-series/agent/mcp.json，env/header/bearer 值一律脱敏为 ***。 */
+  async readMcpRedacted(): Promise<SettingsSnapshot['mcp']> {
+    const filePath = this.mcpPath();
+    let raw: string;
+    try {
+      raw = await fs.readFile(filePath, 'utf8');
+    } catch (err) {
+      const missing = (err as NodeJS.ErrnoException).code === 'ENOENT';
+      return {
+        path: filePath,
+        exists: false,
+        text: MCP_TEMPLATE,
+        ...(missing ? {} : { error: describeError(err) })
+      };
+    }
+    try {
+      const redacted = redactMcpConfig(JSON.parse(raw));
+      return { path: filePath, exists: true, text: `${JSON.stringify(redacted, null, 2)}\n` };
+    } catch {
+      // 坏 JSON 无法可靠脱敏：绝不回传原文（可能含明文凭证）。
+      return {
+        path: filePath,
+        exists: true,
+        text: '',
+        error: 'mcp.json 不是合法 JSON，无法脱敏预览；请用「打开 mcp.json」在编辑器修复。'
+      };
+    }
+  }
+
+  /**
+   * mcp/save：写回 mcp.json（0600）。webview 提交的 *** 占位值从现有文件
+   * 回填，真实凭证不经过 webview 往返；内容与凭证一律不落日志。
+   * AT 系列 hub.js 项照存——运行时由 filterMcpServers 跳过，绝不 spawn。
+   */
+  private async saveMcp(text: string | undefined): Promise<{ ok: boolean; error?: string }> {
+    if (typeof text !== 'string' || text.trim().length === 0) {
+      return { ok: false, error: 'mcp.json 内容不能为空。' };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      return { ok: false, error: `不是合法 JSON：${describeError(err)}` };
+    }
+    if (!isPlainRecord(parsed)) return { ok: false, error: 'mcp.json 根节点必须是对象。' };
+    let existing: unknown;
+    try {
+      existing = JSON.parse(await fs.readFile(this.mcpPath(), 'utf8'));
+    } catch {
+      existing = undefined;
+    }
+    const merged = restoreRedactedMcpValues(parsed, existing);
+    try {
+      await fs.mkdir(this.agentDir, { recursive: true });
+      await fs.writeFile(this.mcpPath(), `${JSON.stringify(merged, null, 2)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600
+      });
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
+    }
+    this.log('[mcp] 已保存 mcp.json（内容不落日志）');
+    return { ok: true };
+  }
+
+  /** settings/openJson：在编辑器打开配置文件；kind=vscode 走原生设置页。 */
+  private async openJson(
+    kind: SettingsOpenJsonReq['kind'] | undefined
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      switch (kind) {
+        case 'models':
+          await openModelsJson({ modelsPath: this.modelsPath, output: this.output });
+          return { ok: true };
+        case 'auth':
+          await openAuthJson(this.agentDir);
+          return { ok: true };
+        case 'mcp': {
+          await fs.mkdir(this.agentDir, { recursive: true });
+          try {
+            await fs.access(this.mcpPath());
+          } catch {
+            await fs.writeFile(this.mcpPath(), MCP_TEMPLATE, { encoding: 'utf8', mode: 0o600 });
+          }
+          const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(this.mcpPath()));
+          await vscode.window.showTextDocument(doc, { preview: false });
+          return { ok: true };
+        }
+        case 'vscode':
+          await vscode.commands.executeCommand('workbench.action.openSettings', 'atOpsAgent');
+          return { ok: true };
+        default:
+          return { ok: false, error: `未知 openJson kind "${String(kind)}"` };
+      }
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
+    }
   }
 
   // ── playbook / 审批 ────────────────────────────────────────────────────
@@ -1279,6 +1613,81 @@ export class HostController {
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** mcp.json 脱敏：servers / mcpServers 两种映射的 env、headers 值与 bearerToken → ***。 */
+function redactMcpConfig(root: unknown): unknown {
+  if (!isPlainRecord(root)) return root;
+  const out: Record<string, unknown> = { ...root };
+  for (const mapKey of ['servers', 'mcpServers'] as const) {
+    const map = out[mapKey];
+    if (!isPlainRecord(map)) continue;
+    out[mapKey] = Object.fromEntries(
+      Object.entries(map).map(([name, entry]) => [name, redactMcpEntry(entry)])
+    );
+  }
+  return out;
+}
+
+function redactMcpEntry(entry: unknown): unknown {
+  if (!isPlainRecord(entry)) return entry;
+  const out: Record<string, unknown> = { ...entry };
+  for (const key of ['env', 'headers'] as const) {
+    const rec = out[key];
+    if (isPlainRecord(rec)) {
+      out[key] = Object.fromEntries(Object.keys(rec).map((k) => [k, MCP_REDACTED]));
+    }
+  }
+  if (typeof out.bearerToken === 'string' && out.bearerToken.length > 0) {
+    out.bearerToken = MCP_REDACTED;
+  }
+  return out;
+}
+
+/** mcp/save：webview 传回的 *** 占位值按 server+键 从现有文件回填。 */
+function restoreRedactedMcpValues(
+  next: Record<string, unknown>,
+  existing: unknown
+): Record<string, unknown> {
+  if (!isPlainRecord(existing)) return next;
+  const out: Record<string, unknown> = { ...next };
+  for (const mapKey of ['servers', 'mcpServers'] as const) {
+    const nextMap = out[mapKey];
+    const prevMap = existing[mapKey];
+    if (!isPlainRecord(nextMap) || !isPlainRecord(prevMap)) continue;
+    out[mapKey] = Object.fromEntries(
+      Object.entries(nextMap).map(([name, entry]) => [
+        name,
+        restoreRedactedEntry(entry, prevMap[name])
+      ])
+    );
+  }
+  return out;
+}
+
+function restoreRedactedEntry(entry: unknown, prev: unknown): unknown {
+  if (!isPlainRecord(entry)) return entry;
+  const prevRec = isPlainRecord(prev) ? prev : undefined;
+  const out: Record<string, unknown> = { ...entry };
+  for (const key of ['env', 'headers'] as const) {
+    const rec = out[key];
+    if (!isPlainRecord(rec)) continue;
+    const prevValues = prevRec && isPlainRecord(prevRec[key]) ? prevRec[key] : undefined;
+    out[key] = Object.fromEntries(
+      Object.entries(rec).map(([k, v]) => [
+        k,
+        v === MCP_REDACTED && typeof prevValues?.[k] === 'string' ? prevValues[k] : v
+      ])
+    );
+  }
+  if (out.bearerToken === MCP_REDACTED && typeof prevRec?.bearerToken === 'string') {
+    out.bearerToken = prevRec.bearerToken;
+  }
+  return out;
 }
 
 /** kind=nl 触发词匹配：pattern 先按（大小写不敏感）正则试，非法正则退回子串包含。 */

@@ -96,6 +96,65 @@ export function normalizeTimelineEvent(payload: unknown): ChatTimelineEvent | nu
   };
 }
 
+// ── 历史会话 / 欢迎页（Cline 式 History 侧滑 + 空态建议卡）─────────────────
+
+export interface SessionMeta {
+  id: string;
+  title: string;
+  createdAt: number;
+}
+
+/** hydrate.sessions → 归一化：无 id 丢弃；title 缺省回退 id 前缀；createdAt 缺省 0。 */
+export function normalizeSessions(raw: unknown): SessionMeta[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out: SessionMeta[] = [];
+  for (const entry of raw) {
+    const rec = asRecord(entry);
+    const id = rec.id ?? rec.sessionId;
+    if (id === undefined || id === null || id === '') {
+      continue;
+    }
+    out.push({
+      id: String(id),
+      title: String(rec.title ?? rec.label ?? String(id).slice(0, 12)),
+      createdAt:
+        typeof rec.createdAt === 'number' && Number.isFinite(rec.createdAt) ? rec.createdAt : 0
+    });
+  }
+  return out;
+}
+
+/**
+ * 历史侧滑列表：新→旧排序；host 尚未下发 sessions 时退化为
+ * 「仅当前会话」一条（session/switch 未接线也能展示当前上下文）。
+ */
+export function buildHistoryList(
+  sessions: readonly SessionMeta[],
+  currentSessionId: string,
+  fallbackTitle = ''
+): SessionMeta[] {
+  if (sessions.length > 0) {
+    return [...sessions].sort((a, b) => b.createdAt - a.createdAt);
+  }
+  if (currentSessionId) {
+    return [
+      {
+        id: currentSessionId,
+        title: fallbackTitle || currentSessionId.slice(0, 12),
+        createdAt: 0
+      }
+    ];
+  }
+  return [];
+}
+
+/** 欢迎页建议卡：取前 cap 条 playbook；cap 收敛到 4–8（Cline 空态卡片量级）。 */
+export function buildWelcomeSuggestions<T>(playbooks: readonly T[], cap = 6): T[] {
+  return playbooks.slice(0, Math.min(8, Math.max(4, cap)));
+}
+
 /**
  * 紧凑「事件脉络」条：host 下发的 timeline 事件在前，transcript 中的
  * evidence 便签（confidence 三态）在后；host 不发 timeline 时仅证据也能撑起条带。

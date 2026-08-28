@@ -76,6 +76,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     );
   }
 
+  /** 标题栏 History 按钮（atOpsAgent.toggleHistory）→ chat webview 开关历史抽屉。 */
+  postHistoryToggle(): void {
+    if (!this.view) return;
+    this.view.show?.(true);
+    void this.view.webview.postMessage(envelope('evt', 'history/toggle', {}, randomUUID()));
+  }
+
   dispose(): void {
     this.controllerSub.dispose();
     this.batcher?.dispose();

@@ -1,5 +1,5 @@
 /**
- * Webview HTML 生成：CSP + nonce，脚本来自 dist/webview/(chat|board).js。
+ * Webview HTML 生成：CSP + nonce，脚本来自 dist/webview/(chat|board|settings).js。
  *
  * CSP 基线（docs/05-ui-system.md §4）：
  *   default-src 'none'; script-src 'nonce-…'; style-src 'nonce-…' 'unsafe-inline'
@@ -8,7 +8,7 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 
-export type WebviewScriptFile = 'chat.js' | 'board.js';
+export type WebviewScriptFile = 'chat.js' | 'board.js' | 'settings.js';
 
 export function getNonce(): string {
   return randomBytes(16).toString('hex');

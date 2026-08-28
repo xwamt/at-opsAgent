@@ -10,7 +10,7 @@
   --ops-read: var(--ops-healthy);
   --ops-write: var(--ops-warn);
   --ops-exec: var(--ops-crit);
-  --ops-density: 4px; /* 高信息密度间距基数 */
+  --ops-density: 6px; /* 间距基数：Cline/Continue 级留白，信息密度靠布局而非挤压 */
   --ops-mono: var(--vscode-editor-font-family, ui-monospace, 'SF Mono', Menlo, Consolas, monospace);
 
   --ops-muted: var(--vscode-descriptionForeground);
@@ -24,8 +24,13 @@
   --ops-btn-fg: var(--vscode-button-foreground);
   --ops-btn2-bg: var(--vscode-button-secondaryBackground, transparent);
   --ops-btn2-fg: var(--vscode-button-secondaryForeground, var(--ops-fg));
-  --ops-radius: 4px; /* 圆角 ≤6px，避免消费级气泡感 */
+  --ops-radius: 6px; /* 圆角 ≤6px，避免消费级气泡感 */
   --ops-font-size: var(--vscode-font-size, 13px);
+  /* 用户消息「井」底色（Copilot 式分组）：inactiveSelection → textBlockQuote → 灰兜底 */
+  --ops-user-msg-bg: var(
+    --vscode-editor-inactiveSelectionBackground,
+    var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.14))
+  );
 }
 
 html,
