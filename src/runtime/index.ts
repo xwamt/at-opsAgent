@@ -28,9 +28,11 @@ import type {
   AgentToolDescriptor,
   Event,
   ListProvidersResult,
+  NoticeAction,
   SelectionController,
   ToolInvocation,
-  ToolInvocationResult
+  ToolInvocationResult,
+  UsageView
 } from '../protocol';
 import { composeSystemPrompt } from '../prompts/layers';
 import { composeSubagentPrompt } from '../prompts/roles';
@@ -57,6 +59,7 @@ import {
   dispatchToolSpec,
   filterToolsForSubagent,
   normalizeDispatchInput,
+  runDispatchToolCall,
   type SubagentDispatchInput,
   type SubagentManager,
   type SubagentRunOutcome,
@@ -90,14 +93,18 @@ export {
   normalizeDispatchInput,
   parseContractJson,
   parseEvidenceNote,
+  runDispatchToolCall,
   truncateSummary,
   DEFAULT_SUBAGENT_BUDGET,
   DISPATCH_TOOL_NAME,
+  MAX_DISPATCH_TASKS,
   ROLE_PARALLEL_LIMITS,
   SUBAGENT_SUMMARY_CHAR_LIMIT,
   type BuildTaskSpecOutcome,
   type ContractJson,
+  type DispatchToolTaskResult,
   type SubagentDispatchInput,
+  type SubagentFinalResult,
   type SubagentManager,
   type SubagentRunner,
   type SubagentRunOutcome,
@@ -136,6 +143,8 @@ export {
 
 export {
   createPlaybookTools,
+  ADVANCE_STAGE_TOOL_NAME,
+  CLOSE_PLAYBOOK_TOOL_NAME,
   LIST_PLAYBOOKS_TOOL_NAME,
   START_PLAYBOOK_TOOL_NAME,
   type PlaybookCatalogEntry,
@@ -144,6 +153,39 @@ export {
 } from './playbook-tools';
 
 // ── 对外契约 ─────────────────────────────────────────────────────────────
+
+/**
+ * 工具调用的发起方身份（P0-D：policy 需要 role/riskCeiling 才能执行角色规则）。
+ * 主会话恒为 { kind: 'main' }；子代理会话由 runSubagentSession 按 TaskSpec 注入。
+ */
+export type ToolCallOrigin =
+  | { kind: 'main' }
+  | {
+      kind: 'subagent';
+      taskId: string;
+      role: string;
+      riskCeiling: string;
+      /**
+       * Executor 的令牌引用 = TaskSpec.approvalToken.briefId（已批 9 要素
+       * 简报 id）。commandSetSha256 由 host 按 briefId 查回并校验——模型/
+       * 子代理绝不自行计算哈希。
+       */
+      approvalToken?: string;
+    };
+
+/**
+ * beforeToolCall 的裁决。needSessionApproval=true 时 runtime 在该工具的
+ * execute 内 await handlers.requestApproval —— 批准则继续同一调用，拒绝
+ * 则把结构化拒绝 JSON 作为工具结果返回（绝不抛错让模型重试）。
+ */
+export type BeforeToolCallVerdict = {
+  block: boolean;
+  reason?: string;
+  /** true = 需要会话内审批（write/exec 双闸的第①道），runtime 挂起等待。 */
+  needSessionApproval?: boolean;
+  /** 审批风险级别（host 生成 9 要素简报用）；缺省按 write 处理。 */
+  risk?: 'write' | 'exec';
+};
 
 export type OpsRuntimeHandlers = {
   hub: {
@@ -155,24 +197,46 @@ export type OpsRuntimeHandlers = {
     /** 工具目录变化（插件桥接上线/下线）。HubHost 的 Event<ToolChangeEvent> 可直接赋值。 */
     onDidChangeTools?: Event<unknown>;
   };
-  /** 权限闸（policy）。返回 block=true 时该次工具调用被拒绝，reason 回给模型。 */
+  /**
+   * 权限闸（policy）。block=true 时该次工具调用被拒绝，reason 回给模型；
+   * needSessionApproval=true 时 runtime 调用 requestApproval 在 execute 内挂起。
+   * ctx.origin 标识调用方（主会话 / 子代理），host 应透传给 evaluatePolicy。
+   */
   beforeToolCall?: (ctx: {
     toolName: string;
     args: Record<string, unknown>;
-  }) => Promise<{ block: boolean; reason?: string }>;
+    origin?: ToolCallOrigin;
+  }) => Promise<BeforeToolCallVerdict>;
+  /**
+   * 会话内审批（P0-D）：needSessionApproval 时 runtime 在工具 execute 内
+   * await 本回调。host 弹 ApprovalBar / 9 要素简报，用户批准返回 'approved'
+   * （runtime 继续同一调用），拒绝返回 'rejected'（runtime 回结构化拒绝结果）。
+   * 缺席时 runtime 直接返回「需要审批但 host 未接线」的结构化拒绝。
+   */
+  requestApproval?: (input: {
+    toolName: string;
+    args: Record<string, unknown>;
+    risk: 'write' | 'exec';
+    reason?: string;
+    origin?: ToolCallOrigin;
+  }) => Promise<'approved' | 'rejected'>;
   onEvent?: (e: OpsRuntimeEvent) => void;
   /** 子代理生命周期（可选；host 后续接 SubagentBoard 时消费）。 */
   onSubagentEvent?: (e: OpsSubagentEvent) => void;
   /**
    * 工具目录出现「原始注册集之外的新业务工具」时回调。pi 的 AgentSession
    * 只在 createAgentSession 期注册 customTools，之后没有公开 API 追加/替换
-   * ToolDefinition（见 createPiRuntime 内注释）——host 收到该回调后应
-   * disposeRuntime 并重建，让新工具进模型工具面。下线/重新上线的已注册
-   * 工具无需重建：setActiveToolsByName 即时同步。
+   * ToolDefinition（见 createPiRuntime 内注释）——host 收到该回调后应重建
+   * runtime（配合 resumeSessionFile 续接同一 JSONL，不丢上下文）。
+   *
+   * P1-15：会话运行中（isStreaming）不会立刻回调——runtime 把重建请求排队，
+   * 等本轮 agent_end（idle）后才调用，避免装插件把进行中的上下文打断。
+   * 下线/重新上线的已注册工具无需重建：setActiveToolsByName 即时同步。
    */
   onCatalogNeedsRebuild?: () => void;
   /**
-   * 运维链路目录（ops_list_playbooks / ops_start_playbook）。
+   * 运维链路目录（ops_list_playbooks / ops_start_playbook /
+   * ops_advance_stage / ops_close_playbook）。
    * 缺席时工具仍注册，执行结果告知模型 host 未接线。
    */
   playbooks?: PlaybookToolHost;
@@ -200,9 +264,21 @@ export type OpsRuntimeEvent =
       preview?: string;
       error?: string;
     }
+  | ({ type: 'usage' } & UsageView)
+  | { type: 'compaction'; summary: string }
+  | {
+      type: 'notice';
+      variant: 'error' | 'info' | 'success';
+      text: string;
+      actions?: NoticeAction[];
+    }
   | { type: 'idle' };
 
-/** dispatchSubagent 的即时返回：结果本体经事件异步回传。 */
+/**
+ * OpsRuntime.dispatchSubagent（host API）的即时返回。
+ * 注意：模型侧的 ops_dispatch_subagent 工具是阻塞式的（P1-6），
+ * 工具结果 = 终态摘要 JSON，不再经 prompt 回灌主会话。
+ */
 export type DispatchSubagentResult = {
   taskId: string;
   status: string;
@@ -215,8 +291,11 @@ export type OpsThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | '
 
 export interface OpsRuntime {
   prompt(text: string, opts?: { mode?: 'steer' | 'followUp' }): Promise<void>;
-  /** 中止主会话，并级联中止所有在跑子代理。 */
-  abort(): void;
+  /**
+   * 中止会话。mode='stop'（缺省）= 立即 abort 主会话并级联全部子代理；
+   * mode='cancel' = 软停：等当前 in-flight 工具调用结束后再 abort（保留在途证据）。
+   */
+  abort(mode?: 'cancel' | 'stop'): void;
   dispose(): Promise<void>;
   setSystemPrompt(prompt: string): void;
   /** 调整思考等级（会话支持 setThinkingLevel 时生效；Fallback 为安全 no-op）。 */
@@ -225,6 +304,14 @@ export interface OpsRuntime {
   dispatchSubagent(spec: SubagentDispatchInput | TaskSpec): Promise<DispatchSubagentResult>;
   /** 中止单个子代理（AbortSignal 级联到其 LLM 子会话与 in-flight invoke）。 */
   abortSubagent(taskId: string): void;
+  /**
+   * 当前主会话 JSONL 路径（P0-C：会话单真源）。host 重建 runtime 时把它
+   * 作为 CreateOpsRuntimeOptions.resumeSessionFile 传回来即可续接同一会话。
+   * in-memory 会话 / Fallback 为 undefined。
+   */
+  sessionFile?: string;
+  /** 连通性探测（models/test）：1 次极小补全，返回延迟或人话错误。 */
+  probeModel?(): Promise<{ ok: boolean; latencyMs?: number; error?: string }>;
 }
 
 export interface CreateOpsRuntimeOptions {
@@ -233,12 +320,21 @@ export interface CreateOpsRuntimeOptions {
   cwd?: string;
   model?: { provider?: string; id?: string };
   /**
-   * 从 host 的 SecretStorage 读 LLM API key。返回非空串时经
+   * 从 host 的 SecretStorage 按 provider 读 LLM API key（providerId 缺省时
+   * 返回全局/默认 key，兼容旧的无参实现）。返回非空串时经
    * ModelRuntime.setRuntimeApiKey 注入 pi 凭证层，覆盖 models.json 里的
    * "${secret:…}" 占位符（否则占位符会被当成真实 bearer token 发出去）。
-   * key 只在内存中传递，绝不写日志、绝不落盘。
+   * 只对「首选 provider」与「实际选中模型的 provider」注入——绝不按
+   * 注册表第一个 provider 启发式注入。key 只在内存中传递，绝不写日志、
+   * 绝不落盘。
    */
-  getApiKey?: () => Promise<string | undefined>;
+  getApiKey?: (providerId?: string) => Promise<string | undefined>;
+  /**
+   * P0-C 会话续接：host 重建 runtime（换模型 / 新插件工具上线）时传入上一个
+   * runtime 的 sessionFile，pi 经 SessionManager.open 续接同一 JSONL——
+   * LLM 上下文不丢。缺省 / 打开失败时新建会话（agentDir/sessions 下新 JSONL）。
+   */
+  resumeSessionFile?: string;
   /** 思考等级；透传 createAgentSession({ thinkingLevel })，pi 按模型能力收敛。 */
   thinkingLevel?: OpsThinkingLevel;
   /**
@@ -300,16 +396,68 @@ function extractResultText(result: unknown): string {
   }
 }
 
-async function applyToolGate(
+/** 主会话工具调用的固定 origin。 */
+export const MAIN_ORIGIN: ToolCallOrigin = { kind: 'main' };
+
+/**
+ * applyToolGate 的结果：allow = 继续执行；reject = 把 resultJson 作为工具
+ * 结果原样返回给模型（审批被拒 / 审批通道未接线，不抛错、不让模型重试）。
+ */
+export type ToolGateResult = { kind: 'allow' } | { kind: 'reject'; resultJson: string };
+
+/**
+ * 统一权限闸（P0-D）：
+ * - block=true → throw（pi 记为 isError，与旧行为一致）；
+ * - needSessionApproval=true → 在本次 execute 内 await handlers.requestApproval：
+ *   批准 → allow（继续同一调用）；拒绝 / host 未接线 → 返回结构化拒绝 JSON
+ *   作为工具结果（绝不为审批抛错）。
+ */
+export async function applyToolGate(
   handlers: OpsRuntimeHandlers,
   toolName: string,
-  args: Record<string, unknown>
-): Promise<void> {
-  if (!handlers.beforeToolCall) return;
-  const verdict = await handlers.beforeToolCall({ toolName, args });
+  args: Record<string, unknown>,
+  origin: ToolCallOrigin = MAIN_ORIGIN
+): Promise<ToolGateResult> {
+  if (!handlers.beforeToolCall) return { kind: 'allow' };
+  const verdict = await handlers.beforeToolCall({ toolName, args, origin });
   if (verdict.block) {
     throw new Error(verdict.reason ?? `工具 ${toolName} 被策略闸门拒绝`);
   }
+  if (verdict.needSessionApproval !== true) return { kind: 'allow' };
+
+  const risk: 'write' | 'exec' = verdict.risk ?? 'write';
+  if (handlers.requestApproval === undefined) {
+    return {
+      kind: 'reject',
+      resultJson: JSON.stringify({
+        ok: false,
+        error: {
+          code: 'OPS_APPROVAL_REQUIRED',
+          message:
+            verdict.reason ??
+            `${risk} 级工具 ${toolName} 需要会话内批准，但审批通道未接线；请告知用户在界面上处理。`
+        }
+      })
+    };
+  }
+  const decision = await handlers.requestApproval({
+    toolName,
+    args,
+    risk,
+    ...(verdict.reason !== undefined ? { reason: verdict.reason } : {}),
+    origin
+  });
+  if (decision === 'approved') return { kind: 'allow' };
+  return {
+    kind: 'reject',
+    resultJson: JSON.stringify({
+      ok: false,
+      error: {
+        code: 'OPS_APPROVAL_REJECTED',
+        message: `用户拒绝了 ${toolName} 的审批请求。不要原样重试同一调用；如需继续，请调整方案后重新征询用户。`
+      }
+    })
+  };
 }
 
 // ── 业务工具结果：截断与落盘 ─────────────────────────────────────────────
@@ -373,7 +521,8 @@ async function persistFullToolResult(
 
 /**
  * 业务工具统一执行路径（主会话与子会话共用）：
- * - 策略闸门 → hub.invoke；
+ * - 策略闸门（origin 标识主会话/子代理；审批被拒时直接返回结构化拒绝 JSON，
+ *   不 invoke、不抛错）→ hub.invoke；
  * - USER_CANCELLED 抛错（pi 记为 isError，UI 不会呈现“成功”）；
  * - 结果超过 8KB 时截断回给模型（带中文提示），完整 JSON 落盘
  *   agentDir/tool-results/<toolCallId>.json（写盘失败不影响调用）。
@@ -384,9 +533,11 @@ export async function executeBusinessTool(
   args: Record<string, unknown>,
   signal: AbortSignal | undefined,
   agentDir: string,
-  toolCallId?: string
+  toolCallId?: string,
+  origin: ToolCallOrigin = MAIN_ORIGIN
 ): Promise<string> {
-  await applyToolGate(handlers, descriptor.name, args);
+  const gate = await applyToolGate(handlers, descriptor.name, args, origin);
+  if (gate.kind === 'reject') return gate.resultJson;
   const result = await handlers.hub.invoke({
     name: descriptor.name,
     arguments: args,
@@ -407,24 +558,72 @@ export async function executeBusinessTool(
 
 // ── FallbackRuntime ──────────────────────────────────────────────────────
 
-export const FALLBACK_NOTICE =
-  '未配置模型，请在设置中写入 API key；仍可通过能力插件树查看已注册 AT 工具。';
+/** 缺凭证/无可用模型时的兜底文案（P0-A：只在确属配置缺失时使用）。 */
+export const FALLBACK_NOTICE = '未配置模型：请打开设置，填写 provider 的 API key 并选择模型。';
+
+/** 其它创建期失败（pi 加载失败、会话创建失败等）的文案前缀。 */
+export const FALLBACK_INIT_FAILURE_PREFIX = '模型运行时初始化失败：';
+
+/** notice 事件的「打开设置」动作（host/webview 映射到 atOpsAgent.openModels）。 */
+export const OPEN_SETTINGS_NOTICE_ACTION: NoticeAction = {
+  id: 'open-settings',
+  label: '打开设置',
+  command: 'atOpsAgent.openModels'
+};
+
+const MISSING_MODEL_CONFIG_PATTERN = new RegExp(
+  [
+    // 我们自己的创建期错误（resolveModel）
+    '未找到模型',
+    '没有任何配置了有效凭证的模型',
+    '缺少 API key',
+    '未配置模型',
+    // 常见凭证/配置类错误关键词
+    'api[ _-]?key',
+    'credential',
+    'unauthorized',
+    'no models? (are )?(available|configured)',
+    'not configured',
+    'missing (api )?key',
+    '\\b401\\b',
+    '凭证'
+  ].join('|'),
+  'i'
+);
+
+/** 失败原因是否属于「缺 key / 无可用模型」这类配置缺失（P0-A 文案分流）。 */
+export function looksLikeMissingModelConfig(reason?: string): boolean {
+  if (reason === undefined || reason.trim().length === 0) return true; // 无原因 = 从未配置
+  return MISSING_MODEL_CONFIG_PATTERN.test(reason);
+}
 
 /**
- * 模型运行时创建失败（缺 API key、模型不存在、pi 加载失败等）时的兜底实现。
- * prompt 时用中文说明现状并回到 idle，绝不抛错，保证扩展可激活。
+ * 模型运行时创建失败时的兜底实现。prompt 时用中文说明现状并回到 idle，
+ * 绝不抛错，保证扩展可激活。文案分流（P0-A）：
+ * - 缺 key / 无可用模型 → FALLBACK_NOTICE + notice 事件带「打开设置」动作；
+ * - 其它失败 → 「模型运行时初始化失败：<reason>」。
+ * 两类都绝不提内部实现（能力插件树 / src 路径）。
  */
 export function createFallbackRuntime(handlers: OpsRuntimeHandlers, reason?: string): OpsRuntime {
-  let seq = 0;
-  const message = reason ? `${FALLBACK_NOTICE}\n（原因：${reason}）` : FALLBACK_NOTICE;
+  const missingConfig = looksLikeMissingModelConfig(reason);
+  const message = missingConfig
+    ? reason !== undefined && reason.length > 0
+      ? `${FALLBACK_NOTICE}\n（原因：${reason}）`
+      : FALLBACK_NOTICE
+    : `${FALLBACK_INIT_FAILURE_PREFIX}${reason}`;
   return {
     async prompt(): Promise<void> {
-      seq += 1;
-      handlers.onEvent?.({ type: 'text_delta', id: `fallback-${seq}`, text: message });
+      handlers.onEvent?.({ type: 'text_delta', id: `fallback-${randomUUID()}`, text: message });
+      handlers.onEvent?.({
+        type: 'notice',
+        variant: 'error',
+        text: message,
+        ...(missingConfig ? { actions: [OPEN_SETTINGS_NOTICE_ACTION] } : {})
+      });
       handlers.onEvent?.({ type: 'idle' });
     },
     abort(): void {
-      // 无进行中的模型调用，无事可做。
+      // 无进行中的模型调用，无事可做（cancel/stop 同为 no-op）。
     },
     async dispose(): Promise<void> {
       // 无资源可释放。
@@ -441,6 +640,9 @@ export function createFallbackRuntime(handlers: OpsRuntimeHandlers, reason?: str
     },
     abortSubagent(): void {
       // 无子代理在跑，无事可做。
+    },
+    async probeModel(): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
+      return { ok: false, error: message };
     }
   };
 }
@@ -489,7 +691,8 @@ function buildDiscoveryTools(pi: PiModule, handlers: OpsRuntimeHandlers): ToolDe
       description: spec.description,
       parameters: spec.parameters,
       execute: async (args) => {
-        await applyToolGate(handlers, spec.name, args);
+        const gate = await applyToolGate(handlers, spec.name, args, MAIN_ORIGIN);
+        if (gate.kind === 'reject') return gate.resultJson;
         return executeDiscoveryTool(hub, spec.name, args);
       }
     })
@@ -548,12 +751,37 @@ export function catalogGainedNewBusinessTool(
   return listBusinessToolDescriptors(allTools).some((t) => !registeredNames.has(t.name));
 }
 
+/** pi Usage（pi-ai）+ 会话上下文水位 → 协议 UsageView 的宽松映射。 */
+function toUsageView(
+  usage: { input?: unknown; output?: unknown; cost?: { total?: unknown } },
+  contextUsage?: { tokens?: number | null; contextWindow?: number }
+): UsageView {
+  const view: UsageView = {};
+  if (typeof usage.input === 'number') view.inputTokens = usage.input;
+  if (typeof usage.output === 'number') view.outputTokens = usage.output;
+  const cost = usage.cost?.total;
+  if (typeof cost === 'number') view.costUsd = cost;
+  if (typeof contextUsage?.tokens === 'number') view.contextUsed = contextUsage.tokens;
+  if (typeof contextUsage?.contextWindow === 'number') {
+    view.contextWindow = contextUsage.contextWindow;
+  }
+  return view;
+}
+
+interface SessionEventHooks {
+  /** agent_end（会话回 idle）后回调——P1-15 的目录重建排队在这里冲刷。 */
+  onIdle?: () => void;
+  /** 工具执行开始/结束（软停 abort('cancel') 依赖 in-flight 计数）。 */
+  onToolActivity?: (kind: 'start' | 'end', toolCallId: string) => void;
+}
+
 function subscribeSessionEvents(
   session: AgentSession,
-  handlers: OpsRuntimeHandlers
+  handlers: OpsRuntimeHandlers,
+  hooks: SessionEventHooks = {}
 ): () => void {
-  let messageCounter = 0;
-  let currentMessageId = 'msg-0';
+  // P0-C：事件 id 用 randomUUID——续接/重建会话后 id 绝不与历史消息串写。
+  let currentMessageId = randomUUID();
   const emit = (e: OpsRuntimeEvent): void => handlers.onEvent?.(e);
 
   return session.subscribe((event: AgentSessionEvent) => {
@@ -561,8 +789,7 @@ function subscribeSessionEvents(
       case 'message_start': {
         const role = (event.message as { role?: string }).role;
         if (role === 'assistant') {
-          messageCounter += 1;
-          currentMessageId = `msg-${messageCounter}`;
+          currentMessageId = randomUUID();
         }
         break;
       }
@@ -575,8 +802,35 @@ function subscribeSessionEvents(
         }
         break;
       }
+      case 'message_end': {
+        // P1-4：assistant 消息落定时上报 token/成本/上下文水位。
+        const message = event.message as { role?: string; usage?: Record<string, unknown> };
+        if (message.role === 'assistant' && message.usage !== undefined) {
+          emit({
+            type: 'usage',
+            ...toUsageView(message.usage, session.getContextUsage())
+          });
+        }
+        break;
+      }
+      case 'compaction_end': {
+        // 自动 compaction（threshold/overflow）在这里上报；manual（含
+        // recoverFromPromptError 的恢复路径）由发起方自行发事件，避免重复。
+        if (!event.aborted && event.reason !== 'manual') {
+          const summary = event.result?.summary;
+          emit({
+            type: 'compaction',
+            summary:
+              typeof summary === 'string' && summary.trim().length > 0
+                ? summary
+                : '上下文接近模型窗口，已自动压缩早期对话。'
+          });
+        }
+        break;
+      }
       case 'tool_execution_start':
         emit({ type: 'tool_start', id: event.toolCallId, name: event.toolName });
+        hooks.onToolActivity?.('start', event.toolCallId);
         break;
       case 'tool_execution_end': {
         const preview = truncatePreview(extractResultText(event.result));
@@ -588,10 +842,12 @@ function subscribeSessionEvents(
           preview: event.isError ? undefined : preview,
           error: event.isError ? preview : undefined
         });
+        hooks.onToolActivity?.('end', event.toolCallId);
         break;
       }
       case 'agent_end':
         emit({ type: 'idle' });
+        hooks.onIdle?.();
         break;
       default:
         break;
@@ -649,6 +905,17 @@ interface SubagentSessionEnv {
  */
 async function runSubagentSession(env: SubagentSessionEnv, spec: TaskSpec, signal: AbortSignal): Promise<SubagentRunOutcome> {
   const { pi, handlers } = env;
+  // P0-D：子会话的每次工具调用都带 origin（role/riskCeiling/approvalToken
+  // 引用），host 透传给 evaluatePolicy 执行角色规则。
+  const origin: ToolCallOrigin = {
+    kind: 'subagent',
+    taskId: spec.taskId,
+    role: spec.role,
+    riskCeiling: spec.toolPolicy.riskCeiling,
+    ...(spec.approvalToken?.briefId !== undefined
+      ? { approvalToken: spec.approvalToken.briefId }
+      : {})
+  };
   const customTools = filterToolsForSubagent(
     listBusinessToolDescriptors(handlers.hub.listExposedTools()),
     spec
@@ -659,7 +926,15 @@ async function runSubagentSession(env: SubagentSessionEnv, spec: TaskSpec, signa
       description: descriptor.description,
       parameters: descriptor.inputSchema,
       execute: (args, toolSignal, toolCallId) =>
-        executeBusinessTool(handlers, descriptor, args, toolSignal ?? signal, env.agentDir, toolCallId)
+        executeBusinessTool(
+          handlers,
+          descriptor,
+          args,
+          toolSignal ?? signal,
+          env.agentDir,
+          toolCallId,
+          origin
+        )
     })
   );
 
@@ -805,43 +1080,35 @@ async function createPiRuntime(
   // P0：SecretStorage 的 API key 经 setRuntimeApiKey 注入 pi 凭证层。
   // models.json 里的 apiKey 往往是 "${secret:…}" 占位符，若不覆盖会被当成
   // 真实 bearer token 发出去。key 只在本地变量中经过，绝不写日志。
-  const apiKey = options.getApiKey === undefined ? undefined : await options.getApiKey();
-  const hasApiKey = typeof apiKey === 'string' && apiKey.length > 0;
-  let keyedProvider: string | undefined;
-  if (hasApiKey) {
-    keyedProvider = options.model?.provider ?? modelRuntime.getRegisteredProviderIds()[0];
-    if (keyedProvider !== undefined && keyedProvider.length > 0) {
-      await modelRuntime.setRuntimeApiKey(keyedProvider, apiKey);
+  // 只对「首选 provider」与「实际选中模型的 provider」按 provider 取 key
+  // 注入——getRegisteredProviderIds()[0] 启发式已删除（P0-B）。
+  const keyedProviders = new Set<string>();
+  const injectApiKey = async (providerId: string | undefined): Promise<void> => {
+    if (options.getApiKey === undefined) return;
+    if (providerId === undefined || providerId.length === 0) return;
+    if (keyedProviders.has(providerId)) return;
+    keyedProviders.add(providerId);
+    const apiKey = await options.getApiKey(providerId);
+    if (typeof apiKey === 'string' && apiKey.length > 0) {
+      await modelRuntime.setRuntimeApiKey(providerId, apiKey);
     }
-  }
+  };
+  await injectApiKey(options.model?.provider);
 
   const model = (await resolveModel(modelRuntime, options.model)) as CreateAgentSessionOptions['model'];
 
   // 实际选中模型的 provider 与首选 provider 不同时（如按可用性兜底选中），
-  // 同样注入 key，保证选中模型不用占位符凭证。
-  if (hasApiKey) {
-    const modelProvider = (model as { provider?: unknown } | undefined)?.provider;
-    if (
-      typeof modelProvider === 'string' &&
-      modelProvider.length > 0 &&
-      modelProvider !== keyedProvider
-    ) {
-      await modelRuntime.setRuntimeApiKey(modelProvider, apiKey);
-    }
+  // 同样注入该 provider 的 key，保证选中模型不用占位符凭证。
+  const resolvedProvider = (model as { provider?: unknown } | undefined)?.provider;
+  if (typeof resolvedProvider === 'string') {
+    await injectApiKey(resolvedProvider);
   }
 
-  // ── 子代理调度：同模型、同 hub 面，in-memory 子会话（结果异步回灌主会话） ──
+  // ── 子代理调度：同模型、同 hub 面，in-memory 子会话 ─────────────────────
+  // P1-6：ops_dispatch_subagent 是阻塞式工具（工具结果 = 终态摘要 JSON），
+  // 结果经 tool result 一次性回到主 transcript——deliverToMain 的 prompt
+  // 回灌已删除（不再有伪装 user 消息的异步插播）。
   const subagentEnv: SubagentSessionEnv = { pi, handlers, cwd, agentDir, modelRuntime, model };
-  let mainSession: AgentSession | undefined;
-
-  const deliverToMain = (text: string): void => {
-    if (mainSession === undefined) return;
-    void mainSession
-      .prompt(text, { streamingBehavior: mainSession.isStreaming ? 'steer' : 'followUp' })
-      .catch(() => {
-        // 回灌失败（会话正被 dispose 等）不致命：事件已经发给 UI。
-      });
-  };
 
   const onSubagentStatus = (e: SubagentStatusEvent): void => {
     handlers.onSubagentEvent?.({
@@ -852,7 +1119,8 @@ async function createPiRuntime(
       ...(e.error !== undefined ? { error: e.error } : {}),
       ...(e.evidenceNote !== undefined ? { evidenceNote: e.evidenceNote } : {})
     });
-    // 复用 host 已理解的 tool_start/tool_end 事件呈现子代理生命周期。
+    // 复用 host 已理解的 tool_start/tool_end 事件呈现子代理生命周期
+    //（host API dispatchSubagent 派发的任务没有对应的模型侧工具调用卡片）。
     const eventId = `subagent:${e.taskId}`;
     const eventName = `subagent_${e.role}`;
     if (e.status === 'running') {
@@ -866,12 +1134,6 @@ async function createPiRuntime(
         ...(e.summary !== undefined ? { preview: truncatePreview(e.summary) } : {}),
         ...(e.error !== undefined ? { error: e.error } : {})
       });
-      if (e.status !== 'aborted') {
-        // 只回灌 ≤800 token 摘要；子代理原始输出/思考不进主 transcript。
-        deliverToMain(
-          `[子代理 ${e.taskId}（${e.role}）${e.status}]\n${e.summary ?? e.error ?? '（无输出）'}`
-        );
-      }
     }
   };
 
@@ -906,14 +1168,16 @@ async function createPiRuntime(
   await resourceLoader.reload();
 
   // ops_dispatch_subagent 仅注册在主会话（子会话不注册，禁止递归派发）。
+  // P1-6：execute 阻塞到全部子代理终态，工具结果 = 终态摘要 JSON。
   const dispatchTool = toPiTool(pi, {
     name: dispatchToolSpec.name,
     label: dispatchToolSpec.label,
     description: dispatchToolSpec.description,
     parameters: dispatchToolSpec.parameters,
     execute: async (args) => {
-      await applyToolGate(handlers, dispatchToolSpec.name, args);
-      return JSON.stringify(await dispatchSubagent(args as unknown as SubagentDispatchInput));
+      const gate = await applyToolGate(handlers, dispatchToolSpec.name, args, MAIN_ORIGIN);
+      if (gate.kind === 'reject') return gate.resultJson;
+      return runDispatchToolCall(args, subagents);
     }
   });
 
@@ -922,7 +1186,8 @@ async function createPiRuntime(
     toPiTool(pi, {
       ...spec,
       execute: async (args) => {
-        await applyToolGate(handlers, spec.name, args);
+        const gate = await applyToolGate(handlers, spec.name, args, MAIN_ORIGIN);
+        if (gate.kind === 'reject') return gate.resultJson;
         return spec.execute(args);
       }
     });
@@ -980,7 +1245,8 @@ async function createPiRuntime(
         description: proxy.description ?? '',
         parameters: proxy.parameters ?? { type: 'object', properties: {} },
         execute: async (args, signal) => {
-          await applyToolGate(handlers, proxy.name, args);
+          const gate = await applyToolGate(handlers, proxy.name, args, MAIN_ORIGIN);
+          if (gate.kind === 'reject') return gate.resultJson;
           const result = await proxy.execute(args, signal);
           const text = typeof result === 'string' ? result : JSON.stringify(result) ?? String(result);
           return truncateForModel(text, { pluginId: 'external-mcp', name: proxy.name });
@@ -989,15 +1255,27 @@ async function createPiRuntime(
     );
   }
 
-  // P1：主会话 JSONL 持久化到 agentDir/sessions（默认 ~/.at-series/agent/sessions）。
-  // 创建失败（目录不可写等）时静默回退 in-memory：runtime 层无 vscode logger，
-  // 会话可用性优先于持久化。子代理子会话始终 in-memory（不落工作副本 transcript）。
-  let sessionManager: SessionManager;
-  try {
-    sessionManager = pi.SessionManager.create(cwd, join(agentDir, 'sessions'));
-  } catch {
-    sessionManager = pi.SessionManager.inMemory(cwd);
-  }
+  // P0-C 会话单真源：主会话 JSONL 持久化到 agentDir/sessions（默认
+  // ~/.at-series/agent/sessions）。host 重建 runtime（换模型 / 新插件工具）
+  // 时经 resumeSessionFile 续接同一 JSONL——SessionManager.open 载入既有
+  // transcript，LLM 上下文不丢。打开失败（文件被删/损坏）回退新建；新建
+  // 失败（目录不可写等）再回退 in-memory：会话可用性优先于持久化。
+  // 子代理子会话始终 in-memory（不落工作副本 transcript）。
+  const sessionsDir = join(agentDir, 'sessions');
+  const sessionManager: SessionManager = (() => {
+    if (options.resumeSessionFile !== undefined && options.resumeSessionFile.length > 0) {
+      try {
+        return pi.SessionManager.open(options.resumeSessionFile, sessionsDir, cwd);
+      } catch {
+        // 续接文件被删/损坏：降级新建（不失败激活）。
+      }
+    }
+    try {
+      return pi.SessionManager.create(cwd, sessionsDir);
+    } catch {
+      return pi.SessionManager.inMemory(cwd);
+    }
+  })();
 
   const { session } = await pi.createAgentSession({
     cwd,
@@ -1013,7 +1291,6 @@ async function createPiRuntime(
     sessionManager,
     settingsManager
   });
-  mainSession = session;
 
   // 初始 active = 发现工具 + 常驻附加工具 + 当前暴露的业务工具；
   // select 变化后即时同步。
@@ -1021,21 +1298,61 @@ async function createPiRuntime(
   const selectionSub = handlers.hub.selection.onDidChange(() => {
     session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
   });
+
+  // P1-15：目录重建请求排队到会话 idle（agent_end）后再回调 host——
+  // 流式进行中装插件不打断当前上下文；host 重建时带 resumeSessionFile 续接。
+  let rebuildQueued = false;
+  const requestCatalogRebuild = (): void => {
+    if (handlers.onCatalogNeedsRebuild === undefined) return;
+    if (session.isStreaming) {
+      rebuildQueued = true;
+      return;
+    }
+    rebuildQueued = false;
+    handlers.onCatalogNeedsRebuild();
+  };
+
+  // 软停（abort('cancel')）：等当前 in-flight 工具调用全部结束后再 abort。
+  const inflightToolCalls = new Set<string>();
+  let softAbortPending = false;
+  const hardAbort = (): void => {
+    softAbortPending = false;
+    // 全局停止 = 主会话 + 全部子代理级联中止。
+    subagents.abortAll();
+    void session.abort().catch(() => {
+      // abort 竞态（会话已结束）无需上报。
+    });
+  };
+
   // P1：工具目录变化（插件桥接上线/下线）时热刷新工具面。
   // 已知限制：pi 的 AgentSession 只在 createAgentSession 期接收 customTools
   // （AgentSessionConfig.customTools，之后是私有 _customTools），0.84.3 没有
   // 任何公开 API 能事后追加/替换 ToolDefinition（reload() 只重载资源）。
   // 因此：
   // - 下线工具立即消失、重新上线的已注册工具立即恢复（setActiveToolsByName）；
-  // - 目录里出现全新的业务工具时，通过 handlers.onCatalogNeedsRebuild 通知
-  //   host disposeRuntime 并重建，新工具才能进模型工具面。
+  // - 目录里出现全新的业务工具时，经 requestCatalogRebuild 通知 host 重建
+  //   runtime（P1-15：流式中排队到 idle），新工具才能进模型工具面。
   const toolsSub = handlers.hub.onDidChangeTools?.(() => {
     session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
     if (catalogGainedNewBusinessTool(registeredBusinessNames, handlers.hub.listAllTools())) {
-      handlers.onCatalogNeedsRebuild?.();
+      requestCatalogRebuild();
     }
   });
-  const unsubscribe = subscribeSessionEvents(session, handlers);
+  const unsubscribe = subscribeSessionEvents(session, handlers, {
+    onIdle: () => {
+      if (rebuildQueued) requestCatalogRebuild();
+    },
+    onToolActivity: (kind, toolCallId) => {
+      if (kind === 'start') {
+        inflightToolCalls.add(toolCallId);
+        return;
+      }
+      inflightToolCalls.delete(toolCallId);
+      if (softAbortPending && inflightToolCalls.size === 0) {
+        hardAbort();
+      }
+    }
+  });
 
   return {
     async prompt(text: string, opts?: { mode?: 'steer' | 'followUp' }): Promise<void> {
@@ -1056,27 +1373,34 @@ async function createPiRuntime(
           // Compaction 第 2–3 层：prompt 过长时 session.compact() 一次并
           // 重试同一条 prompt 一次（严格一次，绝不无限重试）；仍失败抛中文
           // 「请开新会话」提示。非溢出错误原样 rethrow，走下面的统一上报。
-          await recoverFromPromptError({ session, error, retry: run });
+          // compact 成功即发 compaction 事件（P1-4，UI 时间线插系统事件）。
+          await recoverFromPromptError({
+            session,
+            error,
+            retry: run,
+            onCompaction: (summary) => handlers.onEvent?.({ type: 'compaction', summary })
+          });
         } catch (finalError) {
           // prompt 期错误（如凭证被吊销）不往上抛：给 UI 一条事件并回 idle。
           handlers.onEvent?.({
             type: 'text_delta',
-            id: 'runtime-error',
+            id: randomUUID(),
             text: `模型调用失败：${describeError(finalError)}`
           });
           handlers.onEvent?.({ type: 'idle' });
         }
       }
     },
-    abort(): void {
-      // 全局停止 = 主会话 + 全部子代理级联中止。
-      subagents.abortAll();
-      void session.abort().catch(() => {
-        // abort 竞态（会话已结束）无需上报。
-      });
+    abort(mode?: 'cancel' | 'stop'): void {
+      if (mode === 'cancel' && inflightToolCalls.size > 0) {
+        // 软停：保留在途证据——当前工具调用结束（tool_execution_end）后
+        // 由 onToolActivity 触发 hardAbort。
+        softAbortPending = true;
+        return;
+      }
+      hardAbort();
     },
     async dispose(): Promise<void> {
-      mainSession = undefined;
       subagents.abortAll();
       selectionSub.dispose();
       toolsSub?.dispose();
@@ -1106,6 +1430,33 @@ async function createPiRuntime(
     dispatchSubagent,
     abortSubagent(taskId: string): void {
       subagents.abort(taskId);
+    },
+    // P0-C：当前 JSONL 路径（in-memory 会话为 undefined）。host 重建时
+    // 作为 resumeSessionFile 传回续接。getter 保证读到的是实时路径。
+    get sessionFile(): string | undefined {
+      try {
+        return sessionManager.getSessionFile();
+      } catch {
+        return undefined;
+      }
+    },
+    // models/test：一次极小补全探测连通性；错误转人话（不抛出）。
+    async probeModel(): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
+      const started = Date.now();
+      try {
+        const reply = (await modelRuntime.completeSimple(model as never, {
+          messages: [{ role: 'user', content: 'ping', timestamp: Date.now() }]
+        })) as { stopReason?: string; errorMessage?: string };
+        if (reply.stopReason === 'error' || reply.stopReason === 'aborted') {
+          return {
+            ok: false,
+            error: reply.errorMessage ?? `模型探测失败（stopReason=${reply.stopReason}）`
+          };
+        }
+        return { ok: true, latencyMs: Date.now() - started };
+      } catch (error) {
+        return { ok: false, error: describeError(error) };
+      }
     }
   };
 }

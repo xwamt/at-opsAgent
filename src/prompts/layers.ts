@@ -38,7 +38,10 @@ export const L2_TOOL_DISCOVERY = `# L2 工具发现
 - ops_list_playbooks：列出运维链路与适用场景提示。简单问答、闲聊不要启动链路。
 - ops_start_playbook {playbookId}：仅当你判断当前问题需要结构化排查/变更/巡检时启动。
   host 不会因「故障」「超时」等关键词自动启动；是否开链路由你决定。
+- ops_advance_stage {stage?}：当前阶段 DoD 达成后由你显式推进（host 不按消息数自动推进）。
+- ops_close_playbook：产出物完成或用户要求终止时收尾链路（进入 closed）。
 - ops_dispatch_subagent：仅当单会话不够（需并行取证、独立验证或写文档）时派发。
+  调用会阻塞到子代理终态，工具结果即终态摘要 JSON；并行取证用 tasks[]（≤4 个）。
   yaml parallelGroup 只是候选建议，不是必须执行的清单；不要派发与当前问题无关的子代理。
 - 易错：nacos_list_instances ≠ 服务主机（主机在 nacos_list_service_instances）。`;
 
@@ -49,8 +52,10 @@ export const L3_OUTPUT_FORMAT = `# L3 输出格式
 - 三态结论：任何结论必须标 confirmed / hypothesis / pending。
   confirmed 需要应用侧日志或等价事件证据；没有应用侧日志不得宣称根因，最高只能 hypothesis。
 - 任何 write/exec 前先出 9 要素审批简报：1 目标与理由；2 支持证据（引用 EvidenceNote id）；
-  3 预期影响与中断；4 前置检查；5 备份方式与位置；6 确切命令/文件操作（计算 commandSetSha256）；
-  7 成功判据；8 回滚触发与确切步骤；9 剩余不确定性。要素实质变化则令牌作废，重新审批。
+  3 预期影响与中断；4 前置检查；5 备份方式与位置；6 确切命令/文件操作；
+  7 成功判据；8 回滚触发与确切步骤；9 剩余不确定性。
+  批准后 host 会计算 commandSetSha256 并把 approvalToken 附给执行——你不要自行计算任何哈希；
+  要素实质变化则令牌作废，重新审批。
 - C9：根因未 confirmed 前禁止输出长篇 RCA 报告，只给当前证据 + 下一步动作。
 - 文档模板按链路选择：troubleshooting-report / operation-record / service-deployment / service-inspection。`;
 

@@ -25,12 +25,34 @@
   --ops-btn2-bg: var(--vscode-button-secondaryBackground, transparent);
   --ops-btn2-fg: var(--vscode-button-secondaryForeground, var(--ops-fg));
   --ops-radius: 6px; /* 圆角 ≤6px，避免消费级气泡感 */
+  --ops-radius-ctl: 2px; /* 控件圆角对齐 VS Code input/button */
   --ops-font-size: var(--vscode-font-size, 13px);
+
+  /* spacing：4 的倍数命名阶（docs/reviews/ui.md §6），替代就地 calc */
+  --ops-space-1: 4px;
+  --ops-space-2: 8px;
+  --ops-space-3: 12px;
+  --ops-space-4: 16px;
+
+  /* type scale：命名字阶，最小 11px（docs/reviews/ui.md §6） */
+  --ops-font-md: var(--vscode-font-size, 13px);
+  --ops-font-sm: 12px;
+  --ops-font-xs: 11px;
+
+  /* 阴影 / 工具条 hover：官方变量映射，替代硬编码 rgba */
+  --ops-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
+  --ops-toolbar-hover-bg: var(--vscode-toolbar-hoverBackground, var(--ops-hover-bg));
+
   /* 用户消息「井」底色（Copilot 式分组）：inactiveSelection → textBlockQuote → 灰兜底 */
   --ops-user-msg-bg: var(
     --vscode-editor-inactiveSelectionBackground,
     var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.14))
   );
+}
+
+/* settings/board 等编辑器区 webview：webviewHtml 注入 data-surface="editor" */
+:root[data-surface='editor'] {
+  --ops-bg: var(--vscode-editor-background);
 }
 
 html,
@@ -158,4 +180,145 @@ button {
 .ops-btn[disabled] {
   opacity: 0.5;
   cursor: default;
+}
+
+/* codicon 行内对齐：默认 16px 太大，收敛到文本字号并对齐基线 */
+.codicon[class*='codicon-'] {
+  font-size: var(--ops-font-md);
+  vertical-align: text-bottom;
+}
+
+.ops-btn .codicon[class*='codicon-'],
+.ops-badge .codicon[class*='codicon-'] {
+  font-size: var(--ops-font-sm);
+}
+
+/* ---- Markdown 渲染命名空间（MarkdownBlock.vue，v-html 不吃 scoped） ---- */
+
+.ops-md {
+  min-width: 0;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.ops-md > :first-child {
+  margin-top: 0;
+}
+
+.ops-md > :last-child {
+  margin-bottom: 0;
+}
+
+.ops-md p,
+.ops-md ul,
+.ops-md ol,
+.ops-md table,
+.ops-md blockquote {
+  margin: var(--ops-space-2) 0;
+}
+
+.ops-md h1,
+.ops-md h2,
+.ops-md h3,
+.ops-md h4,
+.ops-md h5,
+.ops-md h6 {
+  margin: var(--ops-space-3) 0 var(--ops-space-1);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.ops-md h1 {
+  font-size: calc(var(--ops-font-md) + 3px);
+}
+
+.ops-md h2 {
+  font-size: calc(var(--ops-font-md) + 2px);
+}
+
+.ops-md h3 {
+  font-size: calc(var(--ops-font-md) + 1px);
+}
+
+.ops-md h4,
+.ops-md h5,
+.ops-md h6 {
+  font-size: var(--ops-font-md);
+}
+
+.ops-md ul,
+.ops-md ol {
+  padding-left: calc(var(--ops-space-4) + var(--ops-space-1));
+}
+
+.ops-md li + li {
+  margin-top: var(--ops-space-1);
+}
+
+.ops-md code {
+  font-family: var(--ops-mono);
+  font-size: calc(var(--ops-font-md) - 1px);
+  background: var(--vscode-textCodeBlock-background, var(--ops-code-bg));
+  border-radius: var(--ops-radius-ctl);
+  padding: 0 var(--ops-space-1);
+}
+
+.ops-md pre {
+  background: var(--vscode-textCodeBlock-background, var(--ops-code-bg));
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  padding: var(--ops-space-2) var(--ops-space-3);
+  overflow-x: auto;
+  max-height: 320px;
+}
+
+.ops-md pre code {
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.ops-md a {
+  color: var(--vscode-textLink-foreground, var(--ops-accent));
+  text-decoration: none;
+}
+
+.ops-md a:hover {
+  text-decoration: underline;
+}
+
+.ops-md blockquote {
+  border-left: 3px solid var(--ops-border);
+  padding: 0 var(--ops-space-3);
+  color: var(--ops-muted);
+}
+
+.ops-md hr {
+  border: none;
+  border-top: 1px solid var(--ops-border);
+  margin: var(--ops-space-3) 0;
+}
+
+.ops-md table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: var(--ops-font-sm);
+}
+
+.ops-md th,
+.ops-md td {
+  border: 1px solid var(--ops-border);
+  padding: var(--ops-space-1) var(--ops-space-2);
+  text-align: left;
+}
+
+.ops-md th {
+  font-weight: 600;
+  background: var(--ops-hover-bg);
+}
+
+.ops-md img {
+  max-width: 100%;
 }

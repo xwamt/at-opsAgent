@@ -23,7 +23,8 @@ const activePanel = computed(() => PANELS[store.activeTab]);
 </script>
 
 <template>
-  <div class="settings">
+  <!-- 编辑器区页面：surface = editor（P1-12，不用 sideBar 背景） -->
+  <div class="settings" data-surface="editor">
     <nav class="settings__nav" role="tablist" :aria-label="t('settingsTitle')">
       <button
         v-for="tab in SETTINGS_TABS"
@@ -45,27 +46,60 @@ const activePanel = computed(() => PANELS[store.activeTab]);
   </div>
 </template>
 
-<!-- 全局共享样式：卡片 / 表单 / 状态行（scoped 无法穿透子组件）。 -->
+<!-- 全局共享样式：卡片 / 表单 / 状态行（scoped 无法穿透子组件）。
+     字号层级（P1-12 typography）：页标题 16 > 卡片标题 13 > 正文 12 > 说明 11（最小 11px）。 -->
 <style>
+[data-surface='editor'] {
+  --set-surface-bg: var(--vscode-editor-background, var(--ops-bg));
+  --set-surface-fg: var(--vscode-editor-foreground, var(--ops-fg));
+  --set-font-lg: 16px;
+  --set-font-md: 13px;
+  --set-font-sm: 12px;
+  --set-font-xs: 11px;
+}
+
 .set-card {
   border: 1px solid var(--vscode-widget-border, var(--ops-border));
   border-radius: 6px;
-  padding: 10px 12px;
-  margin: 0 0 12px;
+  padding: 12px 14px;
+  margin: 0 0 16px;
 }
 
-.set-title {
-  font-size: 12px;
+/* 页级标题（每个页签一处） */
+.set-page-title {
+  font-size: var(--set-font-lg, 16px);
   font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--ops-muted);
+  color: var(--set-surface-fg, var(--ops-fg));
+  margin: 0 0 4px;
+}
+
+/* 卡片 / 分区标题 */
+.set-title {
+  font-size: var(--set-font-md, 13px);
+  font-weight: 600;
+  color: var(--set-surface-fg, var(--ops-fg));
   margin: 0 0 8px;
 }
 
 .set-hint {
-  font-size: 12px;
+  font-size: var(--set-font-sm, 12px);
   color: var(--ops-muted);
   margin: 0 0 10px;
+}
+
+/* 向导步骤行（ux.md §5 首跑 2 分钟文案） */
+.set-step {
+  font-size: var(--set-font-sm, 12px);
+  font-weight: 600;
+  color: var(--set-surface-fg, var(--ops-fg));
+  border-left: 3px solid var(--vscode-focusBorder, var(--ops-accent));
+  padding: 2px 8px;
+  margin: 12px 0 8px;
+}
+
+.set-step--muted {
+  font-weight: 400;
+  color: var(--ops-muted);
 }
 
 .set-field {
@@ -74,13 +108,13 @@ const activePanel = computed(() => PANELS[store.activeTab]);
 
 .set-label {
   display: block;
-  font-size: 12px;
+  font-size: var(--set-font-sm, 12px);
   margin: 0 0 3px;
 }
 
 .set-desc {
   display: block;
-  font-size: 11px;
+  font-size: var(--set-font-xs, 11px);
   color: var(--ops-muted);
   margin: 3px 0 0;
 }
@@ -121,7 +155,7 @@ const activePanel = computed(() => PANELS[store.activeTab]);
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--set-font-sm, 12px);
 }
 
 .set-check input {
@@ -138,7 +172,7 @@ const activePanel = computed(() => PANELS[store.activeTab]);
 }
 
 .set-status {
-  font-size: 12px;
+  font-size: var(--set-font-sm, 12px);
   min-height: 16px;
   margin-top: 8px;
 }
@@ -151,8 +185,13 @@ const activePanel = computed(() => PANELS[store.activeTab]);
   color: var(--vscode-errorForeground, var(--ops-crit));
 }
 
+/* 黄字警告（缺 key 等「保存成功但不可用」态） */
+.set-status--warn {
+  color: var(--ops-warn);
+}
+
 .set-note {
-  font-size: 12px;
+  font-size: var(--set-font-sm, 12px);
   color: var(--ops-muted);
   background: var(--vscode-textBlockQuote-background, transparent);
   border-left: 3px solid var(--vscode-focusBorder, var(--ops-accent));
@@ -162,7 +201,7 @@ const activePanel = computed(() => PANELS[store.activeTab]);
 }
 
 .set-empty {
-  font-size: 12px;
+  font-size: var(--set-font-sm, 12px);
   color: var(--ops-muted);
   border: 1px dashed var(--vscode-widget-border, var(--ops-border));
   border-radius: 6px;
@@ -172,24 +211,25 @@ const activePanel = computed(() => PANELS[store.activeTab]);
 </style>
 
 <style scoped>
+/* 设置是编辑器区页面：用 editor 背景（不是 sideBar），对齐 VS Code 原生设置页。 */
 .settings {
   display: flex;
   height: 100vh;
   overflow: hidden;
-  background: var(--vscode-sideBar-background, var(--ops-bg));
-  color: var(--vscode-sideBar-foreground, var(--ops-fg));
+  background: var(--set-surface-bg);
+  color: var(--set-surface-fg);
 }
 
 .settings__nav {
   flex: 0 0 auto;
-  width: 132px;
+  width: 148px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 6px;
+  padding: 12px 8px;
   overflow-y: auto;
-  background: var(--vscode-sideBar-background, var(--ops-bg));
-  border-right: 1px solid var(--vscode-sideBar-border, var(--ops-border));
+  background: var(--set-surface-bg);
+  border-right: 1px solid var(--vscode-widget-border, var(--ops-border));
 }
 
 .settings__tab {
@@ -198,10 +238,11 @@ const activePanel = computed(() => PANELS[store.activeTab]);
   border-left: 2px solid transparent;
   border-radius: 3px;
   background: transparent;
-  color: var(--vscode-sideBar-foreground, var(--ops-fg));
+  color: var(--set-surface-fg);
   padding: 5px 10px;
   cursor: pointer;
   white-space: nowrap;
+  font-size: var(--set-font-md, 13px);
 }
 
 .settings__tab:hover {
@@ -215,7 +256,7 @@ const activePanel = computed(() => PANELS[store.activeTab]);
 
 .settings__tab--active {
   background: var(--vscode-list-activeSelectionBackground, var(--ops-hover-bg));
-  color: var(--vscode-list-activeSelectionForeground, var(--ops-fg));
+  color: var(--vscode-list-activeSelectionForeground, var(--set-surface-fg));
   border-left-color: var(--vscode-focusBorder, var(--ops-accent));
 }
 
@@ -226,14 +267,19 @@ const activePanel = computed(() => PANELS[store.activeTab]);
   color: var(--ops-warn);
   border-radius: 3px;
   padding: 0 4px;
-  font-size: 11px;
+  font-size: var(--set-font-xs, 11px);
 }
 
 .settings__content {
   flex: 1 1 auto;
   min-width: 0;
   overflow-y: auto;
-  padding: 12px 16px 24px;
+  padding: 16px 24px 32px;
+}
+
+/* 编辑器区宽度大：限制表单列宽保证可读性 */
+.settings__content > :deep(section) {
+  max-width: 680px;
 }
 
 /* 窄视图（<420px）：导航折到顶部横排（Roo 式响应） */
@@ -248,7 +294,7 @@ const activePanel = computed(() => PANELS[store.activeTab]);
     overflow-x: auto;
     overflow-y: hidden;
     border-right: none;
-    border-bottom: 1px solid var(--vscode-sideBar-border, var(--ops-border));
+    border-bottom: 1px solid var(--vscode-widget-border, var(--ops-border));
     padding: 6px 8px;
   }
 

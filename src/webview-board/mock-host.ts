@@ -59,6 +59,24 @@ export function installBoardMockHost(): void {
       kind: 'approval',
       confidence: 'pending',
       detail: 'kubectl -n prod rollout undo deploy/api-gateway'
+    },
+    // 更早日期的样本：验证 sticky 日期分组头（昨天 / 具体日期）与非当天时间列格式
+    {
+      id: 'ev-y1',
+      ts: now - 26 * 3_600_000,
+      severity: 'warn',
+      title: 'redis-cache 内存水位 78% → 91%（已回落）',
+      incidentId: 'inc-20260827-02',
+      kind: 'metric',
+      status: 'resolved'
+    },
+    {
+      id: 'ev-d3',
+      ts: now - 3 * 86_400_000,
+      severity: 'info',
+      title: 'pb.inspection 日常巡检完成：12 项通过，0 项异常',
+      kind: 'playbook',
+      confidence: 'confirmed'
     }
   ];
 

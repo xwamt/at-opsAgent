@@ -1,24 +1,30 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { ToolCallView } from '../../protocol/host-protocol';
+import { t } from '../i18n';
 import LogViewer from './LogViewer.vue';
 
 const props = defineProps<{ call: ToolCallView }>();
 
 const PREVIEW_CAP = 4096; // preview 上限 4KB，超出一律截断
 
-const RISK_LABEL: Record<ToolCallView['risk'], string> = {
-  read: '只读',
-  write: '写',
-  exec: '执行'
-};
+/** 默认折叠（P1-2）：单行摘要头，点击展开 preview / 错误详情。 */
+const expanded = ref(false);
 
-const STATUS_META: Record<ToolCallView['status'], { icon: string; label: string; cls: string }> = {
-  running: { icon: '●', label: '运行中', cls: 'tool__status--running' },
-  ok: { icon: '✓', label: '成功', cls: 'tool__status--ok' },
-  error: { icon: '✗', label: '失败', cls: 'tool__status--error' },
-  cancelled: { icon: '⊘', label: '已取消', cls: 'tool__status--muted' },
-  interrupted: { icon: '⏸', label: '被打断', cls: 'tool__status--muted' }
+const riskLabel = computed(() => {
+  const key = props.call.risk === 'write' ? 'riskWrite' : props.call.risk === 'exec' ? 'riskExec' : 'riskRead';
+  return t(key);
+});
+
+const STATUS_META: Record<
+  ToolCallView['status'],
+  { icon: string; key: 'statusToolRunning' | 'statusToolOk' | 'statusToolError' | 'statusToolCancelled' | 'statusToolInterrupted'; cls: string }
+> = {
+  running: { icon: 'codicon-loading codicon-modifier-spin', key: 'statusToolRunning', cls: 'tool__status--running' },
+  ok: { icon: 'codicon-check', key: 'statusToolOk', cls: 'tool__status--ok' },
+  error: { icon: 'codicon-error', key: 'statusToolError', cls: 'tool__status--error' },
+  cancelled: { icon: 'codicon-circle-slash', key: 'statusToolCancelled', cls: 'tool__status--muted' },
+  interrupted: { icon: 'codicon-debug-pause', key: 'statusToolInterrupted', cls: 'tool__status--muted' }
 };
 
 const status = computed(() => STATUS_META[props.call.status] ?? STATUS_META.running);
@@ -36,6 +42,13 @@ const clipped = computed(
   () => Boolean(props.call.truncated) || (props.call.preview ?? '').length > PREVIEW_CAP
 );
 
+const hasBody = computed(
+  () =>
+    Boolean(preview.value) ||
+    Boolean(props.call.artifactUri) ||
+    props.call.status === 'error'
+);
+
 const artifactHref = computed(() =>
   props.call.artifactUri
     ? 'command:atOpsAgent.openArtifact?' +
@@ -46,38 +59,52 @@ const artifactHref = computed(() =>
 
 <template>
   <section class="tool" :class="'tool--' + props.call.risk">
-    <header class="tool__head">
-      <span aria-hidden="true">🔧</span>
+    <button
+      type="button"
+      class="tool__head"
+      :aria-expanded="expanded"
+      :aria-label="t('toolToggleAria')"
+      :disabled="!hasBody"
+      @click="expanded = !expanded"
+    >
+      <span
+        class="codicon tool__chevron"
+        :class="expanded ? 'codicon-chevron-down' : 'codicon-chevron-right'"
+        aria-hidden="true"
+      ></span>
+      <span class="codicon codicon-tools tool__icon" aria-hidden="true"></span>
       <span class="tool__name ops-mono">{{ props.call.name }}</span>
       <span v-if="props.call.pluginId" class="tool__plugin ops-muted ops-mono">{{ props.call.pluginId }}</span>
-      <span class="ops-badge" :class="'ops-risk-' + props.call.risk">{{ RISK_LABEL[props.call.risk] }}</span>
+      <span class="ops-badge" :class="'ops-risk-' + props.call.risk">{{ riskLabel }}</span>
       <span class="tool__spacer"></span>
       <span class="tool__status" :class="status.cls">
-        <span aria-hidden="true">{{ status.icon }}</span>{{ status.label }}
+        <span class="codicon" :class="status.icon" aria-hidden="true"></span>{{ t(status.key) }}
       </span>
       <span v-if="duration" class="ops-muted ops-mono">{{ duration }}</span>
-    </header>
+    </button>
 
-    <!-- 截断结果统一走 LogViewer（自带「已截断 · 在编辑器打开」） -->
-    <LogViewer
-      v-if="clipped"
-      class="tool__logv"
-      :text="props.call.preview"
-      :uri="props.call.artifactUri"
-      :truncated="true"
-    />
-    <template v-else>
-      <pre v-if="preview" class="ops-codeblock tool__preview">{{ preview }}</pre>
-      <div v-if="artifactHref" class="tool__truncated">
-        <a class="tool__artifact" :href="artifactHref">在编辑器打开完整结果</a>
+    <template v-if="expanded">
+      <!-- 截断结果统一走 LogViewer（自带「已截断 · 在编辑器打开」） -->
+      <LogViewer
+        v-if="clipped"
+        class="tool__logv"
+        :text="props.call.preview"
+        :uri="props.call.artifactUri"
+        :truncated="true"
+      />
+      <template v-else>
+        <pre v-if="preview" class="ops-codeblock tool__preview">{{ preview }}</pre>
+        <div v-if="artifactHref" class="tool__truncated">
+          <a class="tool__artifact" :href="artifactHref">{{ t('toolOpenArtifact') }}</a>
+        </div>
+      </template>
+
+      <div v-if="props.call.status === 'error'" class="tool__error">
+        <span v-if="props.call.errorCode" class="ops-mono">{{ props.call.errorCode }}</span>
+        <span v-if="props.call.errorMessage">{{ props.call.errorMessage }}</span>
+        <span v-if="!props.call.errorCode && !props.call.errorMessage">{{ t('toolFailed') }}</span>
       </div>
     </template>
-
-    <div v-if="props.call.status === 'error'" class="tool__error">
-      <span v-if="props.call.errorCode" class="ops-mono">{{ props.call.errorCode }}</span>
-      <span v-if="props.call.errorMessage">{{ props.call.errorMessage }}</span>
-      <span v-if="!props.call.errorCode && !props.call.errorMessage">工具调用失败</span>
-    </div>
   </section>
 </template>
 
@@ -86,7 +113,7 @@ const artifactHref = computed(() =>
   border: 1px solid var(--ops-border);
   border-left-width: 3px;
   border-radius: var(--ops-radius);
-  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
+  padding: var(--ops-space-1) var(--ops-space-2);
 }
 
 .tool--read {
@@ -101,12 +128,39 @@ const artifactHref = computed(() =>
   border-left-color: var(--ops-exec);
 }
 
+/* 摘要头本身是按钮：整行可点展开/收起 */
 .tool__head {
   display: flex;
   align-items: center;
-  gap: calc(var(--ops-density) * 1.5);
+  gap: var(--ops-space-2);
   min-width: 0;
-  font-size: calc(var(--ops-font-size) - 1px);
+  width: 100%;
+  font-size: var(--ops-font-sm);
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  color: var(--ops-fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.tool__head:disabled {
+  cursor: default;
+}
+
+.tool__head:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: 1px;
+}
+
+.tool__chevron,
+.tool__icon {
+  flex: 0 0 auto;
+  color: var(--ops-muted);
+}
+
+.tool__head:disabled .tool__chevron {
+  visibility: hidden;
 }
 
 .tool__name {
@@ -117,7 +171,7 @@ const artifactHref = computed(() =>
 }
 
 .tool__plugin {
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
 }
 
 .tool__spacer {
@@ -148,19 +202,19 @@ const artifactHref = computed(() =>
 }
 
 .tool__preview {
-  margin-top: var(--ops-density);
+  margin-top: var(--ops-space-1);
   max-height: 180px;
 }
 
 .tool__logv {
-  margin-top: var(--ops-density);
+  margin-top: var(--ops-space-1);
 }
 
 .tool__truncated {
-  margin-top: var(--ops-density);
-  font-size: calc(var(--ops-font-size) - 2px);
+  margin-top: var(--ops-space-1);
+  font-size: var(--ops-font-xs);
   display: flex;
-  gap: calc(var(--ops-density) * 2);
+  gap: var(--ops-space-3);
 }
 
 .tool__artifact {
@@ -173,11 +227,11 @@ const artifactHref = computed(() =>
 }
 
 .tool__error {
-  margin-top: var(--ops-density);
+  margin-top: var(--ops-space-1);
   color: var(--ops-crit);
-  font-size: calc(var(--ops-font-size) - 1px);
+  font-size: var(--ops-font-sm);
   display: flex;
-  gap: calc(var(--ops-density) * 2);
+  gap: var(--ops-space-3);
   flex-wrap: wrap;
 }
 </style>

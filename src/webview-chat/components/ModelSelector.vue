@@ -43,6 +43,10 @@ const current = computed(() => {
   return options.value.length > 0 ? options.value[0].value : '';
 });
 
+function optionText(opt: OptionView): string {
+  return opt.provider && opt.provider !== 'custom' ? `${opt.label} · ${opt.provider}` : opt.label;
+}
+
 function onChange(event: Event): void {
   const value = (event.target as HTMLSelectElement).value;
   const idx = value.indexOf(SEP);
@@ -54,18 +58,29 @@ function onChange(event: Event): void {
 </script>
 
 <template>
-  <label class="modelsel" title="切换模型（model/set）">
-    <span class="modelsel__icon" aria-hidden="true">⬡</span>
+  <!-- 空态 = 未配置：可点按钮直达设置 Models 页（P1-5，不再是 disabled option） -->
+  <button
+    v-if="options.length === 0"
+    type="button"
+    class="modelsel modelsel--empty"
+    :aria-label="t('modelSelectorEmptyAria')"
+    :title="t('modelSelectorEmptyAria')"
+    @click="store.openSettings('models')"
+  >
+    <span class="codicon codicon-add" aria-hidden="true"></span>
+    <span class="modelsel__empty-label">{{ t('modelSelectorEmpty') }}</span>
+  </button>
+
+  <label v-else class="modelsel" :title="t('modelSelectorAria')">
+    <span class="codicon codicon-chip modelsel__icon" aria-hidden="true"></span>
     <select
       class="modelsel__select"
       :value="current"
       :aria-label="t('modelSelectorAria')"
       @change="onChange"
     >
-      <!-- 清单为空 = 未配置：引导去设置页添加模型（models/save 后 host 会推新快照） -->
-      <option v-if="options.length === 0" value="" disabled>{{ t('modelSelectorEmpty') }}</option>
       <option v-for="opt in options" :key="opt.value" :value="opt.value">
-        {{ opt.label }}<template v-if="opt.provider !== 'custom'"> · {{ opt.provider }}</template>
+        {{ optionText(opt) }}
       </option>
     </select>
   </label>
@@ -79,9 +94,36 @@ function onChange(event: Event): void {
   min-width: 0;
 }
 
+/* 空态按钮：与工具条同族的低调按钮，但可点、可聚焦 */
+.modelsel--empty {
+  background: transparent;
+  border: 1px dashed var(--ops-border);
+  border-radius: var(--ops-radius);
+  color: var(--ops-muted);
+  cursor: pointer;
+  padding: 1px var(--ops-space-2);
+  font-size: var(--ops-font-sm);
+  white-space: nowrap;
+}
+
+.modelsel--empty:hover {
+  background: var(--ops-toolbar-hover-bg);
+  color: var(--ops-fg);
+  border-color: var(--ops-accent);
+}
+
+.modelsel--empty:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: 1px;
+}
+
+.modelsel--empty .codicon {
+  font-size: var(--ops-font-sm);
+}
+
 .modelsel__icon {
   color: var(--ops-muted);
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-sm);
 }
 
 .modelsel__select {
@@ -90,9 +132,9 @@ function onChange(event: Event): void {
   color: var(--ops-fg);
   border: none;
   font-family: inherit;
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-sm);
   padding: 0 2px;
-  max-width: 160px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;

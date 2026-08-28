@@ -75,6 +75,23 @@ describe('listConfiguredModelsFromJson（models.json 根对象 → 选择器清�
     expect(models).toEqual([{ provider: 'p1', model: 'm1', label: 'm1' }]);
   });
 
+  it('模型条目带 reasoning（新字段）或旧 thinking 都不影响清单解析', () => {
+    const models = listConfiguredModelsFromJson({
+      providers: {
+        gw: {
+          models: [
+            { id: 'qwen3-max', name: 'Qwen3 Max', reasoning: true },
+            { id: 'legacy-model', thinking: true }
+          ]
+        }
+      }
+    });
+    expect(models).toEqual([
+      { provider: 'gw', model: 'qwen3-max', label: 'Qwen3 Max' },
+      { provider: 'gw', model: 'legacy-model', label: 'legacy-model' }
+    ]);
+  });
+
   it('根不是对象 / 缺 providers → []', () => {
     expect(listConfiguredModelsFromJson(null)).toEqual([]);
     expect(listConfiguredModelsFromJson([])).toEqual([]);

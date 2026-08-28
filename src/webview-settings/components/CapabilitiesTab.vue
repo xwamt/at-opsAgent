@@ -7,7 +7,7 @@ const store = useSettingsStore();
 
 <template>
   <section>
-    <h2 class="set-title">{{ t('capTitle') }}</h2>
+    <h2 class="set-page-title">{{ t('capTitle') }}</h2>
     <p class="set-hint">{{ t('capHint') }}</p>
 
     <div class="set-actions cap-actions">

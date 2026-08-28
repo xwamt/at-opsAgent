@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import {
   EXTERNAL_MCP_PROXY_TOOL_NAMES,
   MAX_TOOL_RESULT_BYTES,
+  RISK_BY_PROXY_TOOL,
   createExternalMcpProxyTools,
   type ExternalMcpToolInfo,
   type McpConnection,
@@ -74,6 +75,19 @@ describe('createExternalMcpProxyTools — tool surface', () => {
       expect(tool.label.length).toBeGreaterThan(0);
       expect(tool.description.length).toBeGreaterThan(0);
       expect(tool.parameters).toMatchObject({ type: 'object' });
+    }
+  });
+
+  it('declares policy risk on each spec: list/search read, call_tool write (never read)', async () => {
+    expect(RISK_BY_PROXY_TOOL).toEqual({
+      mcp_list_servers: 'read',
+      mcp_search_tools: 'read',
+      mcp_call_tool: 'write'
+    });
+    const dir = await mkdtemp(join(tmpdir(), 'at-ops-mcp-risk-'));
+    const tools = await createExternalMcpProxyTools({ agentDir: dir });
+    for (const tool of tools) {
+      expect(tool.risk).toBe(RISK_BY_PROXY_TOOL[tool.name as keyof typeof RISK_BY_PROXY_TOOL]);
     }
   });
 

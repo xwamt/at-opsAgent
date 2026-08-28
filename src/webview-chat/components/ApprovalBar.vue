@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { dualConfirmText, t } from '../i18n';
+import { dualConfirmText, t, type OpsMessageKey } from '../i18n';
 import { useOpsStore } from '../store';
 
 const store = useOpsStore();
@@ -46,16 +46,17 @@ function openGuided(): void {
   store.post('guidedManual/open', { briefId: store.pendingApproval.id });
 }
 
-const ELEMENT_LABELS: Array<{ key: string; label: string }> = [
-  { key: 'goal', label: '目标' },
-  { key: 'evidence', label: '证据' },
-  { key: 'impact', label: '影响面' },
-  { key: 'prechecks', label: '前置检查' },
-  { key: 'backup', label: '备份' },
-  { key: 'commands', label: '命令集' },
-  { key: 'successCriteria', label: '成功判据' },
-  { key: 'rollback', label: '回滚方案' },
-  { key: 'unknowns', label: '未知项' }
+/** 9 要素标签（i18n，P1-13）。 */
+const ELEMENT_LABELS: Array<{ key: string; labelKey: OpsMessageKey }> = [
+  { key: 'goal', labelKey: 'elGoal' },
+  { key: 'evidence', labelKey: 'elEvidence' },
+  { key: 'impact', labelKey: 'elImpact' },
+  { key: 'prechecks', labelKey: 'elPrechecks' },
+  { key: 'backup', labelKey: 'elBackup' },
+  { key: 'commands', labelKey: 'elCommands' },
+  { key: 'successCriteria', labelKey: 'elSuccessCriteria' },
+  { key: 'rollback', labelKey: 'elRollback' },
+  { key: 'unknowns', labelKey: 'elUnknowns' }
 ];
 
 interface ElementRow {
@@ -81,8 +82,9 @@ const rows = computed<ElementRow[]>(() => {
     return [];
   }
   const elements = (brief.elements ?? {}) as Record<string, unknown>;
-  const known = ELEMENT_LABELS.map(({ key, label }) => {
+  const known = ELEMENT_LABELS.map(({ key, labelKey }) => {
     const value = elements[key];
+    const label = t(labelKey);
     if (key === 'commands' && Array.isArray(value)) {
       return { key, label, text: '', commands: value.map(commandLine) };
     }
@@ -108,27 +110,27 @@ const rows = computed<ElementRow[]>(() => {
 
 const riskLabel = computed(() => {
   const risk = String(store.pendingApproval?.risk ?? '');
-  if (risk === 'exec') {
-    return '执行 exec';
-  }
-  if (risk === 'read') {
-    return '只读 read';
-  }
-  return '写 write';
+  return t(risk === 'exec' ? 'riskExec' : risk === 'read' ? 'riskRead' : 'riskWrite');
 });
 </script>
 
 <template>
+  <!-- 两段式布局（P0-E §3）：第一行 = 标识（⚠ 待审批 + 风险 + 目标），
+       第二行 = 动作按钮组（右对齐、可换行），侧边栏 300px 不再挤爆。 -->
   <section v-if="store.pendingApproval" class="approval" :class="'approval--' + store.pendingApproval.risk" :aria-label="t('approvalPendingTitle')">
     <div class="approval__row">
-      <span aria-hidden="true">⚠</span>
+      <span class="codicon codicon-warning approval__warn" aria-hidden="true"></span>
       <span class="approval__title">{{ t('approvalPendingTitle') }}</span>
       <span class="ops-badge" :class="'ops-risk-' + store.pendingApproval.risk">{{ riskLabel }}</span>
       <span class="approval__target" :title="store.pendingApproval.targetLabel">{{ store.pendingApproval.targetLabel }}</span>
-      <span class="approval__spacer"></span>
+    </div>
+
+    <div class="approval__actions">
       <button type="button" class="ops-btn ops-btn--secondary" :aria-expanded="expanded" @click="expanded = !expanded">
-        {{ t('approvalBriefToggle') }} {{ expanded ? '▾' : '▸' }}
+        {{ t('approvalBriefToggle') }}
+        <span class="codicon" :class="expanded ? 'codicon-chevron-down' : 'codicon-chevron-right'" aria-hidden="true"></span>
       </button>
+      <span class="approval__spacer"></span>
       <!-- GuidedManual：Agent 不代执行，引导去 IDE，完成后回报 -->
       <template v-if="guided">
         <a v-if="guided.commandUri" class="ops-btn approval__deeplink" :href="guided.commandUri">{{ guided.label }}</a>
@@ -164,7 +166,7 @@ const riskLabel = computed(() => {
 .approval {
   border-top: 1px solid var(--ops-border);
   border-left: 3px solid var(--ops-write);
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  padding: var(--ops-space-1) var(--ops-space-3);
   max-height: 45vh;
   overflow-y: auto;
 }
@@ -183,28 +185,46 @@ const riskLabel = computed(() => {
 }
 
 .approval__guided-hint {
-  margin: var(--ops-density) 0 0;
-  font-size: calc(var(--ops-font-size) - 2px);
+  margin: var(--ops-space-1) 0 0;
+  font-size: var(--ops-font-xs);
   overflow-wrap: anywhere;
 }
 
+/* 第一行：标识；min-width 0 让 target 可省略 */
 .approval__row {
   display: flex;
   align-items: center;
-  gap: calc(var(--ops-density) * 1.5);
+  gap: var(--ops-space-2);
   min-width: 0;
+}
+
+.approval__warn {
+  color: var(--ops-warn);
+  flex: 0 0 auto;
 }
 
 .approval__title {
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .approval__target {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ops-muted);
+}
+
+/* 第二行：动作组，右对齐可换行（GuidedManual 变体 4 钮也不溢出） */
+.approval__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ops-space-1);
+  margin-top: var(--ops-space-1);
+  min-width: 0;
 }
 
 .approval__spacer {
@@ -212,17 +232,17 @@ const riskLabel = computed(() => {
 }
 
 .approval__hint {
-  margin: var(--ops-density) 0 0;
-  font-size: calc(var(--ops-font-size) - 2px);
+  margin: var(--ops-space-1) 0 0;
+  font-size: var(--ops-font-xs);
   color: var(--ops-warn);
 }
 
 .approval__brief {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 2px calc(var(--ops-density) * 2);
-  margin: var(--ops-density) 0 0;
-  font-size: calc(var(--ops-font-size) - 1px);
+  gap: 2px var(--ops-space-3);
+  margin: var(--ops-space-1) 0 0;
+  font-size: var(--ops-font-sm);
 }
 
 .approval__dt {

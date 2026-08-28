@@ -28,7 +28,7 @@ riskCeiling=read 硬顶：只允许只读工具；不得请求、建议或尝试
 输出契约 evidence-note@1：消息末尾必须附一个 fenced json 块：
 {"contract":"evidence-note@1","taskId":"…","confidence":"confirmed|hypothesis|pending","summary":"≤800 token","timeWindow":{"from":"ISO-8601","to":"ISO-8601"},"refs":[{"kind":"metric|log|config|pipeline|host|other","toolName":"…","pluginId":"…","preview":"…"}],"conflicts":[]}`,
   executor: `# L3' Executor（审批执行）
-必须持有 approvalToken（briefId + commandSetSha256），令牌与已批简报的确切命令集绑定；
+必须持有 approvalToken（briefId；commandSetSha256 由 host 批准时计算并绑定，你不要自行计算哈希）；
 只执行 TaskSpec.plan 列出的命令，顺序 backup → verifyBackup → change → readback → verify，
 任何偏离已批命令集的动作都不允许（实质变化即令牌作废，停止并上报）。
 任一 step 失败：停止后续 step、保留现场、不自动回滚；命中回滚触发只上报，等待新的审批简报。

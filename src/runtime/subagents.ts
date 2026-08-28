@@ -102,7 +102,9 @@ function clampInt(value: number | undefined, min: number, max: number, fallback:
 /**
  * 把派发参数补全成完整 TaskSpec 并校验角色规则（docs/04 §3.1）：
  * - Investigator 的 riskCeiling 必须是 read（硬顶，违规直接拒绝）；
- * - Executor 必须携带 approvalToken（briefId + commandSetSha256 绑定已批简报）；
+ * - Executor 必须携带 approvalToken.briefId（引用已批 9 要素简报）。
+ *   commandSetSha256 由 host 在批准时计算并绑定——模型不自行计算哈希，
+ *   因此这里不强制要求（带了就透传，host/policy 侧照常校验一致性）；
  * - Writer 没有业务工具（allowTools 强制清空，riskCeiling 收紧为 read）；
  * - Verifier 只读（riskCeiling 静默收紧为 read）。
  */
@@ -129,13 +131,13 @@ export function buildTaskSpec(input: SubagentDispatchInput): BuildTaskSpecOutcom
       approvalToken === undefined ||
       approvalToken === null ||
       typeof approvalToken.briefId !== 'string' ||
-      approvalToken.briefId.length === 0 ||
-      typeof approvalToken.commandSetSha256 !== 'string' ||
-      approvalToken.commandSetSha256.length === 0
+      approvalToken.briefId.length === 0
     ) {
       return {
         ok: false,
-        error: 'Executor 必须携带 approvalToken（briefId + commandSetSha256，与已批 9 要素简报的命令集绑定）'
+        error:
+          'Executor 必须携带 approvalToken.briefId（引用已批的 9 要素简报；' +
+          'commandSetSha256 由 host 批准时计算绑定，不要自行计算哈希）'
       };
     }
   } else {
@@ -300,6 +302,24 @@ export interface SubagentRunOutcome {
 
 export type SubagentRunner = (spec: TaskSpec, signal: AbortSignal) => Promise<SubagentRunOutcome>;
 
+/** 终态状态子集（waitFor / ops_dispatch_subagent 阻塞结果）。 */
+export type SubagentTerminalStatus = Extract<
+  SubagentRunStatus,
+  'ok' | 'degraded' | 'failed' | 'aborted'
+>;
+
+/** 单个子代理任务的终态摘要（P1-6：ops_dispatch_subagent 的工具结果单元）。 */
+export interface SubagentFinalResult {
+  taskId: string;
+  role: SubagentRole;
+  status: SubagentTerminalStatus;
+  /** ≤SUBAGENT_SUMMARY_CHAR_LIMIT 字符摘要；原始大输出不进结果。 */
+  summary?: string;
+  error?: string;
+  /** evidence-note@1 解析成功时的结构化便签。 */
+  evidenceNote?: EvidenceNote;
+}
+
 export interface CreateSubagentManagerOptions {
   runner: SubagentRunner;
   onStatus?: (event: SubagentStatusEvent) => void;
@@ -310,6 +330,11 @@ export interface CreateSubagentManagerOptions {
 export interface SubagentManager {
   /** 立即返回（queued|running），LLM 在后台跑；重复 taskId 且未终态时幂等返回现状。 */
   dispatch(spec: TaskSpec): { taskId: string; status: SubagentRunStatus };
+  /**
+   * 阻塞到任务终态并返回终态摘要（P1-6：ops_dispatch_subagent 的 execute
+   * 用它挂起）。已终态立即 resolve；未知 taskId reject。
+   */
+  waitFor(taskId: string): Promise<SubagentFinalResult>;
   /** 中止单个任务（AbortSignal 级联到子会话）；不存在或已终态返回 false。 */
   abort(taskId: string): boolean;
   abortAll(): void;
@@ -337,6 +362,9 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
   const records = new Map<string, TaskRecord>();
   /** 仅 queued 状态的等待队列（FIFO）。 */
   const queue: TaskRecord[] = [];
+  /** 终态结果登记（waitFor 的真源；不清理——单会话任务量有限）。 */
+  const finals = new Map<string, SubagentFinalResult>();
+  const waiters = new Map<string, Array<(result: SubagentFinalResult) => void>>();
 
   const limitOf = (role: SubagentRole): number => options.limits?.[role] ?? ROLE_PARALLEL_LIMITS[role];
 
@@ -395,6 +423,20 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
         record.status = 'ok';
         extra = { summary, ...(note !== undefined ? { evidenceNote: note } : {}) };
       }
+    }
+    const final: SubagentFinalResult = {
+      taskId: record.spec.taskId,
+      role: record.spec.role,
+      status: record.status as SubagentTerminalStatus,
+      ...(extra.summary !== undefined ? { summary: extra.summary } : {}),
+      ...(extra.error !== undefined ? { error: extra.error } : {}),
+      ...(extra.evidenceNote !== undefined ? { evidenceNote: extra.evidenceNote } : {})
+    };
+    finals.set(final.taskId, final);
+    const pending = waiters.get(final.taskId);
+    if (pending !== undefined) {
+      waiters.delete(final.taskId);
+      for (const resolve of pending) resolve(final);
     }
     emit(record, extra);
     pump();
@@ -460,6 +502,24 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
       pump();
       return { taskId: spec.taskId, status: record.status };
     },
+    waitFor(taskId: string): Promise<SubagentFinalResult> {
+      const record = records.get(taskId);
+      if (record === undefined) {
+        return Promise.reject(new Error(`未知子代理任务 ${taskId}`));
+      }
+      if (TERMINAL_STATUSES.has(record.status)) {
+        const final = finals.get(taskId);
+        if (final !== undefined) return Promise.resolve(final);
+      }
+      return new Promise((resolve) => {
+        const list = waiters.get(taskId);
+        if (list === undefined) {
+          waiters.set(taskId, [resolve]);
+        } else {
+          list.push(resolve);
+        }
+      });
+    },
     abort,
     abortAll(): void {
       for (const taskId of [...records.keys()]) {
@@ -480,74 +540,189 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
   };
 }
 
+// ── ops_dispatch_subagent：阻塞式工具调用（P1-6）──────────────────────────
+
+/** 单个 tasks[] 元素 / 单任务调用的终态结果（工具结果 JSON 的单元）。 */
+export interface DispatchToolTaskResult {
+  taskId: string;
+  role?: SubagentRole;
+  /** rejected = spec 校验失败，任务未派发。 */
+  status: SubagentTerminalStatus | 'rejected';
+  summary?: string;
+  error?: string;
+  evidenceNote?: EvidenceNote;
+}
+
+/** 一次 ops_dispatch_subagent 最多并行派发的任务数（与 investigator 硬顶一致）。 */
+export const MAX_DISPATCH_TASKS = 4;
+
+function finalToTaskResult(final: SubagentFinalResult): DispatchToolTaskResult {
+  return {
+    taskId: final.taskId,
+    role: final.role,
+    status: final.status,
+    ...(final.summary !== undefined ? { summary: final.summary } : {}),
+    ...(final.error !== undefined ? { error: final.error } : {}),
+    ...(final.evidenceNote !== undefined ? { evidenceNote: final.evidenceNote } : {})
+  };
+}
+
+async function runOneDispatchTask(
+  raw: unknown,
+  manager: Pick<SubagentManager, 'dispatch' | 'waitFor'>
+): Promise<DispatchToolTaskResult> {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {
+      taskId: '',
+      status: 'rejected',
+      error: '任务必须是对象（至少包含 role / goal / riskCeiling）'
+    };
+  }
+  const input = raw as SubagentDispatchInput;
+  const built = buildTaskSpec(normalizeDispatchInput(input));
+  if (!built.ok) {
+    return {
+      taskId: typeof input.taskId === 'string' ? input.taskId : '',
+      ...(typeof input.role === 'string' ? { role: input.role } : {}),
+      status: 'rejected',
+      error: built.error
+    };
+  }
+  manager.dispatch(built.spec);
+  try {
+    return finalToTaskResult(await manager.waitFor(built.spec.taskId));
+  } catch (error) {
+    return {
+      taskId: built.spec.taskId,
+      role: built.spec.role,
+      status: 'rejected',
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+/**
+ * ops_dispatch_subagent 的 execute 主体（P1-6 阻塞式）：
+ * - 单任务（顶层 role/goal/riskCeiling）→ 阻塞到终态，返回单个结果 JSON；
+ * - tasks[]（并行数组）→ 全部派发后等全部终态，返回 { tasks: [...] } JSON；
+ * - spec 校验失败的任务标 status='rejected'，不影响其余任务；
+ * - 结果绝不 throw：拒绝/失败都是结构化 JSON（模型自行处理）。
+ * 摘要 ≤SUBAGENT_SUMMARY_CHAR_LIMIT 字符；原始大输出不回主会话（无 prompt 回灌）。
+ */
+export async function runDispatchToolCall(
+  args: Record<string, unknown>,
+  manager: Pick<SubagentManager, 'dispatch' | 'waitFor'>
+): Promise<string> {
+  const rawTasks = args.tasks;
+  if (rawTasks !== undefined) {
+    if (!Array.isArray(rawTasks) || rawTasks.length === 0) {
+      return JSON.stringify({
+        ok: false,
+        error: 'tasks 必须是非空数组；单任务请直接给顶层 role / goal / riskCeiling'
+      });
+    }
+    if (rawTasks.length > MAX_DISPATCH_TASKS) {
+      return JSON.stringify({
+        ok: false,
+        error: `tasks 一次最多 ${MAX_DISPATCH_TASKS} 个（收到 ${rawTasks.length}）；请分批派发`
+      });
+    }
+    const tasks = await Promise.all(rawTasks.map((raw) => runOneDispatchTask(raw, manager)));
+    return JSON.stringify({ tasks });
+  }
+  return JSON.stringify(await runOneDispatchTask(args, manager));
+}
+
 // ── ops_dispatch_subagent 工具 spec（execute 由 runtime 注入 manager 后包装） ──
+
+const DISPATCH_TASK_PROPERTIES: Record<string, unknown> = {
+  role: {
+    type: 'string',
+    enum: ['investigator', 'executor', 'writer', 'verifier'],
+    description: '子代理角色'
+  },
+  goal: { type: 'string', description: '本次子任务目标（一句话，含对象与时间窗）' },
+  riskCeiling: {
+    type: 'string',
+    enum: ['read', 'write', 'exec'],
+    description: 'investigator/verifier/writer 必须 read；executor 按已批简报'
+  },
+  allowTools: {
+    type: 'array',
+    items: { type: 'string' },
+    description: '工具白名单（与 Hub 暴露集、riskCeiling 取交集）'
+  },
+  budget: {
+    type: 'object',
+    properties: {
+      maxToolCalls: {
+        type: 'integer',
+        description: `默认 ${DEFAULT_SUBAGENT_BUDGET.maxToolCalls}，最大 ${MAX_TOOL_CALLS}`
+      },
+      maxWallMs: { type: 'integer', description: `默认 ${DEFAULT_SUBAGENT_BUDGET.maxWallMs}` }
+    },
+    additionalProperties: false
+  },
+  approvalToken: {
+    type: 'object',
+    properties: {
+      briefId: { type: 'string', description: '已批 9 要素简报 id' },
+      commandSetSha256: {
+        type: 'string',
+        description: '可选；host 批准时计算绑定，不要自行计算哈希'
+      }
+    },
+    required: ['briefId'],
+    additionalProperties: false,
+    description: 'executor 必填：引用已批 9 要素简报（briefId）；哈希由 host 绑定'
+  },
+  plan: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        step: { type: 'integer' },
+        kind: {
+          type: 'string',
+          enum: ['backup', 'verifyBackup', 'change', 'readback', 'verify', 'other']
+        },
+        tool: { type: 'string' },
+        command: { type: 'string' },
+        args: { type: 'object' }
+      },
+      required: ['step', 'kind', 'tool'],
+      additionalProperties: false
+    },
+    description: 'executor 的确切执行步骤（与已批命令集一致）'
+  }
+};
 
 export const dispatchToolSpec = {
   name: DISPATCH_TOOL_NAME,
   label: 'Ops：派发子代理',
   description:
-    '把 TaskSpec 子集派发给后台子代理（investigator/executor/writer/verifier），' +
-    '立即返回 { taskId, status: queued|running }，结果完成后异步回传摘要。' +
-    'Investigator 只读（riskCeiling 必须 read）；Executor 必须携带 approvalToken；' +
-    'Writer 无业务工具。仅主会话可用，子代理禁止递归派发。',
+    '派发子代理（investigator/executor/writer/verifier）并阻塞到终态：' +
+    '工具结果即终态摘要 JSON（status: ok|degraded|failed|aborted|rejected + summary）。' +
+    '单任务给顶层 role/goal/riskCeiling；并行取证给 tasks[]（一次最多 ' +
+    `${MAX_DISPATCH_TASKS} 个，全部结束后一并返回）。` +
+    'Investigator 只读（riskCeiling 必须 read）；Executor 必须携带 approvalToken.briefId' +
+    '（commandSetSha256 由 host 绑定，不要自行计算）；Writer 无业务工具。' +
+    '仅主会话可用，子代理禁止递归派发。',
   parameters: {
     type: 'object',
     properties: {
-      role: {
-        type: 'string',
-        enum: ['investigator', 'executor', 'writer', 'verifier'],
-        description: '子代理角色'
-      },
-      goal: { type: 'string', description: '本次子任务目标（一句话，含对象与时间窗）' },
-      riskCeiling: {
-        type: 'string',
-        enum: ['read', 'write', 'exec'],
-        description: 'investigator/verifier/writer 必须 read；executor 按已批简报'
-      },
-      allowTools: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '工具白名单（与 Hub 暴露集、riskCeiling 取交集）'
-      },
-      budget: {
-        type: 'object',
-        properties: {
-          maxToolCalls: { type: 'integer', description: `默认 ${DEFAULT_SUBAGENT_BUDGET.maxToolCalls}，最大 ${MAX_TOOL_CALLS}` },
-          maxWallMs: { type: 'integer', description: `默认 ${DEFAULT_SUBAGENT_BUDGET.maxWallMs}` }
-        },
-        additionalProperties: false
-      },
-      approvalToken: {
-        type: 'object',
-        properties: {
-          briefId: { type: 'string' },
-          commandSetSha256: { type: 'string' }
-        },
-        required: ['briefId', 'commandSetSha256'],
-        additionalProperties: false,
-        description: 'executor 必填：已批 9 要素简报的令牌（命令集哈希绑定）'
-      },
-      plan: {
+      ...DISPATCH_TASK_PROPERTIES,
+      tasks: {
         type: 'array',
         items: {
           type: 'object',
-          properties: {
-            step: { type: 'integer' },
-            kind: {
-              type: 'string',
-              enum: ['backup', 'verifyBackup', 'change', 'readback', 'verify', 'other']
-            },
-            tool: { type: 'string' },
-            command: { type: 'string' },
-            args: { type: 'object' }
-          },
-          required: ['step', 'kind', 'tool'],
+          properties: DISPATCH_TASK_PROPERTIES,
+          required: ['role', 'goal', 'riskCeiling'],
           additionalProperties: false
         },
-        description: 'executor 的确切执行步骤（与已批命令集一致）'
+        description: `并行任务数组（可选；与顶层单任务字段二选一，最多 ${MAX_DISPATCH_TASKS} 个）`
       }
     },
-    required: ['role', 'goal', 'riskCeiling'],
     additionalProperties: false
   } as Record<string, unknown>
 } as const;

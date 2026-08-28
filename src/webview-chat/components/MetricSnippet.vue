@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
+import { t } from '../i18n';
 
 const props = defineProps<{
   title?: string;
@@ -92,8 +93,8 @@ watch(() => props.points, draw, { deep: true });
       </span>
     </figcaption>
     <div class="metric__spark">
-      <canvas ref="canvasEl" class="metric__canvas" role="img" aria-label="指标火花图"></canvas>
-      <span v-if="!hasData" class="metric__nodata ops-muted">无数据</span>
+      <canvas ref="canvasEl" class="metric__canvas" role="img" :aria-label="t('metricAria')"></canvas>
+      <span v-if="!hasData" class="metric__nodata ops-muted">{{ t('metricNoData') }}</span>
     </div>
   </figure>
 </template>

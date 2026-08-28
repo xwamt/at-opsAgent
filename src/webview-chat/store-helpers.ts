@@ -3,7 +3,7 @@
  * prompt 上行 payload 组装与「事件脉络」时间线条目归一化。
  * 单独成文件是为了能在 node 环境直接单测（docs/09 §8 组件测降级路径）。
  */
-import type { ChatPromptReq, TranscriptItem } from '../protocol/host-protocol';
+import type { ChatPromptReq, TranscriptItem, UsageView } from '../protocol/host-protocol';
 import { normalizeConfidence, type ConfidenceLevel } from './confidence';
 
 export type PromptAttachment = NonNullable<ChatPromptReq['attachments']>[number];
@@ -223,6 +223,120 @@ export function absorbHydrateModels(
     model: snapshot.model,
     modelProvider: snapshot.modelProvider
   });
+}
+
+// ── transcript 渲染列表：连续只读工具聚合（Cline groupLowStakesTools 同构）──
+
+export type ToolTranscriptItem = Extract<TranscriptItem, { kind: 'tool' }>;
+
+export type TranscriptRenderEntry =
+  | { kind: 'item'; id: string; item: TranscriptItem }
+  | { kind: 'toolGroup'; id: string; items: ToolTranscriptItem[] };
+
+/** 可聚合：只读工具且已结束、非失败（error/running 保持单卡可见）。 */
+function groupableReadTool(item: TranscriptItem): item is ToolTranscriptItem {
+  return (
+    item.kind === 'tool' &&
+    item.call.risk === 'read' &&
+    item.call.status !== 'error' &&
+    item.call.status !== 'running'
+  );
+}
+
+/**
+ * transcript → 渲染条目：连续 ≥minGroup 个可聚合只读工具折叠成一个组
+ * （组 id 取首条工具的 id，保证虚拟化 key 稳定）；其余项原样透传。
+ */
+export function buildRenderList(
+  items: readonly TranscriptItem[],
+  minGroup = 3
+): TranscriptRenderEntry[] {
+  const out: TranscriptRenderEntry[] = [];
+  let run: ToolTranscriptItem[] = [];
+
+  const flush = (): void => {
+    if (run.length >= minGroup) {
+      out.push({ kind: 'toolGroup', id: `toolgroup-${run[0].id}`, items: run });
+    } else {
+      for (const item of run) {
+        out.push({ kind: 'item', id: item.id, item });
+      }
+    }
+    run = [];
+  };
+
+  for (const item of items) {
+    if (groupableReadTool(item)) {
+      run.push(item);
+      continue;
+    }
+    flush();
+    out.push({ kind: 'item', id: item.id, item });
+  }
+  flush();
+  return out;
+}
+
+// ── usage（P1-4 context 水位）─────────────────────────────────────────────
+
+function asFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/** usage evt / hydrate.usage → UsageView；无任何数值字段返回 null。 */
+export function normalizeUsage(raw: unknown): UsageView | null {
+  const rec = asRecord(raw);
+  const usage: UsageView = {
+    inputTokens: asFiniteNumber(rec.inputTokens),
+    outputTokens: asFiniteNumber(rec.outputTokens),
+    contextUsed: asFiniteNumber(rec.contextUsed),
+    contextWindow: asFiniteNumber(rec.contextWindow),
+    costUsd: asFiniteNumber(rec.costUsd)
+  };
+  const hasAny = Object.values(usage).some((v) => v !== undefined);
+  return hasAny ? usage : null;
+}
+
+/** context 占用百分比（0–100 取整）；缺 contextUsed/contextWindow 返回 null。 */
+export function usagePercent(usage: UsageView | null | undefined): number | null {
+  if (!usage || usage.contextUsed === undefined || !usage.contextWindow) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, Math.round((usage.contextUsed / usage.contextWindow) * 100)));
+}
+
+// ── hydrate 元数据（hasApiKey / usage）───────────────────────────────────
+
+export interface HydrateMeta {
+  hasApiKey: boolean | null;
+  usage: UsageView | null;
+}
+
+/**
+ * hydrate 快照吸收 hasApiKey / usage：字段缺省保持旧值（旧 host 兼容），
+ * hasApiKey 只认布尔（null = host 未表态，UI 不据此拦截）。
+ */
+export function absorbHydrateMeta(
+  previous: HydrateMeta,
+  snapshot: { hasApiKey?: unknown; usage?: unknown }
+): HydrateMeta {
+  return {
+    hasApiKey:
+      typeof snapshot.hasApiKey === 'boolean' ? snapshot.hasApiKey : previous.hasApiKey,
+    usage: snapshot.usage !== undefined ? normalizeUsage(snapshot.usage) : previous.usage
+  };
+}
+
+/**
+ * 「可发送」判定（P0-B composer 拦截 / 欢迎页 CTA 共用）：
+ * 无模型清单 ⇒ 未配置；hasApiKey === false ⇒ 未配置；
+ * hasApiKey === null（host 未下发）不拦截，避免旧 host 下误伤。
+ */
+export function modelsConfigured(
+  modelOptions: readonly unknown[],
+  hasApiKey: boolean | null
+): boolean {
+  return modelOptions.length > 0 && hasApiKey !== false;
 }
 
 /**

@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { envelope, type Envelope } from '../protocol';
+import { webviewResourceRoots } from './chatView';
 import type { HostController } from './hostController';
 import { buildWebviewHtml } from './webviewHtml';
 
@@ -43,10 +44,7 @@ export function showBoardPanel(deps: BoardPanelDeps): void {
       // 看板卡片可经 command: 深链打开产物 / 日志。
       enableCommandUris: true,
       retainContextWhenHidden: true,
-      localResourceRoots: [
-        vscode.Uri.joinPath(extensionUri, 'dist', 'webview'),
-        vscode.Uri.joinPath(extensionUri, 'media')
-      ]
+      localResourceRoots: webviewResourceRoots(extensionUri)
     }
   );
   currentPanel = panel;

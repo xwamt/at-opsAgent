@@ -1,24 +1,30 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { t } from '../i18n';
+import { t, type OpsMessageKey } from '../i18n';
 import { useOpsStore } from '../store';
 
 const store = useOpsStore();
 
-/** 阶段行默认收起（Cline 式安静头部）：点身份 chip 展开 9 阶段。 */
+/**
+ * P1-3 头部去重：历史 / Playbook / 新会话等入口全部交给 view/title 原生按钮
+ * （package.json menus），webview 内不再复刻。本组件只剩 playbook 身份 chip，
+ * 无 playbook 时整行隐藏（Cline 式安静头部）。
+ */
+
+/** 阶段行默认收起：点身份 chip 展开 9 阶段。 */
 const stagesOpen = ref(false);
 
 /** pb.incident 主路径阶段（docs/04 §2.1）；GuidedManual 仅在命中时插入。 */
-const CANONICAL_STAGES: Array<{ id: string; label: string }> = [
-  { id: 'triage', label: '分诊' },
-  { id: 'selecting', label: '选择' },
-  { id: 'investigating', label: '调查' },
-  { id: 'synthesizing', label: '归纳' },
-  { id: 'awaitingapproval', label: '待审批' },
-  { id: 'executing', label: '执行' },
-  { id: 'verifying', label: '验证' },
-  { id: 'reporting', label: '报告' },
-  { id: 'closed', label: '关闭' }
+const CANONICAL_STAGES: Array<{ id: string; labelKey: OpsMessageKey }> = [
+  { id: 'triage', labelKey: 'stageTriage' },
+  { id: 'selecting', labelKey: 'stageSelecting' },
+  { id: 'investigating', labelKey: 'stageInvestigating' },
+  { id: 'synthesizing', labelKey: 'stageSynthesizing' },
+  { id: 'awaitingapproval', labelKey: 'stageAwaitingApproval' },
+  { id: 'executing', labelKey: 'stageExecuting' },
+  { id: 'verifying', labelKey: 'stageVerifying' },
+  { id: 'reporting', labelKey: 'stageReporting' },
+  { id: 'closed', labelKey: 'stageClosed' }
 ];
 
 const normalizedStage = computed(() =>
@@ -26,7 +32,10 @@ const normalizedStage = computed(() =>
 );
 
 const stages = computed(() => {
-  const list = [...CANONICAL_STAGES];
+  const list: Array<{ id: string; label: string }> = CANONICAL_STAGES.map((stage) => ({
+    id: stage.id,
+    label: t(stage.labelKey)
+  }));
   const current = normalizedStage.value;
   if (current && !list.some((stage) => stage.id === current)) {
     // GuidedManual 等非主干阶段：插到 Reporting 前
@@ -56,11 +65,10 @@ const stageLabel = computed(() => {
 </script>
 
 <template>
-  <header class="pb-header">
+  <header v-if="store.playbook" class="pb-header">
     <div class="pb-header__row">
       <!-- Playbook 身份 = 一个 chip（id · 阶段）；点它展开/收起阶段行 -->
       <button
-        v-if="store.playbook"
         type="button"
         class="pb-header__identity"
         :aria-expanded="stagesOpen"
@@ -68,32 +76,17 @@ const stageLabel = computed(() => {
         :title="t('headerStagesToggle')"
         @click="stagesOpen = !stagesOpen"
       >
+        <span class="codicon codicon-list-tree" aria-hidden="true"></span>
         <span class="pb-header__id ops-mono">{{ store.playbook.id }}</span>
         <span class="pb-header__stage">· {{ stageLabel }}</span>
-        <span aria-hidden="true">{{ stagesOpen ? '▾' : '▸' }}</span>
-      </button>
-      <span v-else class="pb-header__idle ops-muted">{{ t('headerIdle') }}</span>
-      <span class="pb-header__spacer"></span>
-      <button
-        type="button"
-        class="ops-btn ops-btn--secondary pb-header__btn"
-        :aria-expanded="store.historyOpen"
-        :aria-label="t('historyTitle')"
-        @click="store.toggleHistory()"
-      >
-        ↺ {{ t('historyButton') }}
-      </button>
-      <button
-        type="button"
-        class="ops-btn ops-btn--secondary pb-header__btn"
-        :aria-expanded="store.activePicker === 'playbook'"
-        aria-label="选择 Playbook"
-        @click="store.togglePicker('playbook')"
-      >
-        ▤ Playbook
+        <span
+          class="codicon"
+          :class="stagesOpen ? 'codicon-chevron-down' : 'codicon-chevron-right'"
+          aria-hidden="true"
+        ></span>
       </button>
     </div>
-    <ol v-if="store.playbook && stagesOpen" class="pb-header__chips" aria-label="Playbook 阶段">
+    <ol v-if="stagesOpen" class="pb-header__chips" :aria-label="t('headerStagesAria')">
       <li
         v-for="stage in stages"
         :key="stage.id"
@@ -101,9 +94,17 @@ const stageLabel = computed(() => {
         :class="'pb-header__chip--' + stage.state"
         :aria-current="stage.state === 'active' ? 'step' : undefined"
       >
-        <span class="pb-header__chip-mark" aria-hidden="true">
-          {{ stage.state === 'done' ? '✓' : stage.state === 'active' ? '●' : '○' }}
-        </span>
+        <span
+          class="codicon pb-header__chip-mark"
+          :class="
+            stage.state === 'done'
+              ? 'codicon-check'
+              : stage.state === 'active'
+                ? 'codicon-circle-filled'
+                : 'codicon-circle-outline'
+          "
+          aria-hidden="true"
+        ></span>
         {{ stage.label }}
       </li>
     </ol>
@@ -113,30 +114,35 @@ const stageLabel = computed(() => {
 <style scoped>
 .pb-header {
   border-bottom: 1px solid var(--ops-border);
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  padding: var(--ops-space-1) var(--ops-space-3);
 }
 
 .pb-header__row {
   display: flex;
   align-items: center;
-  gap: var(--ops-density);
+  gap: var(--ops-space-1);
   min-width: 0;
 }
 
 .pb-header__identity {
   display: inline-flex;
   align-items: center;
-  gap: calc(var(--ops-density) - 2px);
+  gap: var(--ops-space-1);
   background: transparent;
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
-  padding: 1px calc(var(--ops-density) + 2px);
+  padding: 1px var(--ops-space-2);
   color: var(--ops-fg);
   cursor: pointer;
-  font-size: calc(var(--ops-font-size) - 1px);
+  font-size: var(--ops-font-sm);
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.pb-header__identity .codicon {
+  font-size: var(--ops-font-sm);
+  color: var(--ops-muted);
 }
 
 .pb-header__identity:hover {
@@ -158,30 +164,12 @@ const stageLabel = computed(() => {
   text-overflow: ellipsis;
 }
 
-.pb-header__idle {
-  font-size: calc(var(--ops-font-size) - 1px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pb-header__spacer {
-  flex: 1;
-}
-
-.pb-header__btn {
-  padding: 1px calc(var(--ops-density) + 2px);
-  font-size: calc(var(--ops-font-size) - 2px);
-  line-height: 1.7;
-  white-space: nowrap;
-}
-
 .pb-header__chips {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
-  gap: var(--ops-density);
-  margin: var(--ops-density) 0 0;
+  gap: var(--ops-space-1);
+  margin: var(--ops-space-1) 0 0;
   padding: 0;
 }
 
@@ -191,10 +179,14 @@ const stageLabel = computed(() => {
   gap: 3px;
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
-  padding: 0 calc(var(--ops-density) + 2px);
-  font-size: calc(var(--ops-font-size) - 2px);
+  padding: 0 var(--ops-space-2);
+  font-size: var(--ops-font-xs);
   line-height: 1.6;
   color: var(--ops-muted);
+}
+
+.pb-header__chip-mark {
+  font-size: var(--ops-font-xs);
 }
 
 .pb-header__chip--done {

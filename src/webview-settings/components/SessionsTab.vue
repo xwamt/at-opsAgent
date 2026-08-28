@@ -18,7 +18,7 @@ function formatTime(updatedAt: number | undefined): string {
 
 <template>
   <section>
-    <h2 class="set-title">{{ t('sessionsTitle') }}</h2>
+    <h2 class="set-page-title">{{ t('sessionsTitle') }}</h2>
 
     <div class="set-actions sessions-actions">
       <button type="button" class="ops-btn" @click="store.newSession()">{{ t('sessionsNew') }}</button>

@@ -43,8 +43,12 @@ import {
   COMPACTION_NEW_SESSION_MESSAGE,
   DEFAULT_SUBAGENT_BUDGET,
   DISPATCH_TOOL_NAME,
+  FALLBACK_INIT_FAILURE_PREFIX,
   FALLBACK_NOTICE,
+  MAIN_ORIGIN,
+  MAX_DISPATCH_TASKS,
   MODEL_RESULT_CHAR_LIMIT,
+  OPEN_SETTINGS_NOTICE_ACTION,
   READ_SKILL_TOOL_NAME,
   READ_WORKSPACE_FILE_TOOL_NAME,
   ROLE_PARALLEL_LIMITS,
@@ -53,6 +57,7 @@ import {
   TOOL_END_PREVIEW_LIMIT,
   TOOL_RESULTS_DIRNAME,
   WORKSPACE_FILE_CHAR_LIMIT,
+  applyToolGate,
   buildSystemPrompt,
   buildTaskSpec,
   catalogGainedNewBusinessTool,
@@ -67,6 +72,7 @@ import {
   filterToolsForSubagent,
   isCancelledInvocation,
   isPromptTooLongError,
+  looksLikeMissingModelConfig,
   normalizeDispatchInput,
   parseContractJson,
   parseEvidenceNote,
@@ -74,17 +80,22 @@ import {
   readWorkspaceFile,
   recoverFromPromptError,
   resolveUnderRoot,
+  runDispatchToolCall,
   skillRootsFor,
   truncateForModel,
   truncatePreview,
   truncateSummary,
   type CreateOpsRuntimeOptions,
+  type DispatchToolTaskResult,
   type OpsRuntimeEvent,
   type OpsRuntimeHandlers,
   type OpsSubagentEvent,
   type OpsThinkingLevel,
+  type SubagentFinalResult,
+  type SubagentManager,
   type SubagentRunOutcome,
-  type SubagentStatusEvent
+  type SubagentStatusEvent,
+  type ToolCallOrigin
 } from '../src/runtime';
 
 // ── 假 hub ───────────────────────────────────────────────────────────────
@@ -339,9 +350,22 @@ describe('buildSystemPrompt', () => {
     const prompt = buildSystemPrompt({});
     expect(prompt).toContain('ops_list_playbooks');
     expect(prompt).toContain('ops_start_playbook');
+    expect(prompt).toContain('ops_advance_stage');
+    expect(prompt).toContain('ops_close_playbook');
     expect(prompt).toContain('ops_dispatch_subagent');
     expect(prompt).toContain('自动启动');
     expect(prompt).toContain('只是候选建议');
+    // P1-6：派发是阻塞式的，支持 tasks[] 并行
+    expect(L2_TOOL_DISCOVERY).toContain('阻塞');
+    expect(L2_TOOL_DISCOVERY).toContain('tasks[]');
+  });
+
+  it('P0 §11：L3 不要求模型计算 SHA-256——哈希与 approvalToken 由 host 计算/附上', () => {
+    expect(L3_OUTPUT_FORMAT).toContain('不要自行计算任何哈希');
+    expect(L3_OUTPUT_FORMAT).toContain('host 会计算 commandSetSha256');
+    expect(L3_OUTPUT_FORMAT).toContain('approvalToken');
+    // 绝不出现「计算 SHA-256」类指令（让 LLM 现场做哈希必然编造）
+    expect(L3_OUTPUT_FORMAT).not.toMatch(/计算\s*SHA-?256/i);
   });
 
   it('playbookLayer 追加在末尾，空白串被忽略', () => {
@@ -363,25 +387,66 @@ describe('FallbackRuntime', () => {
     return { events, handlers };
   }
 
-  it('prompt 时输出中文说明并回 idle，不抛错', async () => {
+  it('缺模型配置：prompt 输出「未配置模型」+ 打开设置动作并回 idle，不抛错', async () => {
     const { events, handlers } = collectEvents();
     const runtime = createFallbackRuntime(handlers, '未找到模型 x/y');
 
     await runtime.prompt('查一下昨晚的告警');
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
     const first = events[0];
     expect(first.type).toBe('text_delta');
     if (first.type === 'text_delta') {
       expect(first.text).toContain(FALLBACK_NOTICE);
       expect(first.text).toContain('API key');
       expect(first.text).toContain('未找到模型 x/y');
+      // 绝不暴露内部实现细节
+      expect(first.text).not.toContain('能力插件树');
+      expect(first.text).not.toContain('src/runtime');
     }
-    expect(events[1]).toEqual({ type: 'idle' });
+    const notice = events[1];
+    expect(notice.type).toBe('notice');
+    if (notice.type === 'notice') {
+      expect(notice.variant).toBe('error');
+      expect(notice.actions).toEqual([OPEN_SETTINGS_NOTICE_ACTION]);
+    }
+    expect(events[2]).toEqual({ type: 'idle' });
 
     // abort / setSystemPrompt / dispose 均为安全 no-op
     expect(() => runtime.abort()).not.toThrow();
     expect(() => runtime.setSystemPrompt('x')).not.toThrow();
     await expect(runtime.dispose()).resolves.toBeUndefined();
+  });
+
+  it('其它初始化失败：文案为「模型运行时初始化失败：<reason>」且无打开设置动作', async () => {
+    const { events, handlers } = collectEvents();
+    const runtime = createFallbackRuntime(handlers, 'pi 模块加载失败: SyntaxError');
+
+    await runtime.prompt('hello');
+    const first = events[0];
+    expect(first.type).toBe('text_delta');
+    if (first.type === 'text_delta') {
+      expect(first.text).toBe(`${FALLBACK_INIT_FAILURE_PREFIX}pi 模块加载失败: SyntaxError`);
+      expect(first.text).not.toContain(FALLBACK_NOTICE);
+      expect(first.text).not.toContain('能力插件树');
+      expect(first.text).not.toContain('src/runtime');
+    }
+    const notice = events[1];
+    expect(notice.type).toBe('notice');
+    if (notice.type === 'notice') {
+      expect(notice.actions).toBeUndefined();
+    }
+    expect(events[2]).toEqual({ type: 'idle' });
+  });
+
+  it('looksLikeMissingModelConfig：缺 key/无模型/401 → true；其它异常 → false', () => {
+    expect(looksLikeMissingModelConfig(undefined)).toBe(true);
+    expect(looksLikeMissingModelConfig('')).toBe(true);
+    expect(looksLikeMissingModelConfig('未找到模型 openai/gpt-x')).toBe(true);
+    expect(looksLikeMissingModelConfig('没有任何配置了有效凭证的模型')).toBe(true);
+    expect(looksLikeMissingModelConfig('missing API key for anthropic')).toBe(true);
+    expect(looksLikeMissingModelConfig('HTTP 401 Unauthorized')).toBe(true);
+    expect(looksLikeMissingModelConfig('ENOENT: no such file or directory')).toBe(false);
+    expect(looksLikeMissingModelConfig('SyntaxError: unexpected token')).toBe(false);
   });
 
   it('createOpsRuntime 在模型无法解析时返回 Fallback 而不是抛错', async () => {
@@ -603,6 +668,120 @@ describe('executeBusinessTool', () => {
     ).rejects.toThrow('调查中禁止该操作');
     expect(hub.invokeCalls).toHaveLength(0);
   });
+
+  it('origin 透传给 beforeToolCall：缺省 main，子代理 origin 原样到达', async () => {
+    const hub = makeFakeHub();
+    const seenOrigins: (ToolCallOrigin | undefined)[] = [];
+    const handlers: OpsRuntimeHandlers = {
+      hub,
+      beforeToolCall: async (ctx) => {
+        seenOrigins.push(ctx.origin);
+        return { block: false };
+      }
+    };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+
+    await executeBusinessTool(handlers, bizDescriptor, {}, undefined, agentDir);
+    expect(seenOrigins[0]).toEqual(MAIN_ORIGIN);
+
+    const subOrigin: ToolCallOrigin = {
+      kind: 'subagent',
+      taskId: 'sub-exec-1',
+      role: 'executor',
+      riskCeiling: 'exec',
+      approvalToken: 'brief-1'
+    };
+    await executeBusinessTool(handlers, bizDescriptor, {}, undefined, agentDir, undefined, subOrigin);
+    expect(seenOrigins[1]).toEqual(subOrigin);
+  });
+});
+
+// ── P0-D：applyToolGate（会话内审批） ────────────────────────────────────
+
+describe('applyToolGate', () => {
+  const hub = makeFakeHub();
+
+  it('无 beforeToolCall → allow；needSessionApproval 未置位 → allow', async () => {
+    await expect(applyToolGate({ hub }, 't', {})).resolves.toEqual({ kind: 'allow' });
+    await expect(
+      applyToolGate({ hub, beforeToolCall: async () => ({ block: false }) }, 't', {})
+    ).resolves.toEqual({ kind: 'allow' });
+  });
+
+  it('needSessionApproval + 批准 → allow（同一调用继续）；requestApproval 收到 risk/reason/origin', async () => {
+    const approvals: Array<{ toolName: string; risk: string; reason?: string; origin?: ToolCallOrigin }> = [];
+    const handlers: OpsRuntimeHandlers = {
+      hub,
+      beforeToolCall: async () => ({
+        block: false,
+        needSessionApproval: true,
+        risk: 'exec',
+        reason: '重启服务需要批准'
+      }),
+      requestApproval: async (input) => {
+        approvals.push(input);
+        return 'approved';
+      }
+    };
+    const gate = await applyToolGate(handlers, 'terminal_run_command', { cmd: 'systemctl restart x' });
+    expect(gate).toEqual({ kind: 'allow' });
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({
+      toolName: 'terminal_run_command',
+      risk: 'exec',
+      reason: '重启服务需要批准',
+      origin: MAIN_ORIGIN
+    });
+  });
+
+  it('needSessionApproval + 拒绝 → 结构化拒绝 JSON（不抛错）', async () => {
+    const handlers: OpsRuntimeHandlers = {
+      hub,
+      beforeToolCall: async () => ({ block: false, needSessionApproval: true }),
+      requestApproval: async () => 'rejected'
+    };
+    const gate = await applyToolGate(handlers, 'nacos_publish_config', {});
+    expect(gate.kind).toBe('reject');
+    if (gate.kind === 'reject') {
+      const parsed = JSON.parse(gate.resultJson) as { ok: boolean; error: { code: string } };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe('OPS_APPROVAL_REJECTED');
+    }
+  });
+
+  it('needSessionApproval 但 host 未接线 requestApproval → 结构化拒绝（OPS_APPROVAL_REQUIRED）', async () => {
+    const handlers: OpsRuntimeHandlers = {
+      hub,
+      beforeToolCall: async () => ({ block: false, needSessionApproval: true })
+    };
+    const gate = await applyToolGate(handlers, 'nacos_publish_config', {});
+    expect(gate.kind).toBe('reject');
+    if (gate.kind === 'reject') {
+      const parsed = JSON.parse(gate.resultJson) as { ok: boolean; error: { code: string } };
+      expect(parsed.error.code).toBe('OPS_APPROVAL_REQUIRED');
+    }
+  });
+
+  it('executeBusinessTool：审批被拒时把拒绝 JSON 作为工具结果返回，不 invoke', async () => {
+    const freshHub = makeFakeHub();
+    const handlers: OpsRuntimeHandlers = {
+      hub: freshHub,
+      beforeToolCall: async () => ({ block: false, needSessionApproval: true, risk: 'write' }),
+      requestApproval: async () => 'rejected'
+    };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-gate-'));
+    const text = await executeBusinessTool(
+      handlers,
+      descriptor({ name: 'nacos_publish_config', pluginId: 'at.nacos', risk: 'write' }),
+      {},
+      undefined,
+      agentDir
+    );
+    const parsed = JSON.parse(text) as { ok: boolean; error: { code: string } };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error.code).toBe('OPS_APPROVAL_REJECTED');
+    expect(freshHub.invokeCalls).toHaveLength(0);
+  });
 });
 
 // ── 子代理提示词（L3'/L5）───────────────────────────────────────────────
@@ -700,11 +879,25 @@ describe('buildTaskSpec', () => {
     }
   });
 
-  it('executor 必须携带 approvalToken（briefId + commandSetSha256）', () => {
+  it('executor 必须携带 approvalToken.briefId；commandSetSha256 可选（host 绑定）', () => {
     const bare = buildTaskSpec({ role: 'executor', goal: '重启实例', riskCeiling: 'exec' });
     expect(bare.ok).toBe(false);
     if (!bare.ok) expect(bare.error).toContain('approvalToken');
 
+    // briefId-only：模型不自行计算哈希（P0 §11/12），只引用已批简报
+    const briefOnly = buildTaskSpec({
+      role: 'executor',
+      goal: '重启实例',
+      riskCeiling: 'exec',
+      approvalToken: { briefId: 'brief-1' }
+    });
+    expect(briefOnly.ok).toBe(true);
+    if (briefOnly.ok) {
+      expect(briefOnly.spec.approvalToken).toEqual({ briefId: 'brief-1' });
+      expect(briefOnly.spec.output.contract).toBe('exec-report@1');
+    }
+
+    // 带 host 绑定的哈希也照常透传
     const withToken = buildTaskSpec({
       role: 'executor',
       goal: '重启实例',
@@ -714,8 +907,16 @@ describe('buildTaskSpec', () => {
     expect(withToken.ok).toBe(true);
     if (withToken.ok) {
       expect(withToken.spec.approvalToken).toEqual({ briefId: 'brief-1', commandSetSha256: 'abc123' });
-      expect(withToken.spec.output.contract).toBe('exec-report@1');
     }
+
+    // 空 briefId 仍拒绝
+    const emptyBrief = buildTaskSpec({
+      role: 'executor',
+      goal: '重启实例',
+      riskCeiling: 'exec',
+      approvalToken: { briefId: '' }
+    });
+    expect(emptyBrief.ok).toBe(false);
   });
 
   it('writer 清空 allowTools 且收紧为 read；verifier 静默收紧为 read', () => {
@@ -1087,6 +1288,119 @@ describe('createSubagentManager', () => {
     expect(manager.statusOf('inv-crash')).toBe('failed');
     expect(manager.statusOf('inv-budget')).toBe('degraded');
   });
+
+  it('waitFor 阻塞到终态并返回 SubagentFinalResult；已终态任务立即返回', async () => {
+    const gate = deferred<SubagentRunOutcome>();
+    const manager = createSubagentManager({ runner: () => gate.promise });
+
+    manager.dispatch(makeManagedSpec('investigator', 'inv-wait'));
+    const pending = manager.waitFor('inv-wait');
+    gate.resolve({
+      finalText:
+        '```json\n{"contract":"evidence-note@1","taskId":"inv-wait","confidence":"confirmed","summary":"确认连接池打满"}\n```'
+    });
+    const final: SubagentFinalResult = await pending;
+    expect(final).toMatchObject({ taskId: 'inv-wait', role: 'investigator', status: 'ok' });
+    expect(final.summary).toContain('连接池');
+    expect(final.evidenceNote).toMatchObject({ confidence: 'confirmed' });
+
+    // 已终态：第二次 waitFor 立即返回同样结果
+    await expect(manager.waitFor('inv-wait')).resolves.toMatchObject({ status: 'ok' });
+    // 未知 taskId → reject
+    await expect(manager.waitFor('no-such-task')).rejects.toThrow('no-such-task');
+  });
+
+  it('waitFor 对 abort 级联同样解除阻塞（status=aborted）', async () => {
+    const manager = createSubagentManager({
+      runner: (_spec, signal) =>
+        new Promise<SubagentRunOutcome>((_, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        })
+    });
+    manager.dispatch(makeManagedSpec('investigator', 'inv-abort-wait'));
+    const pending = manager.waitFor('inv-abort-wait');
+    manager.abortAll();
+    await expect(pending).resolves.toMatchObject({ taskId: 'inv-abort-wait', status: 'aborted' });
+  });
+});
+
+// ── runDispatchToolCall（P1-6 阻塞式派发） ───────────────────────────────
+
+describe('runDispatchToolCall', () => {
+  function makeOkManager(): SubagentManager {
+    return createSubagentManager({
+      runner: async (spec) => ({
+        finalText:
+          spec.role === 'writer'
+            ? '# 报告\n完成'
+            : '```json\n{"contract":"evidence-note@1","taskId":"' +
+              spec.taskId +
+              '","confidence":"confirmed","summary":"goal 完成：' +
+              spec.goal +
+              '"}\n```'
+      })
+    });
+  }
+
+  it('单任务：阻塞到终态并返回单结果 JSON（status + summary）', async () => {
+    const manager = makeOkManager();
+    const raw = await runDispatchToolCall(
+      { role: 'investigator', goal: '查磁盘', riskCeiling: 'read' },
+      manager
+    );
+    const parsed = JSON.parse(raw) as DispatchToolTaskResult;
+    expect(parsed.status).toBe('ok');
+    expect(parsed.role).toBe('investigator');
+    expect(parsed.taskId).toBeTruthy();
+    expect(parsed.summary).toContain('查磁盘');
+  });
+
+  it('tasks[] 并行：全部终态后一并返回；坏任务标 rejected 不影响其余', async () => {
+    const manager = makeOkManager();
+    const raw = await runDispatchToolCall(
+      {
+        tasks: [
+          { role: 'investigator', goal: '查日志', riskCeiling: 'read' },
+          { role: 'investigator', goal: '查指标', riskCeiling: 'write' }, // 非法：investigator 必须 read
+          { role: 'writer', goal: '写报告', riskCeiling: 'read' }
+        ]
+      },
+      manager
+    );
+    const parsed = JSON.parse(raw) as { tasks: DispatchToolTaskResult[] };
+    expect(parsed.tasks).toHaveLength(3);
+    expect(parsed.tasks[0].status).toBe('ok');
+    expect(parsed.tasks[1].status).toBe('rejected');
+    expect(parsed.tasks[1].error).toBeTruthy();
+    expect(parsed.tasks[2].status).toBe('ok');
+  });
+
+  it('tasks 为空数组 / 超过上限 / spec 校验失败 → 结构化 JSON，绝不 throw', async () => {
+    const manager = makeOkManager();
+    const empty = JSON.parse(await runDispatchToolCall({ tasks: [] }, manager)) as { ok: boolean };
+    expect(empty.ok).toBe(false);
+
+    const tooMany = JSON.parse(
+      await runDispatchToolCall(
+        {
+          tasks: Array.from({ length: MAX_DISPATCH_TASKS + 1 }, () => ({
+            role: 'investigator',
+            goal: 'x',
+            riskCeiling: 'read'
+          }))
+        },
+        manager
+      )
+    ) as { ok: boolean; error: string };
+    expect(tooMany.ok).toBe(false);
+    expect(tooMany.error).toContain(String(MAX_DISPATCH_TASKS));
+
+    const bad = JSON.parse(
+      await runDispatchToolCall({ role: 'executor', goal: '改配置', riskCeiling: 'exec' }, manager)
+    ) as DispatchToolTaskResult;
+    expect(bad.status).toBe('rejected'); // executor 缺 approvalToken
+    expect(bad.error).toBeTruthy();
+  });
 });
 
 // ── ops_dispatch_subagent 工具面 ─────────────────────────────────────────
@@ -1095,10 +1409,21 @@ describe('ops_dispatch_subagent 契约', () => {
   it('工具 spec 固定名与参数骨架；发现工具列表不含它（子会话不注册）', () => {
     expect(dispatchToolSpec.name).toBe(DISPATCH_TOOL_NAME);
     expect(DISPATCH_TOOL_NAME).toBe('ops_dispatch_subagent');
-    expect(dispatchToolSpec.parameters).toMatchObject({
-      type: 'object',
-      required: ['role', 'goal', 'riskCeiling']
-    });
+    const params = dispatchToolSpec.parameters as {
+      type: string;
+      properties: Record<string, unknown>;
+      required?: string[];
+    };
+    expect(params.type).toBe('object');
+    // 单任务字段与 tasks[] 二选一，因此顶层不再有 required（由 runDispatchToolCall 校验）
+    expect(params.required).toBeUndefined();
+    expect(Object.keys(params.properties)).toEqual(
+      expect.arrayContaining(['role', 'goal', 'riskCeiling', 'approvalToken', 'tasks'])
+    );
+    const tasks = params.properties.tasks as { items: { required: string[] } };
+    expect(tasks.items.required).toEqual(['role', 'goal', 'riskCeiling']);
+    // 阻塞式（P1-6）：描述必须说明工具结果即终态摘要
+    expect(dispatchToolSpec.description).toContain('阻塞');
     expect(discoveryToolNames).not.toContain(DISPATCH_TOOL_NAME);
   });
 
@@ -1332,6 +1657,55 @@ describe('compaction（prompt 过长时 compact 一次 + 重试一次）', () =>
       })
     ).rejects.toThrow(COMPACTION_NEW_SESSION_MESSAGE);
     expect(retries).toBe(0);
+  });
+
+  it('P1-4：compact 成功后回调 onCompaction(summary)，即使重试仍失败也回调', async () => {
+    const summaries: string[] = [];
+    await recoverFromPromptError({
+      session: { compact: async () => ({ summary: '压缩摘要：保留告警与审批结论' }) },
+      error: new Error('prompt is too long'),
+      retry: async () => {},
+      onCompaction: (s) => summaries.push(s)
+    });
+    expect(summaries).toEqual(['压缩摘要：保留告警与审批结论']);
+
+    // compact 返回形状未知 → 兜底摘要
+    await recoverFromPromptError({
+      session: { compact: async () => undefined },
+      error: new Error('prompt is too long'),
+      retry: async () => {},
+      onCompaction: (s) => summaries.push(s)
+    });
+    expect(summaries[1]).toContain('已自动压缩');
+
+    // 重试失败也已回调（压缩事实先于重试结果）
+    await expect(
+      recoverFromPromptError({
+        session: { compact: async () => ({ summary: 's3' }) },
+        error: new Error('prompt is too long'),
+        retry: async () => {
+          throw new Error('prompt is too long');
+        },
+        onCompaction: (s) => summaries.push(s)
+      })
+    ).rejects.toThrow(COMPACTION_NEW_SESSION_MESSAGE);
+    expect(summaries[2]).toBe('s3');
+
+    // compact 失败 → 不回调
+    const before = summaries.length;
+    await expect(
+      recoverFromPromptError({
+        session: {
+          compact: async () => {
+            throw new Error('x');
+          }
+        },
+        error: new Error('prompt is too long'),
+        retry: async () => {},
+        onCompaction: (s) => summaries.push(s)
+      })
+    ).rejects.toThrow(COMPACTION_NEW_SESSION_MESSAGE);
+    expect(summaries.length).toBe(before);
   });
 });
 

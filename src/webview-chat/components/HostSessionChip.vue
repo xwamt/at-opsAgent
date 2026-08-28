@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { t } from '../i18n';
+
 const props = defineProps<{
   pluginId: string;
   label: string;
@@ -10,12 +12,16 @@ const props = defineProps<{
   <span
     class="hchip"
     :class="props.connected ? 'hchip--ok' : 'hchip--off'"
-    :title="props.pluginId + ' · ' + props.label + (props.connected ? ' 已连接' : ' 未连接')"
+    :title="props.pluginId + ' · ' + props.label + ' ' + (props.connected ? t('connected') : t('disconnected'))"
   >
-    <span aria-hidden="true">{{ props.connected ? '⌁' : '⊘' }}</span>
+    <span
+      class="codicon hchip__icon"
+      :class="props.connected ? 'codicon-plug' : 'codicon-debug-disconnect'"
+      aria-hidden="true"
+    ></span>
     <span class="hchip__plugin ops-mono">{{ props.pluginId }}</span>
     <span class="hchip__label">{{ props.label }}</span>
-    <span class="hchip__state">{{ props.connected ? '已连接' : '未连接' }}</span>
+    <span class="hchip__state">{{ props.connected ? t('connected') : t('disconnected') }}</span>
   </span>
 </template>
 
@@ -34,7 +40,7 @@ const props = defineProps<{
   overflow: hidden;
 }
 
-/* 连接态不只靠颜色：图标 ⌁/⊘ + 「已连接/未连接」文字常显 */
+/* 连接态不只靠颜色：codicon 图标 + 「已连接/未连接」文字常显 */
 .hchip--ok {
   color: var(--ops-healthy);
   border-color: var(--ops-healthy);
@@ -45,8 +51,12 @@ const props = defineProps<{
   border-style: dashed;
 }
 
+.hchip__icon {
+  font-size: var(--ops-font-xs);
+}
+
 .hchip__plugin {
-  font-size: calc(var(--ops-font-size) - 3px);
+  font-size: var(--ops-font-xs);
   opacity: 0.85;
 }
 

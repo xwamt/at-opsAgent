@@ -325,6 +325,77 @@ describe('orchestrator · 状态机与下发', () => {
       /Unknown subagent task/
     );
   });
+
+  it('P1-7 legalNextStages：全局迁移表 ∩ yaml 声明阶段；终态为空', () => {
+    const run = orch.startPlaybook('pb.incident', 'sess-1');
+    expect(orch.legalNextStages(run)).toEqual(['selecting']);
+    orch.advanceTo(run, 'selecting');
+    orch.advanceTo(run, 'investigating');
+    // 全局表 investigating → [synthesizing, escalated…]，pb.incident 声明了什么取交集
+    const next = orch.legalNextStages(run);
+    expect(next).toContain('synthesizing');
+    expect(next).not.toContain('closed');
+
+    // security-triage 没有 awaitingApproval/executing → 不出现在合法下一步里
+    const sec = orch.startPlaybook('pb.security-triage', 'sess-2');
+    orch.advanceTo(sec, 'selecting');
+    orch.advanceTo(sec, 'investigating');
+    orch.advanceTo(sec, 'synthesizing');
+    expect(orch.legalNextStages(sec)).not.toContain('awaitingApproval');
+  });
+
+  it('P1-7 advanceStage：缺省走合法下一步的第一项；显式 stage 等价 advanceTo；终态抛错', () => {
+    const run = orch.startPlaybook('pb.incident', 'sess-1');
+    expect(orch.advanceStage(run).stage).toBe('selecting');
+    expect(orch.advanceStage(run, 'investigating').stage).toBe('investigating');
+    // 非法显式迁移照常 throw
+    expect(() => orch.advanceStage(run, 'closed')).toThrow(IllegalStageTransitionError);
+    expect(run.stage).toBe('investigating');
+
+    // 推进到 closed 后再 advance → 无合法下一步，抛错
+    orch.closeRun(run);
+    expect(run.stage).toBe('closed');
+    expect(() => orch.advanceStage(run)).toThrow(/无法推进/);
+    // 未知 run 抛错
+    expect(() => orch.advanceStage('run-nope')).toThrow(/Unknown playbook run/);
+  });
+
+  it('P1-7 closeRun：BFS 最短路逐阶段推进到 closed，阶段事件逐步发出；已 closed 幂等', () => {
+    const run = orch.startPlaybook('pb.incident', 'sess-1');
+    orch.advanceTo(run, 'selecting');
+    orch.advanceTo(run, 'investigating');
+    events.length = 0;
+
+    const closed = orch.closeRun(run);
+    expect(closed.stage).toBe('closed');
+    const stages = events
+      .filter(
+        (e): e is Extract<OrchestratorEvent, { type: 'playbook/stage' }> =>
+          e.type === 'playbook/stage'
+      )
+      .map((e) => e.stage);
+    // 每一步都经 advanceTo（状态机不被跳过），最后一步是 closed
+    expect(stages.length).toBeGreaterThanOrEqual(2);
+    expect(stages.at(-1)).toBe('closed');
+
+    // 已 closed → 幂等返回，不再发事件
+    events.length = 0;
+    expect(orch.closeRun(run).stage).toBe('closed');
+    expect(events).toHaveLength(0);
+  });
+
+  it('closeRun：yaml 不可达 closed 时抛错（状态不变）', () => {
+    const fixture: Playbook = {
+      id: 'pb.no-close',
+      version: 1,
+      triggers: [{ kind: 'nl', patterns: ['x'] }],
+      stages: [{ id: 'triage' }, { id: 'selecting' }]
+    };
+    const local = createOrchestrator({ playbooks: [fixture] });
+    const run = local.startPlaybook('pb.no-close', 'sess-1');
+    expect(() => local.closeRun(run)).toThrow(/无法到达 closed|无法收尾/);
+    expect(run.stage).toBe('triage');
+  });
 });
 
 describe('orchestrator · injectPayloadCaps', () => {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { t, type OpsMessageKey } from '../i18n';
 import LogViewer from './LogViewer.vue';
 
 const props = defineProps<{
@@ -13,17 +14,25 @@ const props = defineProps<{
 }>();
 
 /** 结果三色 + 文字（不只靠颜色）。 */
-const RESULT_META: Record<string, { icon: string; label: string; cls: string }> = {
-  building: { icon: '●', label: '构建中', cls: 'pipe__result--building' },
-  success: { icon: '✓', label: '成功', cls: 'pipe__result--success' },
-  failure: { icon: '✗', label: '失败', cls: 'pipe__result--failure' },
-  unstable: { icon: '△', label: '不稳定', cls: 'pipe__result--unstable' },
-  aborted: { icon: '⊘', label: '已中止', cls: 'pipe__result--aborted' }
+const RESULT_META: Record<string, { icon: string; labelKey: OpsMessageKey; cls: string }> = {
+  building: { icon: 'codicon-loading codicon-modifier-spin', labelKey: 'pipeBuilding', cls: 'pipe__result--building' },
+  success: { icon: 'codicon-check', labelKey: 'pipeSuccess', cls: 'pipe__result--success' },
+  failure: { icon: 'codicon-error', labelKey: 'pipeFailure', cls: 'pipe__result--failure' },
+  unstable: { icon: 'codicon-warning', labelKey: 'pipeUnstable', cls: 'pipe__result--unstable' },
+  aborted: { icon: 'codicon-circle-slash', labelKey: 'pipeAborted', cls: 'pipe__result--aborted' }
 };
 
 const result = computed(() => {
   const key = String(props.result ?? '').toLowerCase();
-  return RESULT_META[key] ?? { icon: '?', label: props.result || '未知', cls: 'pipe__result--aborted' };
+  const meta = RESULT_META[key];
+  if (meta) {
+    return { icon: meta.icon, label: t(meta.labelKey), cls: meta.cls };
+  }
+  return {
+    icon: 'codicon-question',
+    label: props.result || t('pipeUnknown'),
+    cls: 'pipe__result--aborted'
+  };
 });
 
 const duration = computed(() => {
@@ -38,12 +47,12 @@ const duration = computed(() => {
 <template>
   <section class="pipe">
     <div class="pipe__row">
-      <span aria-hidden="true">⛓</span>
+      <span class="codicon codicon-link pipe__icon" aria-hidden="true"></span>
       <span class="pipe__job ops-mono" :title="props.job">{{ props.job }}</span>
       <span v-if="props.build !== undefined" class="pipe__build ops-mono">#{{ props.build }}</span>
       <span class="pipe__spacer"></span>
       <span class="pipe__result" :class="result.cls">
-        <span aria-hidden="true">{{ result.icon }}</span>{{ result.label }}
+        <span class="codicon" :class="result.icon" aria-hidden="true"></span>{{ result.label }}
       </span>
       <span v-if="duration" class="ops-muted ops-mono">{{ duration }}</span>
     </div>
@@ -68,6 +77,16 @@ const duration = computed(() => {
   gap: calc(var(--ops-density) * 1.5);
   min-width: 0;
   font-size: calc(var(--ops-font-size) - 1px);
+}
+
+.pipe__icon {
+  color: var(--ops-muted);
+  font-size: var(--ops-font-sm);
+  flex: 0 0 auto;
+}
+
+.pipe__result .codicon {
+  font-size: var(--ops-font-xs);
 }
 
 .pipe__job {

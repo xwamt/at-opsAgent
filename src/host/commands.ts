@@ -95,8 +95,19 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     respondToApproval(controller, 'rejected')
   );
 
-  const abort = vscode.commands.registerCommand('atOpsAgent.abort', async () => {
-    await controller.abort();
+  // 标题栏停止按钮 = 硬停（stop）：立即 abort 主会话并级联子代理。
+  // 软停（cancel，等 in-flight 工具结束）由 chat webview 的软停按钮走
+  // chat/abort { mode: 'cancel' }。
+  const abort = vscode.commands.registerCommand('atOpsAgent.abort', () => {
+    controller.abort('stop');
+  });
+
+  // P1-10：一键导出当前会话的值班报告（Markdown）。
+  const exportReport = vscode.commands.registerCommand('atOpsAgent.exportReport', async () => {
+    const result = await controller.exportReport();
+    if (!result.ok && result.error !== undefined) {
+      void vscode.window.showErrorMessage(`导出值班报告失败：${result.error}`);
+    }
   });
 
   // 不进 package.json contributes：escalateSelect 绝不自动触发（首轮
@@ -144,6 +155,7 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     approve,
     reject,
     abort,
+    exportReport,
     escalateSelect,
     openArtifact
   ];

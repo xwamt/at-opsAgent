@@ -31,6 +31,12 @@ export type PolicyContext = {
   sessionRequiredFor: 'write-exec' | 'exec-only' | 'never';
   /** 本任务内 at_select / ops_select 已发生的次数 */
   selectCountThisTask: number;
+  /**
+   * 本会话已免审的 read 工具名（P1-9「本会话不再问」记忆，host 维护）。
+   * 只对 risk=read 生效：命中即 needSessionApproval=false 直接放行；
+   * write/exec 双闸完全不受该名单影响。
+   */
+  sessionReadAllowlist?: string[];
 };
 
 export type PolicyDecision =
@@ -164,7 +170,13 @@ export function evaluatePolicy(ctx: PolicyContext): PolicyDecision {
     }
   }
 
-  // ── read 直接放行 ────────────────────────────────────────────────────
+  // ── read：会话免审名单（P1-9）命中即放行；其余 read 也直接放行 ───────
+  // 名单只对 read 生效（write/exec 双闸不受影响）。当前 read 本就免审，
+  // 显式短路承载「本会话不再问」语义——将来引入 read 级审批（敏感读接口）
+  // 时命中名单仍然跳过。
+  if (ctx.risk === 'read' && ctx.sessionReadAllowlist?.includes(ctx.toolName) === true) {
+    return allow();
+  }
   if (ctx.risk === 'read') {
     return allow();
   }

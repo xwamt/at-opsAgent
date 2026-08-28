@@ -7,11 +7,9 @@ const store = useOpsStore();
 const emit = defineEmits<{ picked: [playbookId: string]; close: [] }>();
 const rootEl = ref<HTMLElement | null>(null);
 
-const RISK_LABEL: Record<'read' | 'write' | 'exec', string> = {
-  read: '只读',
-  write: '写',
-  exec: '执行'
-};
+function riskLabel(risk: 'read' | 'write' | 'exec'): string {
+  return t(risk === 'write' ? 'riskWrite' : risk === 'exec' ? 'riskExec' : 'riskRead');
+}
 
 function pick(playbookId: string): void {
   store.startPlaybook(playbookId);
@@ -57,7 +55,7 @@ onBeforeUnmount(() => {
     >
       <span class="pbpick__title">{{ pb.title }}</span>
       <span class="pbpick__id ops-mono ops-muted">{{ pb.id }}</span>
-      <span class="ops-badge" :class="'ops-risk-' + pb.maxRisk">{{ RISK_LABEL[pb.maxRisk] }}</span>
+      <span class="ops-badge" :class="'ops-risk-' + pb.maxRisk">{{ riskLabel(pb.maxRisk) }}</span>
       <span v-if="pb.description" class="pbpick__desc ops-muted">{{ pb.description }}</span>
     </button>
   </div>
@@ -68,7 +66,7 @@ onBeforeUnmount(() => {
   background: var(--ops-bg);
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--ops-shadow);
   padding: var(--ops-density);
   max-height: 320px;
   overflow-y: auto;

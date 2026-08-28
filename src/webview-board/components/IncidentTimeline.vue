@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import HostSessionChip from '../../webview-chat/components/HostSessionChip.vue';
 import PipelineStatus from '../../webview-chat/components/PipelineStatus.vue';
 import { confidenceClass, confidenceLabel } from '../../webview-chat/confidence';
 import { t } from '../../webview-chat/i18n';
+import { bt, dayLabel, formatAbsolute, formatTimeCell } from '../i18n';
 import { useBoardStore, type TimelineEventView } from '../store';
 
 const store = useBoardStore();
@@ -13,55 +15,80 @@ const SEVERITY_META: Record<TimelineEventView['severity'], { icon: string; label
   crit: { icon: '✗', label: 'crit', cls: 'tl__sev--crit' }
 };
 
-function fmtTime(ts: number): string {
-  const date = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
+/** 相对时间的「现在」：30s 一跳，避免时间列停在挂载瞬间。 */
+const now = ref(Date.now());
+let timer: number | undefined;
+
+onMounted(() => {
+  timer = window.setInterval(() => {
+    now.value = Date.now();
+  }, 30_000);
+});
+
+onBeforeUnmount(() => {
+  if (timer !== undefined) {
+    window.clearInterval(timer);
+  }
+});
 </script>
 
 <template>
-  <div class="tl" role="log" aria-label="事故时间线">
-    <div v-if="store.sorted.length === 0" class="tl__empty ops-muted">{{ t('boardEmpty') }}</div>
-    <ol v-else class="tl__list">
-      <li v-for="event in store.sorted" :key="event.id" class="tl__row">
-        <span class="tl__time ops-mono ops-muted">{{ fmtTime(event.ts) }}</span>
-        <span class="tl__sev" :class="SEVERITY_META[event.severity].cls">
-          <span aria-hidden="true">{{ SEVERITY_META[event.severity].icon }}</span>
-          {{ SEVERITY_META[event.severity].label }}
-        </span>
-        <div class="tl__main">
-          <div class="tl__title">
-            {{ event.title }}
-            <span v-if="event.status" class="ops-badge ops-muted tl__status">{{ event.status }}</span>
-            <span
-              v-if="event.confidence"
-              class="ops-badge tl__confidence"
-              :class="confidenceClass(event.confidence)"
-            >{{ confidenceLabel(event.confidence) }}</span>
-          </div>
-          <div class="tl__meta ops-muted ops-mono">
-            <span v-if="event.incidentId">{{ event.incidentId }}</span>
-            <span v-if="event.kind">{{ event.kind }}</span>
-          </div>
-          <PipelineStatus
-            v-if="event.pipeline"
-            class="tl__pipeline"
-            :job="event.pipeline.job"
-            :build="event.pipeline.build"
-            :result="event.pipeline.result"
-          />
-          <div v-if="event.host" class="tl__host">
-            <HostSessionChip
-              :plugin-id="event.host.pluginId"
-              :label="event.host.label"
-              :connected="event.host.connected"
-            />
-          </div>
-          <pre v-if="event.detail" class="ops-codeblock tl__detail">{{ event.detail.slice(0, 4096) }}</pre>
-        </div>
-      </li>
-    </ol>
+  <div class="tl" role="log" :aria-label="bt('timelineAria')">
+    <div v-if="store.events.length === 0" class="tl__empty ops-muted">{{ t('boardEmpty') }}</div>
+    <div v-else-if="store.filtered.length === 0" class="tl__empty">
+      <p class="ops-muted tl__empty-text">{{ bt('noMatch') }}</p>
+      <button type="button" class="ops-btn ops-btn--secondary" @click="store.clearFilters()">
+        {{ bt('clearFilters') }}
+      </button>
+    </div>
+    <template v-else>
+      <section v-for="group in store.groups" :key="group.key" class="tl__group">
+        <h3 class="tl__day ops-muted">{{ dayLabel(group.key, now) }}</h3>
+        <ol class="tl__list">
+          <li v-for="event in group.events" :key="event.id" class="tl__row">
+            <time
+              class="tl__time ops-mono ops-muted"
+              :datetime="new Date(event.ts).toISOString()"
+              :title="formatAbsolute(event.ts)"
+            >{{ formatTimeCell(event.ts, now) }}</time>
+            <span class="tl__sev" :class="SEVERITY_META[event.severity].cls">
+              <span aria-hidden="true">{{ SEVERITY_META[event.severity].icon }}</span>
+              {{ SEVERITY_META[event.severity].label }}
+            </span>
+            <div class="tl__main">
+              <div class="tl__title">
+                {{ event.title }}
+                <span v-if="event.status" class="ops-badge ops-muted tl__status">{{ event.status }}</span>
+                <span
+                  v-if="event.confidence"
+                  class="ops-badge tl__confidence"
+                  :class="confidenceClass(event.confidence)"
+                >{{ confidenceLabel(event.confidence) }}</span>
+              </div>
+              <div class="tl__meta ops-muted ops-mono">
+                <span v-if="event.incidentId">{{ event.incidentId }}</span>
+                <span v-if="event.kind">{{ event.kind }}</span>
+              </div>
+              <PipelineStatus
+                v-if="event.pipeline"
+                class="tl__pipeline"
+                :job="event.pipeline.job"
+                :build="event.pipeline.build"
+                :result="event.pipeline.result"
+              />
+              <div v-if="event.host" class="tl__host">
+                <HostSessionChip
+                  :plugin-id="event.host.pluginId"
+                  :label="event.host.label"
+                  :connected="event.host.connected"
+                />
+              </div>
+              <pre v-if="event.detail" class="ops-codeblock tl__detail">{{ event.detail.slice(0, 4096) }}</pre>
+            </div>
+          </li>
+        </ol>
+      </section>
+    </template>
   </div>
 </template>
 
@@ -74,6 +101,23 @@ function fmtTime(ts: number): string {
 .tl__empty {
   padding: calc(var(--ops-density) * 6) 0;
   text-align: center;
+}
+
+.tl__empty-text {
+  margin: 0 0 calc(var(--ops-density) * 2);
+}
+
+.tl__day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: calc(var(--ops-density) - 2px) calc(var(--ops-density) * 2);
+  background: var(--ops-bg);
+  border-bottom: 1px solid var(--ops-border);
+  font-size: calc(var(--ops-font-size) - 2px);
+  font-weight: 600;
+  letter-spacing: 0.4px;
 }
 
 .tl__list {
@@ -90,10 +134,15 @@ function fmtTime(ts: number): string {
   align-items: baseline;
 }
 
+.tl__row:hover {
+  background: var(--ops-hover-bg);
+}
+
 .tl__time {
-  flex: 0 0 auto;
+  flex: 0 0 84px;
   font-size: calc(var(--ops-font-size) - 2px);
   white-space: nowrap;
+  cursor: default;
 }
 
 .tl__sev {

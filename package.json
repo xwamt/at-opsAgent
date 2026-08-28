@@ -105,6 +105,11 @@
         "command": "atOpsAgent.abort",
         "title": "%cmd.abort%",
         "icon": "$(debug-stop)"
+      },
+      {
+        "command": "atOpsAgent.exportReport",
+        "title": "%cmd.exportReport%",
+        "icon": "$(export)"
       }
     ],
     "menus": {
@@ -126,7 +131,7 @@
         },
         {
           "command": "atOpsAgent.abort",
-          "when": "view == atOpsAgent.chat",
+          "when": "view == atOpsAgent.chat && atOpsAgent.running",
           "group": "navigation@4"
         },
         {
@@ -136,6 +141,60 @@
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "atOpsAgent.chat.focus",
+        "key": "ctrl+escape",
+        "mac": "cmd+escape"
+      },
+      {
+        "command": "atOpsAgent.newSession",
+        "key": "shift+escape",
+        "when": "focusedView == atOpsAgent.chat"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "atOpsAgent.gettingStarted",
+        "title": "%walkthrough.title%",
+        "description": "%walkthrough.description%",
+        "steps": [
+          {
+            "id": "configureModel",
+            "title": "%walkthrough.step.configureModel.title%",
+            "description": "%walkthrough.step.configureModel.description%",
+            "media": {
+              "markdown": "media/walkthrough/configure-model.md"
+            },
+            "completionEvents": [
+              "onCommand:atOpsAgent.openModels"
+            ]
+          },
+          {
+            "id": "installPlugins",
+            "title": "%walkthrough.step.installPlugins.title%",
+            "description": "%walkthrough.step.installPlugins.description%",
+            "media": {
+              "markdown": "media/walkthrough/install-plugins.md"
+            },
+            "completionEvents": [
+              "onCommand:atOpsAgent.diagnoseHub"
+            ]
+          },
+          {
+            "id": "firstPlaybook",
+            "title": "%walkthrough.step.firstPlaybook.title%",
+            "description": "%walkthrough.step.firstPlaybook.description%",
+            "media": {
+              "markdown": "media/walkthrough/first-playbook.md"
+            },
+            "completionEvents": [
+              "onCommand:atOpsAgent.pickPlaybook"
+            ]
+          }
+        ]
+      }
+    ],
     "configuration": {
       "title": "AT Ops Agent",
       "properties": {
@@ -147,15 +206,18 @@
             "off"
           ],
           "default": "auto",
-          "description": "Hub progressive tool discovery mode."
+          "description": "%config.discovery.mode%"
         },
         "atOpsAgent.discovery.threshold": {
           "type": "number",
-          "default": 20
+          "default": 20,
+          "minimum": 1,
+          "description": "%config.discovery.threshold%"
         },
         "atOpsAgent.plugins.autoEnableNew": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "%config.plugins.autoEnableNew%"
         },
         "atOpsAgent.approval.sessionRequiredFor": {
           "type": "string",
@@ -164,32 +226,76 @@
             "exec-only",
             "never"
           ],
-          "default": "write-exec"
+          "default": "write-exec",
+          "description": "%config.approval.sessionRequiredFor%"
         },
         "atOpsAgent.approval.dedupePluginModal": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "%config.approval.dedupePluginModal%"
+        },
+        "atOpsAgent.approval.sessionReadAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "%config.approval.sessionReadAllowlist%"
         },
         "atOpsAgent.models.defaultThinkingLevel": {
           "type": "string",
-          "default": "medium"
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "default": "medium",
+          "description": "%config.models.defaultThinkingLevel%"
         },
         "atOpsAgent.models.toolCallPromptFallback": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "%config.models.toolCallPromptFallback%"
         },
         "atOpsAgent.workspaceShell.enabled": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "%config.workspaceShell.enabled%"
         },
         "atOpsAgent.subagent.maxParallel": {
           "type": "number",
           "default": 3,
-          "maximum": 4
+          "minimum": 1,
+          "maximum": 4,
+          "description": "%config.subagent.maxParallel%"
+        },
+        "atOpsAgent.sessions.maxParallel": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 2,
+          "description": "%config.sessions.maxParallel%"
         },
         "atOpsAgent.streaming.batchMs": {
           "type": "number",
-          "default": 40
+          "default": 40,
+          "minimum": 0,
+          "description": "%config.streaming.batchMs%"
+        },
+        "atOpsAgent.inspection.intervalMinutes": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "%config.inspection.intervalMinutes%"
+        },
+        "atOpsAgent.im.webhookUrl": {
+          "type": "string",
+          "default": "",
+          "description": "%config.im.webhookUrl%"
         }
       }
     }
@@ -210,6 +316,7 @@
     "@earendil-works/pi-ai": "0.84.3",
     "@earendil-works/pi-coding-agent": "0.84.3",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@vscode/codicons": "^0.0.46-24",
     "js-yaml": "^4.1.1",
     "markdown-it": "^14.1.0",
     "pinia": "^3.0.3",

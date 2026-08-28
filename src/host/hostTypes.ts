@@ -1,39 +1,29 @@
 /**
- * 窄 adapter 接口：host 只依赖这些形状（并行模块公开 API 的最小面），
- * 通过 src/host/modules.ts 动态装载；模块缺失时用 src/host/fallback/* 兜底。
+ * host 侧的窄 adapter 类型：host 通过 src/core（OpsCore facade）静态装配
+ * runtime / orchestrator / hub-host / mcp-client，但仍以这些「最小面」形状
+ * 编程——runtime 的部分新能力（sessionFile 续接、usage/compaction/notice
+ * 事件、execute 内挂起审批、per-provider key）由 D-runtime 并行落地，
+ * host 全部按可选字段处理（`if (runtime.sessionFile)`），缺席时安全降级。
  *
  * 形状对齐真源：
  * - hub-host      → src/hub-host/index.ts createAtSeriesHubHost(options): HubHost
  * - runtime       → src/runtime/index.ts createOpsRuntime(handlers, options)
  * - orchestrator  → src/orchestrator/index.ts createOrchestrator / loadPlaybooks
- * - mcp-client    → src/mcp-client/atSeriesDedup.ts shouldSkipAtSeriesMcpServer
  * - HubHost 契约  → src/protocol/hub-host.ts（共享 schema，已冻结）
  */
 import type {
   AgentToolDescriptor,
-  HubHost,
   ListProvidersResult,
+  NoticeAction,
   SelectToolsInput,
   SelectionController,
   SubagentCard,
   ToolInvocation,
-  ToolInvocationResult
+  ToolInvocationResult,
+  UsageView
 } from '../protocol';
 
-// ── hub-host 模块 ────────────────────────────────────────────────────────
-
-export interface CreateHubHostOptions {
-  hostApp: string;
-  home?: string;
-  discovery?: { mode: 'auto' | 'always' | 'off'; threshold: number };
-  [key: string]: unknown;
-}
-
-export interface HubHostModule {
-  createAtSeriesHubHost(options: CreateHubHostOptions): HubHost | Promise<HubHost>;
-}
-
-// ── orchestrator 模块 ────────────────────────────────────────────────────
+// ── orchestrator ─────────────────────────────────────────────────────────
 
 /** 阶段级 guidedManual 指令（MCP 无写工具时引导用户走插件命令/面板）。 */
 export interface GuidedManualMeta {
@@ -106,7 +96,7 @@ export interface OrchestratorLike {
   desiredEscalateSelect?(runOrId: PlaybookRunLike | string): SelectToolsInput | undefined;
   /**
    * 产出 9 要素审批简报并进入 awaitingApproval（同步 emit approval/request）。
-   * 可选：fallback 编排缺席时 host 退回纯文本拒绝。
+   * run 缺席（普通问答审批）时 host 走本地简报，不经 orchestrator。
    */
   requestApproval?(
     runOrId: PlaybookRunLike | string,
@@ -120,34 +110,49 @@ export interface OrchestratorLike {
   advanceTo?(runOrId: PlaybookRunLike | string, stage: string): PlaybookRunLike;
   /** runtime 实际执行了一轮 select 后登记（policy 的 selectCountThisTask）。 */
   recordSelect?(runOrId: PlaybookRunLike | string): number;
-  /** 当前阶段 parallelGroup → TaskSpec[]。host 不再自动调用；仅主代理 ops_dispatch_subagent 或测试使用。 */
-  spawnSubagentSpecs?(runOrId: PlaybookRunLike | string): unknown[];
   abortSubagent?(taskId: string): void;
   dispose?(): void;
 }
 
-export interface CreateOrchestratorOptions {
-  playbooks: PlaybookMeta[];
-  maxParallel?: number;
-  onEvent?: (event: OrchestratorEventLike) => void;
-}
-
-export interface OrchestratorModule {
-  createOrchestrator(options: CreateOrchestratorOptions): OrchestratorLike;
-  loadPlaybooks(rootDir: string): PlaybookMeta[];
-}
-
-// ── runtime 模块 ─────────────────────────────────────────────────────────
+// ── runtime ──────────────────────────────────────────────────────────────
 
 /** 思考等级（与 host-protocol ModelSetReq.thinkingLevel 同一取值集合）。 */
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** 工具调用来源（policy origin 接线：子代理角色/riskCeiling 进闸）。 */
+export type RuntimeCallOrigin =
+  | { kind: 'main' }
+  | {
+      kind: 'subagent';
+      taskId: string;
+      role: string;
+      riskCeiling: string;
+      /** Executor 的令牌引用 = 已批简报 briefId（哈希由 host 查回校验）。 */
+      approvalToken?: string;
+    };
 
 export type RuntimeEventLike =
   | { type: 'text_delta'; id: string; text: string }
   | { type: 'thinking_delta'; id: string; text: string }
   | { type: 'tool_start'; id: string; name: string; ok?: boolean; preview?: string; error?: string }
   | { type: 'tool_end'; id: string; name: string; ok?: boolean; preview?: string; error?: string }
+  /** 上下文/成本水位（D-runtime 落地后开始发送；host 前向兼容）。 */
+  | ({ type: 'usage' } & UsageView)
+  /** compaction 发生：summary 描述被摘要的内容。 */
+  | { type: 'compaction'; summary: string }
+  /** 结构化提示（未配置模型 / 初始化失败等），带可行动按钮。 */
+  | { type: 'notice'; variant: 'error' | 'info' | 'success'; text: string; actions?: NoticeAction[] }
   | { type: 'idle' };
+
+/** runtime 请求会话审批的输入（execute 内挂起，await host 决策）。 */
+export interface RuntimeApprovalInput {
+  toolName: string;
+  args: Record<string, unknown>;
+  risk?: 'read' | 'write' | 'exec';
+  pluginId?: string;
+  reason?: string;
+  origin?: RuntimeCallOrigin;
+}
 
 export interface RuntimeHandlers {
   hub: {
@@ -157,11 +162,21 @@ export interface RuntimeHandlers {
     invoke(inv: ToolInvocation): Promise<ToolInvocationResult>;
     selection: SelectionController;
   };
-  /** 权限闸（policy.evaluate 由 host 装配；block=true 则该次调用被拒）。 */
+  /**
+   * 权限闸（policy.evaluate 由 host 装配；block=true 则该次调用被拒）。
+   * needSessionApproval=true 时 runtime 在同一 execute 内 await
+   * requestApproval（阻塞派发，P0-D），批准后继续同一调用。
+   */
   beforeToolCall?: (ctx: {
     toolName: string;
     args: Record<string, unknown>;
-  }) => Promise<{ block: boolean; reason?: string }>;
+    origin?: RuntimeCallOrigin;
+  }) => Promise<{
+    block: boolean;
+    reason?: string;
+    needSessionApproval?: boolean;
+    risk?: 'write' | 'exec';
+  }>;
   onEvent?: (e: RuntimeEventLike) => void;
   /** 子代理生命周期；runtime 可选发出，host 用来刷新 SubagentBoard。 */
   onSubagentEvent?: (e: {
@@ -180,12 +195,20 @@ export interface RuntimeHandlers {
   }) => void;
   /**
    * 工具目录需要整体重建时回调（pi 会话无法追加新 ToolDefinition）。
-   * host 收到后 disposeRuntime，下一次 prompt 以最新目录重建工具面。
+   * host 收到后**不立即** dispose：等会话 idle 再续接重建（P1-15），
+   * 重建时带 resumeSessionFile 保上下文。
    */
   onCatalogNeedsRebuild?: () => void;
   /**
-   * 运维链路（ops_list_playbooks / ops_start_playbook）。
-   * 缺席时 runtime 仍注册工具，执行结果告知模型 host 未接线。
+   * 会话审批（P0-D）：policy 判定 needSessionApproval 时由 runtime 在
+   * tool execute 内 await 本回调；approved 继续同一调用，rejected 返回
+   * 结构化拒绝。D-runtime 落地前 host 的 beforeToolCall 内部走同一实现。
+   */
+  requestApproval?: (input: RuntimeApprovalInput) => Promise<'approved' | 'rejected'>;
+  /**
+   * 运维链路（ops_list_playbooks / ops_start_playbook / ops_advance_stage /
+   * ops_close_playbook）。缺席时 runtime 仍注册工具，执行结果告知模型
+   * host 未接线。advance/close 为 D-runtime 增量工具，host 已就绪。
    */
   playbooks?: {
     list():
@@ -193,15 +216,35 @@ export interface RuntimeHandlers {
       | Promise<Array<{ id: string; title: string; description?: string; whenToUse?: string[] }>>;
     start(
       playbookId: string
-    ): { ok: boolean; stage?: string; error?: string } | Promise<{ ok: boolean; stage?: string; error?: string }>;
+    ):
+      | { ok: boolean; stage?: string; error?: string }
+      | Promise<{ ok: boolean; stage?: string; error?: string }>;
+    advance?(
+      stage?: string
+    ):
+      | { ok: boolean; stage?: string; error?: string }
+      | Promise<{ ok: boolean; stage?: string; error?: string }>;
+    close?():
+      | { ok: boolean; stage?: string; error?: string }
+      | Promise<{ ok: boolean; stage?: string; error?: string }>;
   };
 }
 
 export interface RuntimeLike {
   prompt(text: string, opts?: { mode?: 'steer' | 'followUp' }): Promise<void>;
-  abort(): void;
+  /**
+   * 中止。mode 由 D-runtime 落地：cancel=软停（等当前工具结束）、
+   * stop=立即 abort。旧 runtime 忽略参数按硬停处理；host 侧对 cancel
+   * 另有兜底（tool_end 后再 abort）。
+   */
+  abort(mode?: 'cancel' | 'stop'): void;
   dispose(): void | Promise<void>;
   setSystemPrompt?(prompt: string): void;
+  setThinkingLevel?(level: ThinkingLevel): void;
+  /** 当前 pi 会话 JSONL 路径（D-runtime 落地后可用；续接重建的钥匙）。 */
+  sessionFile?: string;
+  /** 最小连通性探测（1-token / GET models）；缺席时 host 直接 HTTP 探测。 */
+  probeModel?(): Promise<{ ok: boolean; latencyMs?: number; error?: string }>;
   /** 派发一个子代理任务（TaskSpec）；并行 runtime 工作落地前可能缺席。 */
   dispatchSubagent?(spec: unknown): Promise<{ taskId: string; status: string }>;
   /** 中止单个子代理，不牵连主会话。 */
@@ -217,25 +260,30 @@ export interface RuntimeCreateOptions {
   agentDir?: string;
   cwd?: string;
   model?: { provider?: string; id?: string };
-  /** 从 SecretStorage 解析 LLM key；runtime 注入 pi，永不写入日志。 */
-  getApiKey?: () => Promise<string | undefined>;
+  /**
+   * 从 SecretStorage 解析 LLM key（按 provider 取；无参兼容旧签名）。
+   * runtime 注入 pi，永不写入日志。
+   */
+  getApiKey?: (providerId?: string) => Promise<string | undefined>;
   /** 打包技能目录（extensionPath/skills）；runtime 资源加载（skills 渐进披露）。 */
   bundledSkillsDir?: string;
   /** 主会话思考等级：modelSelection.thinkingLevel → agentDir settings.json → 配置默认。 */
   thinkingLevel?: ThinkingLevel;
   /** 受限工作区 shell 开关（atOpsAgent.workspaceShell.enabled，默认关）。 */
   workspaceShellEnabled?: boolean;
+  /**
+   * 续接既有 pi 会话 JSONL（P0-C：换模型 / 新工具重建不失忆）。
+   * D-runtime 落地前旧 runtime 忽略该字段（新开会话，行为不劣于现状）。
+   */
+  resumeSessionFile?: string;
+  /**
+   * per-role 模型映射（settings.json roleModels；C 提供 UI）。
+   * runtime 派发子代理时按 role 选模型；缺省全部走当前模型。
+   */
+  roleModels?: Record<string, { provider: string; model: string }>;
 }
 
-export interface RuntimeModule {
-  createOpsRuntime(
-    handlers: RuntimeHandlers,
-    options?: RuntimeCreateOptions
-  ): RuntimeLike | Promise<RuntimeLike>;
-  buildSystemPrompt?(opts?: { playbookLayer?: string }): string;
-}
-
-// ── mcp-client 去重 ──────────────────────────────────────────────────────
+// ── mcp-client ───────────────────────────────────────────────────────────
 
 export interface McpServerEntryLike {
   name?: string;
@@ -243,10 +291,4 @@ export interface McpServerEntryLike {
   args?: string[];
   url?: string;
   [key: string]: unknown;
-}
-
-export interface DedupModule {
-  shouldSkipAtSeriesMcpServer(
-    entry: McpServerEntryLike
-  ): boolean | { skip: boolean; reason?: string };
 }

@@ -1,9 +1,13 @@
 /**
- * 主代理选择运维链路的工具面：ops_list_playbooks / ops_start_playbook。
+ * 主代理选择运维链路的工具面：ops_list_playbooks / ops_start_playbook /
+ * ops_advance_stage / ops_close_playbook。
  *
  * OpenCode / Cline 的模式是「主会话决定何时开 task/subagent」，而不是 host
  * 用 NL 关键词替模型拍板。yaml triggers.kind=nl 的 patterns 只作为
  * whenToUse 提示词，绝不在 host 侧正则匹配自动启动。
+ *
+ * P1-7：阶段推进/收尾同样由主代理显式调用 advance/close——host 停用
+ * 「按消息数推进」的隐式驱动。
  *
  * 本文件不 import vscode / pi SDK。
  */
@@ -11,6 +15,8 @@ import type { OpsCustomToolSpec } from './resource-loader';
 
 export const LIST_PLAYBOOKS_TOOL_NAME = 'ops_list_playbooks';
 export const START_PLAYBOOK_TOOL_NAME = 'ops_start_playbook';
+export const ADVANCE_STAGE_TOOL_NAME = 'ops_advance_stage';
+export const CLOSE_PLAYBOOK_TOOL_NAME = 'ops_close_playbook';
 
 export interface PlaybookCatalogEntry {
   id: string;
@@ -26,10 +32,25 @@ export interface PlaybookStartResult {
   error?: string;
 }
 
+/** advance / close 的统一结果（stage = 操作后所处阶段）。 */
+export interface PlaybookStageResult {
+  ok: boolean;
+  stage?: string;
+  error?: string;
+}
+
 /** host 注入；缺席时工具仍注册，返回中文说明而不是抛错。 */
 export interface PlaybookToolHost {
   list(): PlaybookCatalogEntry[] | Promise<PlaybookCatalogEntry[]>;
   start(playbookId: string): PlaybookStartResult | Promise<PlaybookStartResult>;
+  /**
+   * 推进当前 playbook 阶段（P1-7）。stage 缺省时 host 按状态机取下一个
+   * 合法阶段；非法迁移返回 ok=false（不 throw）。可选：旧 host 未接线时
+   * 工具返回 UNAVAILABLE 说明。
+   */
+  advance?(stage?: string): PlaybookStageResult | Promise<PlaybookStageResult>;
+  /** 收尾当前 playbook（推进到 closed；沿途阶段事件由 host/orchestrator 发出）。 */
+  close?(): PlaybookStageResult | Promise<PlaybookStageResult>;
 }
 
 export function createPlaybookTools(host: PlaybookToolHost | undefined): OpsCustomToolSpec[] {
@@ -86,6 +107,55 @@ export function createPlaybookTools(host: PlaybookToolHost | undefined): OpsCust
           });
         }
         const result = await host.start(playbookId);
+        return JSON.stringify(result);
+      }
+    },
+    {
+      name: ADVANCE_STAGE_TOOL_NAME,
+      label: 'Ops：推进链路阶段',
+      description:
+        '把当前 playbook 推进到下一阶段（P1-7：阶段由你显式推进，host 不按消息数自动推进）。' +
+        'stage 缺省时进入状态机的下一个合法阶段；也可显式给目标阶段 id。' +
+        '仅在当前阶段 DoD 达成后调用；非法迁移会返回 ok=false 并列出合法的下一步。',
+      parameters: {
+        type: 'object',
+        properties: {
+          stage: {
+            type: 'string',
+            description: '目标阶段 id（可选；缺省 = 状态机的下一个合法阶段）'
+          }
+        },
+        additionalProperties: false
+      },
+      execute: async (args) => {
+        if (!host?.advance) {
+          return JSON.stringify({
+            ok: false,
+            error: 'host 未接线阶段推进（advance），无法推进 playbook 阶段。'
+          });
+        }
+        const stage = typeof args.stage === 'string' && args.stage.trim().length > 0
+          ? args.stage.trim()
+          : undefined;
+        const result = await host.advance(stage);
+        return JSON.stringify(result);
+      }
+    },
+    {
+      name: CLOSE_PLAYBOOK_TOOL_NAME,
+      label: 'Ops：收尾链路',
+      description:
+        '收尾当前 playbook（推进到 closed）。仅在产出物（报告/记录）完成、' +
+        '或用户明确要求终止时调用；收尾后工具选择回到任务边界，可重新 select。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      execute: async () => {
+        if (!host?.close) {
+          return JSON.stringify({
+            ok: false,
+            error: 'host 未接线链路收尾（close），无法关闭 playbook。'
+          });
+        }
+        const result = await host.close();
         return JSON.stringify(result);
       }
     }

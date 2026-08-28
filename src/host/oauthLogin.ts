@@ -11,9 +11,10 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AuthEvent, AuthInteraction, AuthPrompt } from '@earendil-works/pi-ai';
+import { OAUTH_NOTE } from './modelsView';
 
-export const OAUTH_NOTE =
-  'OAuth 由 pi ModelRuntime.login 驱动，凭证写入 ~/.at-series/agent/auth.json (0600)，不进 models.json';
+// 红线说明文案定义在 modelsView.ts（node 可测模块）；这里保留旧导出路径。
+export { OAUTH_NOTE } from './modelsView';
 
 export interface OAuthLoginInput {
   providerId: string;

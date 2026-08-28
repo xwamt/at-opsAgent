@@ -1,26 +1,33 @@
 import { defineStore } from 'pinia';
 import type {
   ApprovalBriefView,
+  AssetPickRes,
   Envelope,
   SubagentCard,
   ToolCallView,
-  TranscriptItem
+  TranscriptItem,
+  UsageView
 } from '../protocol/host-protocol';
-import { setLocale } from './i18n';
+import { setLocale, t } from './i18n';
 import {
-  buildHistoryList,
-  buildPromptPayload,
-  buildTimelineStrip,
-  canFollowUpFrom,
   absorbChatModelFields,
   absorbHydrateModels,
+  absorbHydrateMeta,
+  buildHistoryList,
+  buildPromptPayload,
+  buildRenderList,
+  buildTimelineStrip,
+  canFollowUpFrom,
+  modelsConfigured,
   normalizeSessions,
   normalizeTimelineEvent,
+  normalizeUsage,
   type ChatModelOption,
   type ChatTimelineEvent,
   type PromptAttachment,
   type SessionMeta,
-  type TimelineStripEntry
+  type TimelineStripEntry,
+  type TranscriptRenderEntry
 } from './store-helpers';
 import { getVsCodeApi, isMockHost } from './vscode-api';
 
@@ -28,7 +35,8 @@ export type {
   ChatTimelineEvent,
   PromptAttachment,
   SessionMeta,
-  TimelineStripEntry
+  TimelineStripEntry,
+  TranscriptRenderEntry
 } from './store-helpers';
 
 export interface ProviderChip {
@@ -81,6 +89,10 @@ interface HydratePayload {
   /** 顶层当前模型 id / provider（优先于 providers 快照内的同名字段）。 */
   model?: unknown;
   modelProvider?: unknown;
+  /** SecretStorage 是否已有可用 key（缺省 = 旧 host，UI 不据此拦截）。 */
+  hasApiKey?: unknown;
+  /** token / context 水位快照。 */
+  usage?: unknown;
 }
 
 type AnyRecord = Record<string, unknown>;
@@ -127,6 +139,12 @@ export const useOpsStore = defineStore('ops-chat', {
     playbooks: [...DEFAULT_PLAYBOOKS] as PlaybookMeta[],
     // 初始为空：真实清单只来自 host（hydrate / capabilities）；空 = 未配置，UI 引导去设置
     modelOptions: [] as ModelOption[],
+    /** SecretStorage 是否已有可用 key：null = host 未表态（旧 host），不据此拦截。 */
+    hasApiKey: null as boolean | null,
+    /** token / context 水位（usage evt / hydrate.usage）。 */
+    usage: null as UsageView | null,
+    /** @资产附件（asset/pick res 回填；随下一条 chat/prompt 上行后清空）。 */
+    attachments: [] as PromptAttachment[],
     activePicker: null as 'playbook' | null,
     timeline: [] as ChatTimelineEvent[],
     sessions: [] as SessionMeta[],
@@ -138,6 +156,16 @@ export const useOpsStore = defineStore('ops-chat', {
     /** 刚结束一轮（最近的 user/assistant 是已完成的 assistant 回复）⇒ 可追问。 */
     canFollowUp(state): boolean {
       return canFollowUpFrom(state.items, state.streaming);
+    },
+
+    /** 模型可用（有清单且 hasApiKey ≠ false）；false 时欢迎页出 CTA、composer 拦截。 */
+    configured(state): boolean {
+      return modelsConfigured(state.modelOptions, state.hasApiKey);
+    },
+
+    /** transcript 渲染列表：连续 ≥3 个已结束只读工具聚合为一组。 */
+    renderItems(state): TranscriptRenderEntry[] {
+      return buildRenderList(state.items);
     },
 
     /** 紧凑事件脉络条：timeline 事件 + 证据便签（host 不发 timeline 也能渲染）。 */
@@ -185,19 +213,55 @@ export const useOpsStore = defineStore('ops-chat', {
     },
 
     sendPrompt(text: string, attachments?: readonly PromptAttachment[]): void {
+      // 未配置模型时拦截（P0-B）：不静默走 fallback，由 Composer 呈现 CTA。
+      if (!this.configured) {
+        return;
+      }
+      const list = attachments ?? this.attachments;
       const payload = buildPromptPayload(
         text,
         { streaming: this.streaming, canFollowUp: this.canFollowUp },
-        attachments
+        list.length > 0 ? [...list] : undefined
       );
       if (!payload) {
         return;
       }
       this.post('chat/prompt', payload);
+      this.attachments = [];
     },
 
-    abortRun(): void {
-      this.post('chat/abort', {});
+    /** 软停 cancel = 等当前工具结束；硬停 stop = 立即 abort（P2 双档中止）。 */
+    abortRun(mode: 'cancel' | 'stop' = 'stop'): void {
+      this.post('chat/abort', { mode });
+    },
+
+    /** 失败 assistant 消息「重试」（P1-5）：host 重发同一轮 prompt。 */
+    retryAssistant(itemId: string): void {
+      if (!itemId) {
+        return;
+      }
+      this.post('chat/retry', { itemId, retryOf: itemId });
+    },
+
+    /** @资产：host QuickPick（asset/pick req），res 回填 attachments。 */
+    pickAsset(query?: string): void {
+      this.post('asset/pick', query ? { query } : {});
+    },
+
+    removeAttachment(index: number): void {
+      this.attachments.splice(index, 1);
+    },
+
+    /** 打开设置面板（未配置 CTA / 模型选择器空态 / notice action 共用）。 */
+    openSettings(tab = 'models'): void {
+      this.post('settings/open', { tab });
+    },
+
+    /** notice 卡动作按钮：request 型上行 req，command 型由模板走 command: 深链。 */
+    runNoticeAction(action: { request?: string }): void {
+      if (action.request) {
+        this.post(action.request, {});
+      }
     },
 
     respondApproval(decision: 'approved' | 'rejected'): void {
@@ -243,10 +307,10 @@ export const useOpsStore = defineStore('ops-chat', {
       this.historyOpen = force ?? !this.historyOpen;
     },
 
-    /** host 未接线 session/switch 时该 req 会被忽略——UI 只关闭侧滑，不乐观切换。 */
+    /** 协议字段是 { id }（SessionSwitchReq）；切换结果由 host 推 hydrate 生效。 */
     switchSession(sessionId: string): void {
       if (sessionId && sessionId !== this.sessionId) {
-        this.post('session/switch', { sessionId });
+        this.post('session/switch', { id: sessionId });
       }
       this.historyOpen = false;
     },
@@ -264,11 +328,46 @@ export const useOpsStore = defineStore('ops-chat', {
       this.mock = isMockHost();
       window.addEventListener('message', (event: MessageEvent) => {
         const data = event.data as Partial<Envelope> | undefined;
-        if (!data || data.v !== 1 || data.dir !== 'evt' || typeof data.type !== 'string') {
+        if (!data || data.v !== 1 || typeof data.type !== 'string') {
           return;
         }
-        this.handleEvent(data.type, data.payload);
+        if (data.dir === 'evt') {
+          this.handleEvent(data.type, data.payload);
+        } else if (data.dir === 'res') {
+          this.handleResponse(data.type, data.payload);
+        }
       });
+      // hydrate 握手（P0 §2.2）：listener 就绪后主动 pull，host push 丢失也能恢复。
+      this.post('hydrate', {});
+    },
+
+    /** dir:'res'：req 的应答（host 对 hydrate/asset/pick 等回 res 而非 evt）。 */
+    handleResponse(type: string, payload: unknown): void {
+      switch (type) {
+        case 'hydrate':
+          this.applyHydrate(asRecord(payload) as HydratePayload);
+          break;
+        case 'asset/pick': {
+          const res = asRecord(payload) as Partial<AssetPickRes>;
+          if (Array.isArray(res.items)) {
+            for (const item of res.items) {
+              const rec = asRecord(item);
+              const kind = String(rec.kind ?? 'file');
+              this.attachments.push({
+                kind: (['file', 'alert-paste', 'log', 'terminal', 'evidence'].includes(kind)
+                  ? kind
+                  : 'file') as PromptAttachment['kind'],
+                uri: typeof rec.uri === 'string' ? rec.uri : undefined,
+                text: typeof rec.text === 'string' ? rec.text : undefined,
+                label: typeof rec.label === 'string' ? rec.label : undefined
+              });
+            }
+          }
+          break;
+        }
+        default:
+          break;
+      }
     },
 
     handleEvent(type: string, payload: unknown): void {
@@ -299,6 +398,40 @@ export const useOpsStore = defineStore('ops-chat', {
         case 'approval/request':
           this.pendingApproval = asRecord(payload) as unknown as ApprovalBriefView;
           break;
+        case 'approval/resolve': {
+          const briefId = String(asRecord(payload).briefId ?? '');
+          if (!briefId || this.pendingApproval?.id === briefId) {
+            this.pendingApproval = null;
+          }
+          break;
+        }
+        case 'turn/end': {
+          this.streaming = false;
+          this.streamingId = null;
+          for (const item of this.items) {
+            if (item.kind === 'assistant' && item.streaming) {
+              item.streaming = false;
+            }
+          }
+          break;
+        }
+        case 'usage': {
+          const usage = normalizeUsage(payload);
+          if (usage) {
+            this.usage = usage;
+          }
+          break;
+        }
+        case 'compaction': {
+          const rec = asRecord(payload);
+          const summary = typeof rec.summary === 'string' && rec.summary ? rec.summary : '';
+          this.items.push({
+            kind: 'system',
+            id: `compaction-${Date.now().toString(36)}-${this.items.length}`,
+            text: summary || t('compactionLabel')
+          });
+          break;
+        }
         case 'history/toggle': {
           // 工作台 view/title 按钮等 host 入口：payload.open 为布尔时定向开合，否则翻转
           const open = asRecord(payload).open;
@@ -385,6 +518,13 @@ export const useOpsStore = defineStore('ops-chat', {
       this.modelOptions = models.modelOptions;
       this.modelLabel = models.modelLabel;
       this.modelProvider = models.modelProvider;
+      // hasApiKey / usage：字段缺省保持旧值（旧 host 兼容）
+      const meta = absorbHydrateMeta(
+        { hasApiKey: this.hasApiKey, usage: this.usage },
+        snapshot
+      );
+      this.hasApiKey = meta.hasApiKey;
+      this.usage = meta.usage;
       this.pendingApproval = snapshot.pendingApproval ?? null;
       // timeline 是可选字段：只有下发数组时才整体重放，否则保留已收到的 upsert
       if (Array.isArray(snapshot.timeline)) {

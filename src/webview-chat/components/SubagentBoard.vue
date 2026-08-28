@@ -19,25 +19,27 @@ function toggleDetails(taskId: string): void {
 }
 
 const ROLE_ICON: Record<SubagentCard['role'], string> = {
-  investigator: '🔍',
-  executor: '🛠',
-  writer: '✍',
-  verifier: '☑'
+  investigator: 'codicon-search',
+  executor: 'codicon-tools',
+  writer: 'codicon-edit',
+  verifier: 'codicon-verified'
 };
 
-const STATUS_META: Record<SubagentCard['status'], { icon: string; label: string; cls: string }> = {
-  queued: { icon: '…', label: '排队', cls: 'sa__status--pending' },
-  running: { icon: '●', label: '运行中', cls: 'sa__status--running' },
-  ok: { icon: '✓', label: '完成', cls: 'sa__status--ok' },
-  degraded: { icon: '△', label: '降级', cls: 'sa__status--warn' },
-  failed: { icon: '✗', label: '失败', cls: 'sa__status--crit' },
-  aborted: { icon: '⊘', label: '已中止', cls: 'sa__status--pending' }
+type StatusKey = 'saQueued' | 'saRunning' | 'saOk' | 'saDegraded' | 'saFailed' | 'saAborted';
+
+const STATUS_META: Record<SubagentCard['status'], { icon: string; key: StatusKey; cls: string }> = {
+  queued: { icon: 'codicon-circle-outline', key: 'saQueued', cls: 'sa__status--pending' },
+  running: { icon: 'codicon-loading codicon-modifier-spin', key: 'saRunning', cls: 'sa__status--running' },
+  ok: { icon: 'codicon-check', key: 'saOk', cls: 'sa__status--ok' },
+  degraded: { icon: 'codicon-warning', key: 'saDegraded', cls: 'sa__status--warn' },
+  failed: { icon: 'codicon-error', key: 'saFailed', cls: 'sa__status--crit' },
+  aborted: { icon: 'codicon-circle-slash', key: 'saAborted', cls: 'sa__status--pending' }
 };
 
-const RISK_META: Record<SubagentCard['riskCeiling'], { label: string; cls: string }> = {
-  read: { label: '只读', cls: 'ops-risk-read' },
-  write: { label: '可写', cls: 'ops-risk-write' },
-  exec: { label: '可执行', cls: 'ops-risk-exec' }
+const RISK_META: Record<SubagentCard['riskCeiling'], { key: 'riskRead' | 'riskWrite' | 'riskExec'; cls: string }> = {
+  read: { key: 'riskRead', cls: 'ops-risk-read' },
+  write: { key: 'riskWrite', cls: 'ops-risk-write' },
+  exec: { key: 'riskExec', cls: 'ops-risk-exec' }
 };
 
 const active = computed(() =>
@@ -58,10 +60,10 @@ function secs(ms: number): string {
 </script>
 
 <template>
-  <section class="sa" aria-label="子代理面板">
+  <section class="sa" :aria-label="t('subagentBoardAria')">
     <header class="sa__head ops-muted">
-      子代理（{{ props.agents.length }}）
-      <span v-if="active > 0">· {{ active }} 活跃</span>
+      {{ t('subagentCount') }}（{{ props.agents.length }}）
+      <span v-if="active > 0">· {{ active }} {{ t('subagentActive') }}</span>
     </header>
     <div class="sa__cards">
       <article
@@ -69,31 +71,31 @@ function secs(ms: number): string {
         :key="agent.taskId"
         class="sa__card"
         :class="'sa__card--' + agent.status"
+        :title="agent.taskId"
       >
         <div class="sa__row">
-          <span aria-hidden="true">{{ ROLE_ICON[agent.role] ?? '🤖' }}</span>
+          <span class="codicon sa__role" :class="ROLE_ICON[agent.role] ?? 'codicon-hubot'" aria-hidden="true"></span>
           <span class="sa__label">{{ agent.label }}</span>
           <span class="sa__status" :class="statusOf(agent).cls">
-            <span aria-hidden="true">{{ statusOf(agent).icon }}</span>{{ statusOf(agent).label }}
+            <span class="codicon" :class="statusOf(agent).icon" aria-hidden="true"></span>{{ t(statusOf(agent).key) }}
           </span>
           <span class="sa__spacer"></span>
           <span class="ops-badge" :class="RISK_META[agent.riskCeiling].cls">
-            {{ RISK_META[agent.riskCeiling].label }}<template v-if="agent.approvalBriefId"> · {{ agent.approvalBriefId }}</template>
+            {{ t(RISK_META[agent.riskCeiling].key) }}<template v-if="agent.approvalBriefId"> · {{ agent.approvalBriefId }}</template>
           </span>
           <button
             v-if="abortable(agent)"
             type="button"
             class="ops-btn ops-btn--danger sa__abort"
-            :aria-label="'中止子代理 ' + agent.label"
+            :aria-label="t('subagentAbortAria') + ' ' + agent.label"
             @click="store.abortSubagent(agent.taskId)"
           >
-            中止
+            {{ t('subagentAbort') }}
           </button>
         </div>
         <div class="sa__meta ops-muted ops-mono">
           <span>tools {{ agent.toolCalls.used }}/{{ agent.toolCalls.max }}</span>
           <span>wall {{ secs(agent.wallMs.used) }}/{{ secs(agent.wallMs.max) }}</span>
-          <span class="ops-mono">{{ agent.taskId }}</span>
           <button
             v-if="agent.latest"
             type="button"
@@ -102,7 +104,12 @@ function secs(ms: number): string {
             :aria-label="t('subagentDetails') + ' ' + agent.label"
             @click="toggleDetails(agent.taskId)"
           >
-            {{ detailsOpen.has(agent.taskId) ? '▾' : '▸' }} {{ t('subagentDetails') }}
+            <span
+              class="codicon"
+              :class="detailsOpen.has(agent.taskId) ? 'codicon-chevron-down' : 'codicon-chevron-right'"
+              aria-hidden="true"
+            ></span>
+            {{ t('subagentDetails') }}
           </button>
         </div>
         <div
@@ -162,12 +169,23 @@ function secs(ms: number): string {
   flex: 1;
 }
 
+.sa__role {
+  color: var(--ops-muted);
+  font-size: var(--ops-font-sm);
+  flex: 0 0 auto;
+}
+
 .sa__status {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   font-size: calc(var(--ops-font-size) - 2px);
   white-space: nowrap;
+}
+
+.sa__status .codicon,
+.sa__details .codicon {
+  font-size: var(--ops-font-xs);
 }
 
 .sa__status--pending {

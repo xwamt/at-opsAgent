@@ -1,10 +1,12 @@
 /**
  * atOpsAgent.chat WebviewView：
  * - CSP/nonce HTML，脚本 = dist/webview/chat.js
- * - resolve 时发送 hydrate 全量快照
+ * - resolve 时主动 push hydrate；webview 侧另有 hydrate req pull
+ *   （listener 就绪后的握手），push 丢失也能恢复（P0 §2.2）
  * - req 信封路由到 HostController；evt 经 StreamBatcher 合批（40ms 可配）
  */
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import * as vscode from 'vscode';
 import { envelope, type Envelope } from '../protocol';
 import type { HostController } from './hostController';
@@ -12,6 +14,21 @@ import { StreamBatcher } from './streamBatcher';
 import { buildWebviewHtml } from './webviewHtml';
 
 export const CHAT_VIEW_ID = 'atOpsAgent.chat';
+
+/**
+ * webview 静态资源根：dist/webview + media（codicon css/ttf 已 vendored 到
+ * media/codicons/）；node_modules/@vscode/codicons 存在时一并放行，
+ * 兼容未来直接从依赖引用字体的构建形态。
+ */
+export function webviewResourceRoots(extensionUri: vscode.Uri): vscode.Uri[] {
+  const roots = [
+    vscode.Uri.joinPath(extensionUri, 'dist', 'webview'),
+    vscode.Uri.joinPath(extensionUri, 'media')
+  ];
+  const codicons = vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode', 'codicons');
+  if (existsSync(codicons.fsPath)) roots.push(codicons);
+  return roots;
+}
 
 function isRequestEnvelope(value: unknown): value is Envelope {
   if (typeof value !== 'object' || value === null) return false;
@@ -38,10 +55,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       enableScripts: true,
       // ToolCallCard 等经 command:atOpsAgent.openArtifact 深链打开产物。
       enableCommandUris: true,
-      localResourceRoots: [
-        vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview'),
-        vscode.Uri.joinPath(this.extensionUri, 'media')
-      ]
+      localResourceRoots: webviewResourceRoots(this.extensionUri)
     };
     view.webview.html = buildWebviewHtml({
       webview: view.webview,

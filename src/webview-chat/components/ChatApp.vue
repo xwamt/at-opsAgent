@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n';
 import { useOpsStore } from '../store';
 import ApprovalBar from './ApprovalBar.vue';
 import ChatTranscript from './ChatTranscript.vue';
@@ -23,23 +24,23 @@ const store = useOpsStore();
       <div
         v-if="store.providerChips.length > 0 || store.mock"
         class="chat-app__health"
-        aria-label="能力插件状态"
+        :aria-label="t('healthAria')"
       >
         <span
           v-for="p in store.providerChips"
           :key="p.id"
           class="chat-app__health-chip"
           :class="p.connected ? 'chat-app__health-chip--ok' : 'chat-app__health-chip--off'"
-          :title="p.id + ' · ' + p.label + (p.connected ? ' 已连接' : ' 未连接')"
+          :title="p.id + ' · ' + p.label + ' ' + (p.connected ? t('connected') : t('disconnected'))"
         >
-          <span aria-hidden="true">{{ p.connected ? '●' : '○' }}</span>
+          <span
+            class="codicon chat-app__health-icon"
+            :class="p.connected ? 'codicon-circle-filled' : 'codicon-circle-outline'"
+            aria-hidden="true"
+          ></span>
           <span class="chat-app__health-label">{{ p.label }}</span>
         </span>
-        <span
-          v-if="store.mock"
-          class="chat-app__mock"
-          title="未检测到 acquireVsCodeApi，使用本地 mock host"
-        >
+        <span v-if="store.mock" class="chat-app__mock" :title="t('mockHint')">
           mock
         </span>
       </div>
@@ -87,13 +88,17 @@ const store = useOpsStore();
   min-width: 0;
 }
 
-/* 连接态双通道：●/○ 图标 + title 里的「已连接/未连接」文字 */
+/* 连接态双通道：圆点 codicon + title 里的「已连接/未连接」文字 */
 .chat-app__health-chip {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   white-space: nowrap;
   overflow: hidden;
+}
+
+.chat-app__health-icon {
+  font-size: 8px;
 }
 
 .chat-app__health-chip--ok {

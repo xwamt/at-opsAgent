@@ -96,9 +96,9 @@ const refs = computed<RefView[]>(() =>
 </script>
 
 <template>
-  <section class="evidence" :class="'evidence--' + confidence.level">
+  <section class="evidence" :class="'evidence--' + confidence.level" :title="props.note.taskId">
     <header class="evidence__head">
-      <span aria-hidden="true">📌</span>
+      <span class="codicon codicon-pinned evidence__pin" aria-hidden="true"></span>
       <span class="evidence__summary">{{ props.note.summary }}</span>
       <span class="ops-badge evidence__badge" :class="confidence.cls">{{ confidence.label }}</span>
     </header>
@@ -136,7 +136,6 @@ const refs = computed<RefView[]>(() =>
         </template>
       </div>
     </div>
-    <div class="evidence__meta ops-muted ops-mono">{{ props.note.taskId }}</div>
   </section>
 </template>
 
@@ -165,6 +164,12 @@ const refs = computed<RefView[]>(() =>
   align-items: baseline;
   gap: calc(var(--ops-density) * 1.5);
   min-width: 0;
+}
+
+.evidence__pin {
+  color: var(--ops-muted);
+  font-size: var(--ops-font-sm);
+  flex: 0 0 auto;
 }
 
 .evidence__summary {
@@ -210,10 +215,5 @@ const refs = computed<RefView[]>(() =>
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--ops-muted);
-}
-
-.evidence__meta {
-  margin-top: var(--ops-density);
-  font-size: calc(var(--ops-font-size) - 3px);
 }
 </style>

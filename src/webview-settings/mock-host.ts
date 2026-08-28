@@ -13,9 +13,10 @@ function emit(dir: 'evt' | 'res', type: string, payload: unknown, id = ''): void
 const MOCK_MODELS_STATE = {
   providerId: 'internal-gateway',
   baseUrl: 'https://llm.example.internal/v1',
+  api: 'openai-completions',
   modelId: 'qwen3-max',
   modelName: 'Qwen3 Max',
-  thinking: true,
+  reasoning: true,
   hasKey: true,
   modelsPath: '~/.at-series/agent/models.json',
   authPath: '~/.at-series/agent/auth.json',
@@ -23,8 +24,14 @@ const MOCK_MODELS_STATE = {
     'OAuth 由 pi ModelRuntime.login 驱动，凭证写入 ~/.at-series/agent/auth.json (0600)，不进 models.json',
   thinkingFormat: 'qwen',
   supportsDeveloperRole: true,
-  thinkingLevel: 'medium'
+  thinkingLevel: 'medium',
+  roleModels: {
+    investigator: { provider: 'internal-gateway', model: 'qwen-turbo' }
+  }
 };
+
+/** models/fetch 模拟目录（真实 host 走 GET {baseUrl}/models）。 */
+const MOCK_MODEL_CATALOG = ['qwen3-max', 'qwen3-coder', 'qwen-plus', 'qwen-turbo', 'deepseek-v3'];
 
 const MOCK_MCP_TEXT = `${JSON.stringify(
   {
@@ -96,6 +103,20 @@ export function installSettingsMockHost(): void {
         window.setTimeout(
           () => emit('res', 'models/save', { ok: true, state: MOCK_MODELS_STATE }, id),
           200
+        );
+        break;
+      case 'models/test':
+        // 「保存并测试」链路：模拟 1-token 探测成功（E-host 路由到 probeModel）。
+        window.setTimeout(
+          () => emit('res', 'models/test', { ok: true, latencyMs: 842 }, id),
+          400
+        );
+        break;
+      case 'models/fetch':
+        // 「拉取模型列表」：模拟 GET {baseUrl}/models 成功。
+        window.setTimeout(
+          () => emit('res', 'models/fetch', { ok: true, models: MOCK_MODEL_CATALOG }, id),
+          400
         );
         break;
       case 'models/oauth':

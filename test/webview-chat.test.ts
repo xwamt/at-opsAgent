@@ -22,18 +22,23 @@ import {
   confidenceLabel,
   normalizeConfidence
 } from '../src/webview-chat/confidence';
-import { detectLocale, dualConfirmText, normalizeLocale, setLocale, t } from '../src/webview-chat/i18n';
+import { detectLocale, dualConfirmText, normalizeLocale, setLocale, t, tf } from '../src/webview-chat/i18n';
 import {
   absorbChatModelFields,
+  absorbHydrateMeta,
   absorbHydrateModels,
   buildHistoryList,
   buildPromptPayload,
+  buildRenderList,
   buildTimelineStrip,
   buildWelcomeSuggestions,
   canFollowUpFrom,
+  modelsConfigured,
   normalizeChatModels,
   normalizeSessions,
   normalizeTimelineEvent,
+  normalizeUsage,
+  usagePercent,
   visibleUntrustedQuotes,
   type ChatTimelineEvent,
   type SessionMeta
@@ -341,12 +346,32 @@ describe('i18n：欢迎页 / 历史会话新键（zh-CN + en）', () => {
     expect(t('roleUser')).toBe('You');
   });
 
-  it('模型选择器空态引导键（zh-CN + en 同步存在）', () => {
-    expect(t('modelSelectorEmpty')).toBe('去设置添加模型');
+  it('模型选择器空态引导键（zh-CN + en 同步存在；空态是可点按钮）', () => {
+    expect(t('modelSelectorEmpty')).toBe('配置模型');
     expect(t('modelSelectorAria')).toBe('选择模型');
     setLocale('en');
-    expect(t('modelSelectorEmpty')).toBe('Add a model in Settings');
+    expect(t('modelSelectorEmpty')).toBe('Configure model');
     expect(t('modelSelectorAria')).toBe('Choose model');
+  });
+
+  it('P1-13 补漏键：九要素 / 阶段 / 风险 / 工具状态双语齐备', () => {
+    expect(t('elGoal')).toBe('目标');
+    expect(t('elRollback')).toBe('回滚方案');
+    expect(t('stageTriage')).toBe('分诊');
+    expect(t('riskExec')).toBe('执行');
+    expect(t('statusToolError')).toBe('失败');
+    setLocale('en');
+    expect(t('elGoal')).toBe('Goal');
+    expect(t('stageAwaitingApproval')).toBe('Awaiting approval');
+    expect(t('riskExec')).toBe('exec');
+    expect(t('welcomeSetupCta')).toBe('Configure model');
+    expect(t('composerCancel')).toBe('Cancel');
+  });
+
+  it('tf：{count} 占位符替换（只读聚合组头）', () => {
+    expect(tf('toolGroupReads', { count: 4 })).toBe('4 个只读调用');
+    setLocale('en');
+    expect(tf('toolGroupReads', { count: 4 })).toBe('4 read-only calls');
   });
 });
 
@@ -435,5 +460,106 @@ describe('store：模型清单吸收（hydrate 顶层 / capabilities/snapshot）
       { provider: 'custom', model: 'qwen3-max', label: 'Qwen3 Max' }
     ]);
     expect(next.modelLabel).toBe('qwen3-max');
+  });
+});
+
+describe('store：hydrate 元数据吸收（hasApiKey / usage）与未配置判定', () => {
+  const empty = { hasApiKey: null, usage: null };
+
+  it('hasApiKey 只认布尔；缺省保持旧值（旧 host 兼容）', () => {
+    expect(absorbHydrateMeta(empty, { hasApiKey: true }).hasApiKey).toBe(true);
+    expect(absorbHydrateMeta(empty, { hasApiKey: false }).hasApiKey).toBe(false);
+    expect(absorbHydrateMeta(empty, {}).hasApiKey).toBeNull();
+    expect(absorbHydrateMeta({ hasApiKey: true, usage: null }, {}).hasApiKey).toBe(true);
+    expect(absorbHydrateMeta(empty, { hasApiKey: 'yes' }).hasApiKey).toBeNull();
+  });
+
+  it('usage：字段缺省保持旧值；下发对象归一化数值', () => {
+    const next = absorbHydrateMeta(empty, {
+      usage: { inputTokens: 100, contextUsed: 4000, contextWindow: 128_000, costUsd: -1 }
+    });
+    expect(next.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: undefined,
+      contextUsed: 4000,
+      contextWindow: 128_000,
+      costUsd: undefined
+    });
+    const kept = absorbHydrateMeta({ hasApiKey: null, usage: next.usage }, {});
+    expect(kept.usage).toBe(next.usage);
+  });
+
+  it('normalizeUsage：无任何数值字段 ⇒ null；usagePercent 0–100 取整', () => {
+    expect(normalizeUsage({})).toBeNull();
+    expect(normalizeUsage('garbage')).toBeNull();
+    expect(usagePercent(normalizeUsage({ contextUsed: 46_500, contextWindow: 128_000 }))).toBe(36);
+    expect(usagePercent(normalizeUsage({ contextUsed: 200, contextWindow: 100 }))).toBe(100);
+    expect(usagePercent(normalizeUsage({ inputTokens: 5 }))).toBeNull();
+    expect(usagePercent(null)).toBeNull();
+  });
+
+  it('modelsConfigured：无模型或 hasApiKey===false ⇒ 未配置；null 不拦截', () => {
+    const models = [{ provider: 'custom', model: 'qwen3-max' }];
+    expect(modelsConfigured([], null)).toBe(false);
+    expect(modelsConfigured(models, false)).toBe(false);
+    expect(modelsConfigured(models, null)).toBe(true);
+    expect(modelsConfigured(models, true)).toBe(true);
+  });
+});
+
+describe('ChatTranscript 渲染列表：连续只读工具聚合（buildRenderList）', () => {
+  const readTool = (id: string, status = 'ok' as const): TranscriptItem => ({
+    kind: 'tool',
+    id,
+    call: { name: `read-${id}`, risk: 'read', status }
+  });
+
+  it('连续 ≥3 个已结束只读工具折叠为 toolGroup（组 id 取首条）', () => {
+    const items: TranscriptItem[] = [
+      { kind: 'user', id: 'u1', text: '查一下' },
+      readTool('t1'),
+      readTool('t2'),
+      readTool('t3'),
+      { kind: 'assistant', id: 'a1', text: '结论', streaming: false }
+    ];
+    const out = buildRenderList(items);
+    expect(out.map((e) => e.kind)).toEqual(['item', 'toolGroup', 'item']);
+    const group = out[1];
+    expect(group.kind).toBe('toolGroup');
+    if (group.kind === 'toolGroup') {
+      expect(group.id).toBe('toolgroup-t1');
+      expect(group.items.map((i) => i.id)).toEqual(['t1', 't2', 't3']);
+    }
+  });
+
+  it('少于 3 个不聚合，原样透传', () => {
+    const items: TranscriptItem[] = [readTool('t1'), readTool('t2')];
+    expect(buildRenderList(items).map((e) => e.kind)).toEqual(['item', 'item']);
+  });
+
+  it('write/exec、running、error 工具打断聚合并保持单卡可见', () => {
+    const items: TranscriptItem[] = [
+      readTool('t1'),
+      readTool('t2'),
+      { kind: 'tool', id: 'w1', call: { name: 'write', risk: 'write', status: 'ok' } },
+      readTool('t3'),
+      readTool('t4', 'error' as never),
+      readTool('t5')
+    ];
+    const out = buildRenderList(items);
+    // t1/t2 不足 3 → 单卡；w1 单卡；t3 单卡；t4(error) 单卡；t5 单卡
+    expect(out.every((e) => e.kind === 'item')).toBe(true);
+    expect(out).toHaveLength(6);
+  });
+
+  it('running 只读工具不进组（保持实时可见）', () => {
+    const items: TranscriptItem[] = [
+      readTool('t1'),
+      readTool('t2'),
+      readTool('t3'),
+      { kind: 'tool', id: 't4', call: { name: 'live', risk: 'read', status: 'running' } }
+    ];
+    const out = buildRenderList(items);
+    expect(out.map((e) => e.kind)).toEqual(['toolGroup', 'item']);
   });
 });

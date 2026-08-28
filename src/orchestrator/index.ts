@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import type { SubagentCard } from '../protocol';
 import { hashCommandSet } from '../policy';
 import {
+  STAGE_TRANSITIONS,
   assertTransition,
   mergeEvidence as mergeEvidenceNotes,
   type ApprovalBrief,
@@ -54,7 +55,11 @@ export type TaskSpec = {
     budget: { maxToolCalls: number; maxWallMs: number };
     payloadCaps?: Record<string, unknown>;
   };
-  approvalToken?: { briefId: string; commandSetSha256: string } | null;
+  /**
+   * Executor 的令牌引用：briefId 指向已批 9 要素简报；commandSetSha256
+   * 由 host 在批准时计算并绑定（模型/子代理不自行计算哈希，故可缺省）。
+   */
+  approvalToken?: { briefId: string; commandSetSha256?: string } | null;
   plan?: Array<{
     step: number;
     kind: 'backup' | 'verifyBackup' | 'change' | 'readback' | 'verify' | 'other';
@@ -202,6 +207,76 @@ export function createOrchestrator(options: CreateOrchestratorOptions) {
     const from = run.stage;
     run.stage = stage;
     emit({ type: 'playbook/stage', runId: run.id, playbookId: run.playbookId, from, stage });
+    return run;
+  }
+
+  /** run 所属 playbook 声明的阶段集合（advance/close 的合法性约束）。 */
+  function declaredStagesOf(run: PlaybookRun): Set<StageId> {
+    return new Set<StageId>(requirePlaybook(run.playbookId).stages.map((s) => s.id));
+  }
+
+  /** 当前阶段在该 playbook 内合法的下一步（全局迁移表 ∩ yaml 声明阶段）。 */
+  function legalNextStages(runOrId: PlaybookRun | string): StageId[] {
+    const run = resolveRun(runOrId);
+    const declared = declaredStagesOf(run);
+    return STAGE_TRANSITIONS[run.stage].filter((stage) => declared.has(stage));
+  }
+
+  /**
+   * 推进一步（P1-7 ops_advance_stage 的 host 接线点）：
+   * - stage 给定 → 等价 advanceTo（非法迁移照常 throw）；
+   * - stage 缺省 → 取合法下一步的第一项（迁移表顺序即主路径顺序，如
+   *   synthesizing → reporting 优先于 awaitingApproval）；已是终态或
+   *   无合法下一步时 throw IllegalStageTransitionError 语义的 Error。
+   */
+  function advanceStage(runOrId: PlaybookRun | string, stage?: StageId): PlaybookRun {
+    const run = resolveRun(runOrId);
+    if (stage !== undefined) return advanceTo(run, stage);
+    const next = legalNextStages(run)[0];
+    if (next === undefined) {
+      throw new Error(
+        `阶段 ${run.stage} 没有合法的下一步（已是终态或 playbook 未声明后续阶段），无法推进`
+      );
+    }
+    return advanceTo(run, next);
+  }
+
+  /**
+   * 收尾（P1-7 ops_close_playbook 的 host 接线点）：沿全局迁移表在该
+   * playbook 声明的阶段集合内走 BFS 最短路推进到 closed，每一步都经
+   * advanceTo（阶段事件逐步发出，状态机不被跳过）。已 closed 幂等返回；
+   * 不可达 closed（yaml 缺 closed 或路径断裂）时 throw。
+   */
+  function closeRun(runOrId: PlaybookRun | string): PlaybookRun {
+    const run = resolveRun(runOrId);
+    if (run.stage === 'closed') return run;
+    const declared = declaredStagesOf(run);
+    // BFS：找 run.stage → closed 的最短合法路径。
+    const cameFrom = new Map<StageId, StageId>();
+    const queue: StageId[] = [run.stage];
+    const seen = new Set<StageId>([run.stage]);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current === 'closed') break;
+      for (const next of STAGE_TRANSITIONS[current]) {
+        if (!declared.has(next) || seen.has(next)) continue;
+        seen.add(next);
+        cameFrom.set(next, current);
+        queue.push(next);
+      }
+    }
+    if (!seen.has('closed')) {
+      throw new Error(
+        `playbook ${run.playbookId} 从阶段 ${run.stage} 无法到达 closed（yaml 未声明必要阶段），无法收尾`
+      );
+    }
+    const path: StageId[] = [];
+    for (let stage: StageId | undefined = 'closed'; stage !== undefined && stage !== run.stage; stage = cameFrom.get(stage)) {
+      path.unshift(stage);
+    }
+    for (const stage of path) {
+      advanceTo(run, stage);
+    }
     return run;
   }
 
@@ -433,6 +508,9 @@ export function createOrchestrator(options: CreateOrchestratorOptions) {
     startPlaybook,
     getRun,
     advanceTo,
+    advanceStage,
+    legalNextStages,
+    closeRun,
     desiredSelect,
     desiredEscalateSelect,
     recordSelect,

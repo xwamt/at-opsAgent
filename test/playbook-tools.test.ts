@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ADVANCE_STAGE_TOOL_NAME,
+  CLOSE_PLAYBOOK_TOOL_NAME,
   LIST_PLAYBOOKS_TOOL_NAME,
   START_PLAYBOOK_TOOL_NAME,
   createPlaybookTools,
   type PlaybookCatalogEntry,
+  type PlaybookStageResult,
   type PlaybookStartResult,
   type PlaybookToolHost
 } from '../src/runtime/playbook-tools';
@@ -43,10 +46,15 @@ function toolByName(specs: ReturnType<typeof createPlaybookTools>, name: string)
 }
 
 describe('createPlaybookTools', () => {
-  it('注册 ops_list_playbooks 与 ops_start_playbook 两个工具（有无 host 都注册）', () => {
+  it('注册 list/start/advance/close 四个工具（有无 host 都注册）', () => {
     for (const host of [makeHost().host, undefined]) {
       const names = createPlaybookTools(host).map((s) => s.name);
-      expect(names).toEqual([LIST_PLAYBOOKS_TOOL_NAME, START_PLAYBOOK_TOOL_NAME]);
+      expect(names).toEqual([
+        LIST_PLAYBOOKS_TOOL_NAME,
+        START_PLAYBOOK_TOOL_NAME,
+        ADVANCE_STAGE_TOOL_NAME,
+        CLOSE_PLAYBOOK_TOOL_NAME
+      ]);
     }
   });
 
@@ -54,6 +62,8 @@ describe('createPlaybookTools', () => {
     expect(discoveryToolNames).toHaveLength(5);
     expect(discoveryToolNames).not.toContain(LIST_PLAYBOOKS_TOOL_NAME);
     expect(discoveryToolNames).not.toContain(START_PLAYBOOK_TOOL_NAME);
+    expect(discoveryToolNames).not.toContain(ADVANCE_STAGE_TOOL_NAME);
+    expect(discoveryToolNames).not.toContain(CLOSE_PLAYBOOK_TOOL_NAME);
   });
 
   it('list 返回 host 目录与「由你决定」提示', async () => {
@@ -145,5 +155,63 @@ describe('createPlaybookTools', () => {
     expect(start.description).toContain('不要因为');
     expect(start.description).toContain('不要叠加启动');
     expect(start.parameters).toMatchObject({ type: 'object', required: ['playbookId'] });
+  });
+
+  it('P1-7 advance：委托 host.advance（trim 后 stage / 缺省 undefined），结果透传', async () => {
+    const advanceCalls: Array<string | undefined> = [];
+    const { host } = makeHost({
+      advance: (stage?: string): PlaybookStageResult => {
+        advanceCalls.push(stage);
+        return { ok: true, stage: stage ?? 'mitigating' };
+      }
+    });
+    const spec = toolByName(createPlaybookTools(host), ADVANCE_STAGE_TOOL_NAME);
+
+    const auto = JSON.parse(await spec.execute({})) as PlaybookStageResult;
+    expect(auto).toEqual({ ok: true, stage: 'mitigating' });
+    const explicit = JSON.parse(await spec.execute({ stage: '  verifying  ' })) as PlaybookStageResult;
+    expect(explicit).toEqual({ ok: true, stage: 'verifying' });
+    expect(advanceCalls).toEqual([undefined, 'verifying']);
+
+    // 非法迁移：host 返回 ok=false，原样透传（不 throw）
+    const { host: strict } = makeHost({
+      advance: () => ({ ok: false, error: '非法迁移：investigating 只能进入 mitigating/closed' })
+    });
+    const rejected = JSON.parse(
+      await toolByName(createPlaybookTools(strict), ADVANCE_STAGE_TOOL_NAME).execute({ stage: 'closed' })
+    ) as PlaybookStageResult;
+    expect(rejected.ok).toBe(false);
+    expect(rejected.error).toContain('非法迁移');
+  });
+
+  it('P1-7 close：委托 host.close，结果透传', async () => {
+    let closes = 0;
+    const { host } = makeHost({
+      close: (): PlaybookStageResult => {
+        closes += 1;
+        return { ok: true, stage: 'closed' };
+      }
+    });
+    const spec = toolByName(createPlaybookTools(host), CLOSE_PLAYBOOK_TOOL_NAME);
+    const parsed = JSON.parse(await spec.execute({})) as PlaybookStageResult;
+    expect(parsed).toEqual({ ok: true, stage: 'closed' });
+    expect(closes).toBe(1);
+  });
+
+  it('advance/close：host 缺席或未实现可选方法时返回 ok=false 说明，不抛错', async () => {
+    // host 完全缺席
+    for (const name of [ADVANCE_STAGE_TOOL_NAME, CLOSE_PLAYBOOK_TOOL_NAME]) {
+      const spec = toolByName(createPlaybookTools(undefined), name);
+      const parsed = JSON.parse(await spec.execute({})) as { ok: boolean; error: string };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error).toContain('未接线');
+    }
+    // 旧 host：只有 list/start，没有 advance/close（可选方法）
+    const legacy = makeHost().host;
+    for (const name of [ADVANCE_STAGE_TOOL_NAME, CLOSE_PLAYBOOK_TOOL_NAME]) {
+      const spec = toolByName(createPlaybookTools(legacy), name);
+      const parsed = JSON.parse(await spec.execute({})) as { ok: boolean };
+      expect(parsed.ok).toBe(false);
+    }
   });
 });

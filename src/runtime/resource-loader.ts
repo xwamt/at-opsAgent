@@ -105,6 +105,11 @@ export interface OpsCustomToolSpec {
   readonly label: string;
   readonly description: string;
   readonly parameters: Record<string, unknown>;
+  /**
+   * 声明式风险级别（policy 闸门用；缺省由 host 决定，ops_* 元工具通常按
+   * read 处理）。外部 MCP 代理工具见 mcp-client 的 RISK_BY_PROXY_TOOL。
+   */
+  readonly risk?: 'read' | 'write' | 'exec';
   execute(args: Record<string, unknown>): Promise<string>;
 }
 

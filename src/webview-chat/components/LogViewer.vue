@@ -55,7 +55,7 @@ function openInEditor(): void {
 <template>
   <section class="logv">
     <header v-if="props.title" class="logv__title ops-muted ops-mono">{{ props.title }}</header>
-    <div v-if="lines.length" class="logv__block" role="log" aria-label="日志输出">
+    <div v-if="lines.length" class="logv__block" role="log" :aria-label="t('logAria')">
       <div
         v-for="line in lines"
         :key="line.n"
@@ -66,7 +66,7 @@ function openInEditor(): void {
         <span class="logv__text">{{ line.text }}</span>
       </div>
     </div>
-    <div v-else class="logv__empty ops-muted">（无输出）</div>
+    <div v-else class="logv__empty ops-muted">{{ t('logEmpty') }}</div>
     <div v-if="clipped" class="logv__truncated">
       <button
         v-if="props.uri"

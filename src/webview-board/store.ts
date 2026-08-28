@@ -32,7 +32,37 @@ export interface TimelineEventView {
   host?: TimelineHostView;
 }
 
+/** severity 过滤 pill 的取值：all = 不过滤。 */
+export type BoardSeverityFilter = 'all' | TimelineEventView['severity'];
+
+/** 日期分组（倒序时间线按本地日历日切段；label 由组件按 locale 渲染）。 */
+export interface TimelineDayGroup {
+  /** 本地日历日 key，如 2026-08-28。 */
+  key: string;
+  events: TimelineEventView[];
+}
+
 type AnyRecord = Record<string, unknown>;
+
+function dayKeyOf(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** 搜索命中：标题 / 详情 / 事故 id / kind / status / 流水线 job / 主机标签，全部小写包含。 */
+function matchesQuery(event: TimelineEventView, query: string): boolean {
+  const haystack = [
+    event.title,
+    event.detail,
+    event.incidentId,
+    event.kind,
+    event.status,
+    event.pipeline?.job,
+    event.host?.label
+  ];
+  return haystack.some((field) => field !== undefined && field.toLowerCase().includes(query));
+}
 
 function asRecord(value: unknown): AnyRecord {
   return typeof value === 'object' && value !== null ? (value as AnyRecord) : {};
@@ -131,16 +161,68 @@ let reqSeq = 0;
 export const useBoardStore = defineStore('ops-board', {
   state: () => ({
     events: [] as TimelineEventView[],
-    mock: false
+    mock: false,
+    severity: 'all' as BoardSeverityFilter,
+    query: ''
   }),
 
   getters: {
     sorted(state): TimelineEventView[] {
       return [...state.events].sort((a, b) => b.ts - a.ts);
+    },
+
+    /** pill 计数按全量事件算（不受当前过滤影响，方便看分布）。 */
+    severityCounts(state): Record<TimelineEventView['severity'], number> {
+      const counts: Record<TimelineEventView['severity'], number> = { info: 0, warn: 0, crit: 0 };
+      for (const event of state.events) {
+        counts[event.severity] += 1;
+      }
+      return counts;
+    },
+
+    /** severity pill + 搜索框叠加过滤后的倒序时间线。 */
+    filtered(state): TimelineEventView[] {
+      const query = state.query.trim().toLowerCase();
+      let list: TimelineEventView[] = this.sorted;
+      if (state.severity !== 'all') {
+        list = list.filter((event) => event.severity === state.severity);
+      }
+      if (query) {
+        list = list.filter((event) => matchesQuery(event, query));
+      }
+      return list;
+    },
+
+    /** filtered 按本地日历日切段（已倒序，只需相邻归并），供 sticky 分组头。 */
+    groups(): TimelineDayGroup[] {
+      const out: TimelineDayGroup[] = [];
+      for (const event of this.filtered) {
+        const key = dayKeyOf(event.ts);
+        const last = out[out.length - 1];
+        if (last && last.key === key) {
+          last.events.push(event);
+        } else {
+          out.push({ key, events: [event] });
+        }
+      }
+      return out;
     }
   },
 
   actions: {
+    setSeverity(next: BoardSeverityFilter): void {
+      this.severity = next;
+    },
+
+    setQuery(next: string): void {
+      this.query = next;
+    },
+
+    clearFilters(): void {
+      this.severity = 'all';
+      this.query = '';
+    },
+
     post(type: string, payload: unknown = {}): void {
       reqSeq += 1;
       const envelope: Envelope = {

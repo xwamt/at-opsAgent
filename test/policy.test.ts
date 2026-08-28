@@ -142,6 +142,81 @@ describe('policy · 角色风险顶', () => {
   });
 });
 
+describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () => {
+  it('read 工具命中名单 → 直接放行（needSessionApproval=false）', () => {
+    const decision = evaluatePolicy(
+      ctx({
+        toolName: 'grafana_query_prometheus',
+        risk: 'read',
+        sessionReadAllowlist: ['grafana_query_prometheus', 'loki_query_range']
+      })
+    );
+    expect(decision).toEqual({ block: false, needSessionApproval: false });
+  });
+
+  it('名单只对 read 生效：write/exec 双闸不受影响', () => {
+    // write 命中名单也照常需要会话审批
+    const write = evaluatePolicy(
+      ctx({
+        toolName: 'nacos_publish_config',
+        pluginId: 'at.nacos',
+        risk: 'write',
+        sessionReadAllowlist: ['nacos_publish_config']
+      })
+    );
+    expect(write.block).toBe(false);
+    if (!write.block) expect(write.needSessionApproval).toBe(true);
+
+    // exec 的执行闸（executor 无 approval）同样照常拒绝
+    expectBlocked(
+      evaluatePolicy(
+        ctx({
+          toolName: 'terminal_run_command',
+          role: 'executor',
+          risk: 'exec',
+          approval: null,
+          sessionReadAllowlist: ['terminal_run_command']
+        })
+      ),
+      OPS_ERROR.APPROVAL_REQUIRED
+    );
+  });
+
+  it('名单不影响角色硬顶与选择纪律（先于名单检查）', () => {
+    // writer 的业务工具禁令不因名单放行
+    expectBlocked(
+      evaluatePolicy(
+        ctx({
+          toolName: 'grafana_list_dashboards',
+          role: 'writer',
+          risk: 'read',
+          sessionReadAllowlist: ['grafana_list_dashboards']
+        })
+      ),
+      OPS_ERROR.RISK_CEILING
+    );
+    // payload 上限同样先于名单
+    expectBlocked(
+      evaluatePolicy(
+        ctx({
+          toolName: 'grafana_query_loki',
+          args: { limit: 500 },
+          sessionReadAllowlist: ['grafana_query_loki']
+        })
+      ),
+      OPS_ERROR.PAYLOAD_CAP
+    );
+  });
+
+  it('未命中名单 / 名单缺省时 read 仍照常放行（现状 read 免审）', () => {
+    expect(evaluatePolicy(ctx({ sessionReadAllowlist: [] }))).toEqual({
+      block: false,
+      needSessionApproval: false
+    });
+    expect(evaluatePolicy(ctx({}))).toEqual({ block: false, needSessionApproval: false });
+  });
+});
+
 describe('policy · 会话审批', () => {
   it('at.database write 即使 sessionRequiredFor=exec-only 也强制会话审批', () => {
     const decision = evaluatePolicy(

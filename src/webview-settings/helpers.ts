@@ -1,6 +1,6 @@
 /**
  * webview-settings 纯 TS helper：页签清单、配置 diff、密钥打码/还原、
- * mcp.json 解析、models 保存载荷、hydrate 快照归一化。
+ * mcp.json 解析、models 保存载荷、provider 预设、hydrate 快照归一化。
  *
  * 约束：不引 DOM / vue / vscode（root tsconfig 无 DOM lib，node 单测直接 import；
  * host 侧 settingsView 也可以复用 restoreRedactedSecrets 等纯函数）。
@@ -62,6 +62,8 @@ export interface OpsConfig {
   'plugins.autoEnableNew': boolean;
   'approval.sessionRequiredFor': SessionApprovalScope;
   'approval.dedupePluginModal': boolean;
+  /** P1-9：会话内免审的只读工具名（批准只读工具时勾「本会话不再问」也会写入）。 */
+  'approval.sessionReadAllowlist': string[];
   'models.defaultThinkingLevel': ThinkingLevel;
   'models.toolCallPromptFallback': boolean;
   'workspaceShell.enabled': boolean;
@@ -75,6 +77,7 @@ export const CONFIG_DEFAULTS: OpsConfig = {
   'plugins.autoEnableNew': true,
   'approval.sessionRequiredFor': 'write-exec',
   'approval.dedupePluginModal': false,
+  'approval.sessionReadAllowlist': [],
   'models.defaultThinkingLevel': 'medium',
   'models.toolCallPromptFallback': true,
   'workspaceShell.enabled': false,
@@ -86,7 +89,7 @@ export type ConfigKey = keyof OpsConfig;
 
 export interface ConfigFieldMeta {
   key: ConfigKey;
-  kind: 'enum' | 'boolean' | 'number';
+  kind: 'enum' | 'boolean' | 'number' | 'list';
   options?: readonly string[];
   min?: number;
   max?: number;
@@ -94,7 +97,7 @@ export interface ConfigFieldMeta {
   descKey: string;
 }
 
-/** GeneralTab 渲染顺序即此清单顺序。 */
+/** GeneralTab 渲染顺序即此清单顺序。标签走 i18n 人话文案，不再展示裸配置键。 */
 export const CONFIG_FIELDS: readonly ConfigFieldMeta[] = [
   {
     key: 'discovery.mode',
@@ -128,6 +131,12 @@ export const CONFIG_FIELDS: readonly ConfigFieldMeta[] = [
     kind: 'boolean',
     labelKey: 'cfgDedupePluginModal',
     descKey: 'cfgDedupePluginModalDesc'
+  },
+  {
+    key: 'approval.sessionReadAllowlist',
+    kind: 'list',
+    labelKey: 'cfgSessionReadAllowlist',
+    descKey: 'cfgSessionReadAllowlistDesc'
   },
   {
     key: 'models.defaultThinkingLevel',
@@ -210,6 +219,23 @@ function toNum(value: unknown, fallback: number, min?: number, max?: number): nu
   return out;
 }
 
+/** 字符串数组归一：数组按元素收，字符串按逗号/换行切（GeneralTab 输入框共用）。 */
+export function toStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(/[,\n]/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  }
+  return [];
+}
+
 export function normalizeConfig(raw: unknown): OpsConfig {
   const rec = asRecord(raw);
   const get = (key: ConfigKey): unknown => lookupConfigValue(rec, key);
@@ -223,6 +249,7 @@ export function normalizeConfig(raw: unknown): OpsConfig {
       'write-exec'
     ),
     'approval.dedupePluginModal': toBool(get('approval.dedupePluginModal'), false),
+    'approval.sessionReadAllowlist': toStringList(get('approval.sessionReadAllowlist')),
     'models.defaultThinkingLevel': toEnum(get('models.defaultThinkingLevel'), THINKING_LEVELS, 'medium'),
     'models.toolCallPromptFallback': toBool(get('models.toolCallPromptFallback'), true),
     'workspaceShell.enabled': toBool(get('workspaceShell.enabled'), false),
@@ -231,13 +258,21 @@ export function normalizeConfig(raw: unknown): OpsConfig {
   };
 }
 
+/** 配置值等价判断（string[] 按元素比较，其余全等）。 */
+function configValueEquals(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((entry, i) => entry === b[i]);
+  }
+  return a === b;
+}
+
 /**
  * 配置 diff：只保留改动键。无改动返回 null（保存按钮置灰依据）。
  */
 export function buildConfigPatch(saved: OpsConfig, edited: OpsConfig): Partial<OpsConfig> | null {
   const patch: AnyRecord = {};
   for (const field of CONFIG_FIELDS) {
-    if (saved[field.key] !== edited[field.key]) {
+    if (!configValueEquals(saved[field.key], edited[field.key])) {
       patch[field.key] = edited[field.key];
     }
   }
@@ -324,12 +359,23 @@ export function restoreRedactedSecrets(edited: unknown, original: unknown): unkn
 
 // ── mcp.json 解析（servers / mcpServers；AT Series hub 条目提示跳过） ──────
 
+/** McpTab 卡片列表条目（P1-12：server 卡片化，textarea 收进高级折叠）。 */
+export interface McpServerCard {
+  name: string;
+  /** command + args 或 url 的一行摘要（渲染前文本已打码）。 */
+  summary: string;
+  /** 命中 AT Series 去重规则（内置 HubHost 覆盖，保存后不会被拉起）。 */
+  skipped: boolean;
+}
+
 export interface McpParseResult {
   ok: boolean;
   error?: string;
   serverNames: string[];
   /** 命中 AT Series 去重规则（内置 HubHost 覆盖，保存后不会被拉起）。 */
   skippedAtSeries: string[];
+  /** 卡片视图数据（与 serverNames 同序）。 */
+  servers: McpServerCard[];
 }
 
 /** 与 src/mcp-client/atSeriesDedup 同规则的本地实现（webview 不打包 node 依赖）。 */
@@ -347,10 +393,23 @@ function isAtSeriesHubEntry(name: string, entry: AnyRecord): boolean {
   return candidates.some((raw) => raw.replace(/\\/g, '/').includes('.at-series/mcp/hub.js'));
 }
 
+function mcpEntrySummary(entry: AnyRecord): string {
+  if (typeof entry.command === 'string' && entry.command.length > 0) {
+    const args = Array.isArray(entry.args)
+      ? entry.args.filter((a): a is string => typeof a === 'string')
+      : [];
+    return [entry.command, ...args].join(' ');
+  }
+  if (typeof entry.url === 'string' && entry.url.length > 0) {
+    return entry.url;
+  }
+  return '';
+}
+
 export function parseMcpConfig(text: string): McpParseResult {
   const trimmed = text.trim();
   if (trimmed.length === 0) {
-    return { ok: true, serverNames: [], skippedAtSeries: [] };
+    return { ok: true, serverNames: [], skippedAtSeries: [], servers: [] };
   }
   let root: unknown;
   try {
@@ -360,18 +419,22 @@ export function parseMcpConfig(text: string): McpParseResult {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
       serverNames: [],
-      skippedAtSeries: []
+      skippedAtSeries: [],
+      servers: []
     };
   }
   const rec = asRecord(root);
   const source = rec.servers ?? rec.mcpServers;
   const serverNames: string[] = [];
   const skippedAtSeries: string[] = [];
+  const servers: McpServerCard[] = [];
   const inspect = (name: string, entry: AnyRecord): void => {
     serverNames.push(name);
-    if (isAtSeriesHubEntry(name, entry)) {
+    const skipped = isAtSeriesHubEntry(name, entry);
+    if (skipped) {
       skippedAtSeries.push(name);
     }
+    servers.push({ name, summary: mcpEntrySummary(entry), skipped });
   };
   if (Array.isArray(source)) {
     source.forEach((entry, i) => {
@@ -383,20 +446,144 @@ export function parseMcpConfig(text: string): McpParseResult {
       inspect(name, asRecord(entry));
     }
   }
-  return { ok: true, serverNames, skippedAtSeries };
+  return { ok: true, serverNames, skippedAtSeries, servers };
 }
+
+// ── Provider 预设（P0-B / P1-1：选完自动预填 baseUrl / api / compat） ──────
+
+export type ThinkingFormat = 'default' | 'deepseek' | 'qwen' | 'zai';
+
+export const THINKING_FORMATS = ['default', 'deepseek', 'qwen', 'zai'] as const;
+
+export interface ProviderPreset {
+  /** models.json providers 键（openai-compatible 自定义时可被用户改写）。 */
+  id: string;
+  /** settings i18n 键。 */
+  labelKey:
+    | 'pInternalGateway'
+    | 'pOpenai'
+    | 'pAnthropic'
+    | 'pDeepseek'
+    | 'pQwen'
+    | 'pCustom';
+  baseUrl: string;
+  api: string;
+  thinkingFormat: ThinkingFormat;
+  /** 支持浏览器 OAuth 登录（key 可留空，凭证进 auth.json）。 */
+  oauth?: boolean;
+  /** 常见模型 id（datalist 建议项；「拉取模型列表」成功后被真实目录取代）。 */
+  models: readonly string[];
+}
+
+export const CUSTOM_PROVIDER_ID = 'openai-compatible';
+
+export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
+  {
+    id: 'internal-gateway',
+    labelKey: 'pInternalGateway',
+    baseUrl: 'https://llm.example.internal/v1',
+    api: 'openai-completions',
+    thinkingFormat: 'default',
+    models: ['qwen3-max', 'deepseek-v3']
+  },
+  {
+    id: 'openai',
+    labelKey: 'pOpenai',
+    baseUrl: 'https://api.openai.com/v1',
+    api: 'openai-completions',
+    thinkingFormat: 'default',
+    models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini']
+  },
+  {
+    id: 'anthropic',
+    labelKey: 'pAnthropic',
+    baseUrl: 'https://api.anthropic.com',
+    api: 'anthropic-messages',
+    thinkingFormat: 'default',
+    oauth: true,
+    models: ['claude-sonnet-4-5', 'claude-opus-4-1']
+  },
+  {
+    id: 'deepseek',
+    labelKey: 'pDeepseek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    api: 'openai-completions',
+    thinkingFormat: 'deepseek',
+    models: ['deepseek-chat', 'deepseek-reasoner']
+  },
+  {
+    id: 'qwen',
+    labelKey: 'pQwen',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    api: 'openai-completions',
+    thinkingFormat: 'qwen',
+    models: ['qwen3-max', 'qwen-plus', 'qwen-turbo']
+  },
+  {
+    id: CUSTOM_PROVIDER_ID,
+    labelKey: 'pCustom',
+    baseUrl: '',
+    api: 'openai-completions',
+    thinkingFormat: 'default',
+    models: []
+  }
+] as const;
+
+export function providerPresetById(id: string): ProviderPreset | undefined {
+  return PROVIDER_PRESETS.find((preset) => preset.id === id);
+}
+
+/** 表单的 providerId 归到下拉值：预设 id 直接用，未知 id 视为自定义。 */
+export function presetIdForProvider(providerId: string): string {
+  return providerPresetById(providerId) ? providerId : CUSTOM_PROVIDER_ID;
+}
+
+/** OAuth 登录常见 provider id（P2-5：下拉 + 自定义，不再默认 internal-gateway）。 */
+export const OAUTH_PROVIDER_IDS: readonly string[] = [
+  'anthropic',
+  'openai',
+  'google',
+  'github-copilot'
+];
 
 // ── Models 表单（对齐 src/host/modelsView.ts 的 ModelsFormState / SavePayload） ──
 
-export const THINKING_FORMATS = ['default', 'deepseek', 'qwen', 'zai'] as const;
-export type ThinkingFormat = (typeof THINKING_FORMATS)[number];
+/** per-角色模型映射的角色集合（与 host modelsView.ROLE_MODEL_ROLES 同源）。 */
+export const ROLE_MODEL_ROLES = ['investigator', 'executor', 'writer', 'verifier'] as const;
+export type RoleModelRole = (typeof ROLE_MODEL_ROLES)[number];
+/** UI 绑定用固定形状；空串 = 跟随当前模型。 */
+export type RoleModelsForm = Record<RoleModelRole, { provider: string; model: string }>;
+
+export function emptyRoleModels(): RoleModelsForm {
+  return {
+    investigator: { provider: '', model: '' },
+    executor: { provider: '', model: '' },
+    writer: { provider: '', model: '' },
+    verifier: { provider: '', model: '' }
+  };
+}
+
+/** host 下发的 roleModels（partial map）→ UI 固定形状。 */
+export function normalizeRoleModelsForm(raw: unknown): RoleModelsForm {
+  const rec = asRecord(raw);
+  const out = emptyRoleModels();
+  for (const role of ROLE_MODEL_ROLES) {
+    const entry = asRecord(rec[role]);
+    if (typeof entry.provider === 'string') out[role].provider = entry.provider.trim();
+    if (typeof entry.model === 'string') out[role].model = entry.model.trim();
+  }
+  return out;
+}
 
 export interface ModelsForm {
   providerId: string;
   baseUrl: string;
+  /** provider.api（预设填充；openai-completions / anthropic-messages…）。 */
+  api: string;
   modelId: string;
   modelName: string;
-  thinking: boolean;
+  /** 模型条目 reasoning 字段（pi schema；旧 thinking 由归一化收编）。 */
+  reasoning: boolean;
   /** host 只下发「是否已存 key」；key 本体绝不回显。 */
   hasKey: boolean;
   modelsPath: string;
@@ -405,19 +592,23 @@ export interface ModelsForm {
   thinkingFormat: ThinkingFormat;
   supportsDeveloperRole: boolean;
   thinkingLevel: ThinkingLevel;
-  /** 仅上行字段：'' = 保持现有 key；发送后立即清空。 */
+  /** per-角色模型映射（P2：Investigator 便宜模型 / Writer、Verifier 强模型）。 */
+  roleModels: RoleModelsForm;
+  /** 仅上行字段：发送后立即清空。 */
   apiKey: string;
-  /** OAuth 页输入（默认取 providerId）。 */
+  /** OAuth 页选择（常见 provider id 下拉；'custom' 时用 oauthProviderCustom）。 */
   oauthProvider: string;
+  oauthProviderCustom: string;
 }
 
 export function emptyModelsForm(): ModelsForm {
   return {
     providerId: '',
     baseUrl: '',
+    api: 'openai-completions',
     modelId: '',
     modelName: '',
-    thinking: false,
+    reasoning: false,
     hasKey: false,
     modelsPath: '',
     authPath: '',
@@ -425,14 +616,16 @@ export function emptyModelsForm(): ModelsForm {
     thinkingFormat: 'default',
     supportsDeveloperRole: true,
     thinkingLevel: 'medium',
+    roleModels: emptyRoleModels(),
     apiKey: '',
-    oauthProvider: ''
+    oauthProvider: OAUTH_PROVIDER_IDS[0],
+    oauthProviderCustom: ''
   };
 }
 
 /**
  * models/state 载荷归一：apiKey 无论 host 发什么都强制置空（永不回显）；
- * previous 提供时保留用户已输入的 oauthProvider。
+ * reasoning 兼容旧字段名 thinking；previous 提供时保留用户已输入的 OAuth 选择。
  */
 export function normalizeModelsState(raw: unknown, previous?: ModelsForm): ModelsForm {
   const rec = asRecord(raw);
@@ -440,9 +633,10 @@ export function normalizeModelsState(raw: unknown, previous?: ModelsForm): Model
   return {
     providerId,
     baseUrl: typeof rec.baseUrl === 'string' ? rec.baseUrl : '',
+    api: typeof rec.api === 'string' && rec.api.length > 0 ? rec.api : 'openai-completions',
     modelId: typeof rec.modelId === 'string' ? rec.modelId : '',
     modelName: typeof rec.modelName === 'string' ? rec.modelName : '',
-    thinking: rec.thinking === true,
+    reasoning: rec.reasoning === true || rec.thinking === true,
     hasKey: rec.hasKey === true,
     modelsPath: typeof rec.modelsPath === 'string' ? rec.modelsPath : '',
     authPath: typeof rec.authPath === 'string' ? rec.authPath : '',
@@ -450,9 +644,53 @@ export function normalizeModelsState(raw: unknown, previous?: ModelsForm): Model
     thinkingFormat: toEnum(rec.thinkingFormat, THINKING_FORMATS, 'default'),
     supportsDeveloperRole: rec.supportsDeveloperRole !== false,
     thinkingLevel: toEnum(rec.thinkingLevel, THINKING_LEVELS, 'medium'),
+    roleModels: normalizeRoleModelsForm(rec.roleModels),
     apiKey: '',
-    oauthProvider: previous?.oauthProvider ? previous.oauthProvider : providerId
+    oauthProvider: previous?.oauthProvider ? previous.oauthProvider : OAUTH_PROVIDER_IDS[0],
+    oauthProviderCustom: previous?.oauthProviderCustom ?? ''
   };
+}
+
+/**
+ * 应用 provider 预设（返回新表单，不改入参）：
+ * - 预设 id 写入 providerId；baseUrl / api / thinkingFormat 按预设覆盖；
+ * - 自定义（openai-compatible）保留用户已填的 baseUrl / providerId 手输值；
+ * - 模型 id 为空时预填该预设第一个常见模型（不覆盖用户已输入的 id）。
+ */
+export function applyProviderPreset(form: ModelsForm, presetId: string): ModelsForm {
+  const preset = providerPresetById(presetId);
+  if (!preset) {
+    return { ...form };
+  }
+  const next: ModelsForm = { ...form, roleModels: { ...form.roleModels } };
+  if (preset.id === CUSTOM_PROVIDER_ID) {
+    // 自定义：只有当前是预设 id 时才切换 providerId，不清用户手输内容。
+    if (providerPresetById(form.providerId) || form.providerId.length === 0) {
+      next.providerId = CUSTOM_PROVIDER_ID;
+    }
+    next.api = preset.api;
+    return next;
+  }
+  next.providerId = preset.id;
+  next.baseUrl = preset.baseUrl;
+  next.api = preset.api;
+  next.thinkingFormat = preset.thinkingFormat;
+  if (next.modelId.trim().length === 0 && preset.models.length > 0) {
+    next.modelId = preset.models[0];
+  }
+  return next;
+}
+
+/**
+ * P0-B 客户端预检：既没有已存 key、又没在本次表单里填 key ⇒ 保存后不许报绿色
+ * 「已保存」。OAuth 型预设（anthropic）豁免——凭证走 auth.json。
+ */
+export function modelsKeyMissing(form: ModelsForm): boolean {
+  if (form.hasKey || form.apiKey.trim().length > 0) {
+    return false;
+  }
+  const preset = providerPresetById(form.providerId);
+  return preset?.oauth !== true;
 }
 
 export type ModelsSaveResult =
@@ -460,8 +698,11 @@ export type ModelsSaveResult =
   | { ok: false; error: 'required' };
 
 /**
- * models/save 载荷：对齐 modelsView SavePayload。apiKey 为空时整键省略
- * （host 语义：留空 = 保持现有 key），任何情况下都不包含 hasKey / 路径字段。
+ * models/save 载荷：对齐 modelsView SavePayload。
+ * - 字段名用 reasoning（host 读端兼容旧 thinking，但本侧不再发旧名）。
+ * - providerId / api 随预设上行（host 按 providerId upsert，不再恒取第一个）。
+ * - apiKey 为空时整键省略（host 语义：留空 = 保持现有 key）；不含 hasKey / 路径。
+ * - roleModels 只带 model 非空的角色；provider 留空回落当前 providerId。
  */
 export function buildModelsSavePayload(form: ModelsForm): ModelsSaveResult {
   const baseUrl = form.baseUrl.trim();
@@ -469,20 +710,39 @@ export function buildModelsSavePayload(form: ModelsForm): ModelsSaveResult {
   if (baseUrl.length === 0 || modelId.length === 0) {
     return { ok: false, error: 'required' };
   }
+  const providerId = form.providerId.trim() || CUSTOM_PROVIDER_ID;
+  const roleModels: Record<string, { provider: string; model: string }> = {};
+  for (const role of ROLE_MODEL_ROLES) {
+    const entry = form.roleModels[role];
+    const model = entry.model.trim();
+    if (model.length === 0) continue;
+    roleModels[role] = { provider: entry.provider.trim() || providerId, model };
+  }
   const payload: Record<string, unknown> = {
+    providerId,
     baseUrl,
+    api: form.api.trim() || 'openai-completions',
     modelId,
     modelName: form.modelName.trim(),
-    thinking: form.thinking === true,
+    reasoning: form.reasoning === true,
     thinkingLevel: toEnum(form.thinkingLevel, THINKING_LEVELS, 'medium'),
     thinkingFormat: toEnum(form.thinkingFormat, THINKING_FORMATS, 'default'),
-    supportsDeveloperRole: form.supportsDeveloperRole !== false
+    supportsDeveloperRole: form.supportsDeveloperRole !== false,
+    roleModels
   };
   const apiKey = form.apiKey.trim();
   if (apiKey.length > 0) {
     payload.apiKey = apiKey;
   }
   return { ok: true, payload };
+}
+
+/** OAuth 登录的实际 provider id（下拉选 custom 时取手输值）。 */
+export function resolveOauthProvider(form: ModelsForm): string {
+  if (form.oauthProvider === 'custom') {
+    return form.oauthProviderCustom.trim();
+  }
+  return form.oauthProvider.trim();
 }
 
 // ── hydrate 快照归一（settings/hydrate 或 hydrate 兜底） ───────────────────
@@ -660,4 +920,40 @@ export function openAuthFileReq(hasModelsChannel: boolean): OutgoingReq {
   return hasModelsChannel
     ? { type: 'models/openAuth', payload: {} }
     : { type: 'settings/openJson', payload: { kind: 'auth' } };
+}
+
+/** models/test 载荷（ModelsTestReq）：key 走 SecretStorage，绝不从表单带出。 */
+export function buildModelsTestReq(form: ModelsForm): Record<string, unknown> {
+  return {
+    baseUrl: form.baseUrl.trim(),
+    modelId: form.modelId.trim(),
+    provider: form.providerId.trim() || CUSTOM_PROVIDER_ID
+  };
+}
+
+/** models/fetch 载荷（ModelsFetchReq）。 */
+export function buildModelsFetchReq(form: ModelsForm): Record<string, unknown> {
+  return {
+    baseUrl: form.baseUrl.trim(),
+    provider: form.providerId.trim() || CUSTOM_PROVIDER_ID
+  };
+}
+
+/** models/fetch 结果归一：字符串数组（去重、去空白）。 */
+export function normalizeFetchedModels(raw: unknown): string[] {
+  const rec = asRecord(raw);
+  const list = Array.isArray(rec.models) ? rec.models : Array.isArray(raw) ? raw : [];
+  const out: string[] = [];
+  for (const entry of list) {
+    const id =
+      typeof entry === 'string'
+        ? entry.trim()
+        : typeof asRecord(entry).id === 'string'
+          ? (asRecord(entry).id as string).trim()
+          : '';
+    if (id.length > 0 && !out.includes(id)) {
+      out.push(id);
+    }
+  }
+  return out;
 }

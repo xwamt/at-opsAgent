@@ -44,7 +44,7 @@ onBeforeUnmount(() => {
         <span class="history__title">{{ t('historyTitle') }}</span>
         <span class="history__spacer"></span>
         <button type="button" class="ops-btn ops-btn--secondary history__new" @click="store.newSession()">
-          ＋ {{ t('historyNew') }}
+          <span class="codicon codicon-add" aria-hidden="true"></span> {{ t('historyNew') }}
         </button>
         <button
           type="button"
@@ -52,7 +52,7 @@ onBeforeUnmount(() => {
           :aria-label="t('historyCloseAria')"
           @click="close"
         >
-          ✕
+          <span class="codicon codicon-close" aria-hidden="true"></span>
         </button>
       </header>
       <div class="history__list">
@@ -63,6 +63,7 @@ onBeforeUnmount(() => {
           class="history__item"
           :class="{ 'history__item--current': session.id === store.sessionId }"
           :aria-label="t('historySwitchAria') + ' ' + session.title"
+          :title="session.id"
           @click="store.switchSession(session.id)"
         >
           <span class="history__item-row">
@@ -71,8 +72,8 @@ onBeforeUnmount(() => {
               {{ t('historyCurrent') }}
             </span>
           </span>
-          <span class="history__item-meta ops-mono ops-muted">
-            {{ session.id.slice(0, 12) }}<template v-if="session.createdAt"> · {{ formatTime(session.createdAt) }}</template>
+          <span v-if="session.createdAt" class="history__item-meta ops-mono ops-muted">
+            {{ formatTime(session.createdAt) }}
           </span>
         </button>
         <p v-if="store.historySessions.length === 0" class="history__empty ops-muted">
@@ -93,7 +94,7 @@ onBeforeUnmount(() => {
 .history__backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: color-mix(in srgb, var(--vscode-widget-shadow, #000) 30%, transparent);
 }
 
 /* Cline 式 History：侧滑覆盖层，不占常驻 chrome */
@@ -105,10 +106,16 @@ onBeforeUnmount(() => {
   width: min(320px, 88%);
   background: var(--ops-bg);
   border-left: 1px solid var(--ops-border);
-  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--ops-shadow);
   display: flex;
   flex-direction: column;
   animation: history-slide 0.15s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .history__panel {
+    animation: none;
+  }
 }
 
 @keyframes history-slide {
@@ -154,8 +161,12 @@ onBeforeUnmount(() => {
   line-height: 1;
 }
 
+.history__close .codicon {
+  font-size: var(--ops-font-sm);
+}
+
 .history__close:hover {
-  background: var(--ops-hover-bg);
+  background: var(--ops-toolbar-hover-bg);
   color: var(--ops-fg);
 }
 

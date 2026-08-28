@@ -25,13 +25,20 @@
  *
  * webview → host——预留（host 未实现时回 {ok:false,error}，本侧降级处理）：
  * - models/state {} / models/save {...} / models/oauth { providerId } /
- *   models/openFile {} / models/openAuth {}    modelsView.ts 三页签的 UX 同款；
+ *   models/openFile {} / models/openAuth {}    modelsView.ts 纯函数的 UX 同款；
  *                                              收到过合法 models/state 才启用该家族，
  *                                              否则打开文件走 settings/openJson 兜底。
- *                                              models/save 载荷 = { baseUrl, modelId,
- *                                              modelName, thinking, thinkingLevel,
- *                                              thinkingFormat, supportsDeveloperRole,
+ *                                              models/save 载荷 = { providerId, baseUrl,
+ *                                              api, modelId, modelName, reasoning,
+ *                                              thinkingLevel, thinkingFormat,
+ *                                              supportsDeveloperRole, roleModels,
  *                                              apiKey?（缺省=保持现有 key，绝不回显）}
+ * - models/test  { baseUrl, modelId, provider }  「保存并测试」：E-host 路由到
+ *                                              runtime.probeModel 或 1-token 探测，
+ *                                              res = ModelsTestRes { ok, latencyMs?,
+ *                                              error?, httpStatus? }
+ * - models/fetch { baseUrl, provider }          「拉取模型列表」：GET {baseUrl}/models，
+ *                                              res = ModelsFetchRes { ok, models?, error? }
  * - capabilities/refresh {}                    重扫能力插件（本侧同时重发 settings/hydrate）
  * - diagnose             {}                    hub 诊断（同 atOpsAgent.diagnoseHub）
  *

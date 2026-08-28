@@ -15,11 +15,16 @@ import type { Envelope } from '../protocol/host-protocol';
 import { getVsCodeApi, isMockHost } from '../webview-chat/vscode-api';
 import {
   CONFIG_DEFAULTS,
+  applyProviderPreset,
   buildConfigPatch,
   buildConfigPatchRequests,
+  buildModelsFetchReq,
   buildModelsSavePayload,
+  buildModelsTestReq,
   emptyModelsForm,
+  modelsKeyMissing,
   normalizeConfig,
+  normalizeFetchedModels,
   normalizeMcpState,
   normalizeModelsState,
   normalizeProviders,
@@ -29,6 +34,7 @@ import {
   openAuthFileReq,
   openModelsFileReq,
   parseMcpConfig,
+  resolveOauthProvider,
   type McpParseResult,
   type ModelsForm,
   type OpsConfig,
@@ -88,6 +94,15 @@ export const useSettingsStore = defineStore('ops-settings', {
     models: emptyModelsForm() as ModelsForm,
     /** 收到过 models/state（evt 或合法 res）⇒ host 支持 models/* 家族。 */
     modelsChannel: false,
+    /** 「保存并测试」链路状态：save 回执 ok 后自动发 models/test。 */
+    testingModel: false,
+    /** 本次 save 是否要在回执后接 models/test（缺 key 时不测，直接黄字警告）。 */
+    pendingTestAfterSave: false,
+    /** 本次 save 是否带了新 key（回执后本地把 hasKey 翻真，不等 host 状态）。 */
+    sentApiKey: false,
+    /** models/fetch 在途标志与拉回的模型 id 建议（datalist）。 */
+    fetchingModels: false,
+    modelSuggestions: [] as string[],
     oauthBusy: false,
     providers: [] as ProviderRow[],
     mcpPath: '',
@@ -236,16 +251,71 @@ export const useSettingsStore = defineStore('ops-settings', {
           break;
         case 'models/save': {
           const outcome = outcomeOf(payload);
-          if (outcome.ok) {
-            this.modelsChannel = true;
-            const rec = asRecord(payload);
-            if (looksLikeModelsState(rec.state ?? payload)) {
-              this.applyModels(rec.state ?? payload);
-            }
-            this.setStatus('models', true, outcome.message || t('saved'));
-          } else {
+          const runTest = this.pendingTestAfterSave;
+          const hadNewKey = this.sentApiKey;
+          this.pendingTestAfterSave = false;
+          this.sentApiKey = false;
+          if (!outcome.ok) {
             this.setStatus('models', false, outcome.message || t('saveFailed'));
+            break;
           }
+          this.modelsChannel = true;
+          const rec = asRecord(payload);
+          const state = rec.state ?? payload;
+          // host 无参读 models/state 恒回第一个 provider：只有同 provider 才吸收，
+          // 避免用户刚保存的非第一 provider 表单被覆盖。
+          if (
+            looksLikeModelsState(state) &&
+            (asRecord(state).providerId === this.models.providerId || !this.models.providerId)
+          ) {
+            this.applyModels(state);
+          } else if (hadNewKey) {
+            this.models.hasKey = true;
+          }
+          const warning = typeof rec.warning === 'string' ? rec.warning : '';
+          if (!runTest) {
+            // P0-B：缺 key 时不许报绿色「已保存」——黄字警告 + 不跑连通性测试。
+            this.setStatus('models', false, warning || t('mKeyMissingWarn'));
+            break;
+          }
+          this.testingModel = true;
+          this.setStatus('models', true, t('mTesting'));
+          this.post('models/test', buildModelsTestReq(this.models));
+          break;
+        }
+        case 'models/test': {
+          this.testingModel = false;
+          const rec = asRecord(payload);
+          if (rec.ok === true) {
+            const latency =
+              typeof rec.latencyMs === 'number' ? `（${Math.round(rec.latencyMs)} ms）` : '';
+            this.setStatus('models', true, `${t('mTestOk')}${latency}`);
+          } else {
+            const message =
+              rec.httpStatus === 401
+                ? t('mTest401')
+                : `${t('mTestFail')}${typeof rec.error === 'string' && rec.error ? rec.error : t('saveFailed')}`;
+            this.setStatus('models', false, message);
+          }
+          break;
+        }
+        case 'models/fetch': {
+          this.fetchingModels = false;
+          const rec = asRecord(payload);
+          if (rec.ok === false || typeof rec.error === 'string') {
+            this.setStatus(
+              'models',
+              false,
+              `${t('mFetchFail')}${typeof rec.error === 'string' && rec.error ? rec.error : ''}`
+            );
+            break;
+          }
+          const models = normalizeFetchedModels(payload);
+          this.modelSuggestions = models;
+          if (models.length > 0 && this.models.modelId.trim().length === 0) {
+            this.models.modelId = models[0];
+          }
+          this.setStatus('models', true, `${t('mFetchOk')}${models.length} ${t('mFetchOkUnit')}`);
           break;
         }
         case 'models/oauth':
@@ -396,19 +466,49 @@ export const useSettingsStore = defineStore('ops-settings', {
     },
 
     // ── 模型 ──
-    saveModels(): void {
+    /** Provider 预设下拉：预填 baseUrl / api / thinkingFormat（P0-B / P1-1）。 */
+    selectProviderPreset(presetId: string): void {
+      this.models = applyProviderPreset(this.models, presetId);
+      // 换 provider 后旧目录不再适用。
+      this.modelSuggestions = [];
+    },
+
+    /**
+     * 「保存并测试」：models/save 成功后自动 models/test（1-token / GET models 探测，
+     * host 路由）。缺 key（且非 OAuth 预设）时仍落盘但以黄字警告呈现，不跑测试、
+     * 绝不显示绿色「已保存」（P0-B）。
+     */
+    saveAndTestModels(): void {
       const result = buildModelsSavePayload(this.models);
       if (!result.ok) {
         this.setStatus('models', false, t('mRequired'));
         return;
       }
+      const keyMissing = modelsKeyMissing(this.models);
+      this.pendingTestAfterSave = !keyMissing;
+      this.sentApiKey = typeof result.payload.apiKey === 'string';
       this.post('models/save', result.payload);
       // key 只上行一次，本地立即抹掉（绝不驻留、绝不回显）。
       this.models.apiKey = '';
+      if (keyMissing) {
+        this.setStatus('models', false, t('mKeyMissingWarn'));
+      }
+    },
+
+    /** 「拉取模型列表」：GET {baseUrl}/models（host 路由 models/fetch），回填建议。 */
+    fetchModels(): void {
+      const baseUrl = this.models.baseUrl.trim();
+      if (baseUrl.length === 0) {
+        this.setStatus('models', false, t('mRequired'));
+        return;
+      }
+      this.fetchingModels = true;
+      this.setStatus('models', true, t('mFetching'));
+      this.post('models/fetch', buildModelsFetchReq(this.models));
     },
 
     oauthLogin(): void {
-      const providerId = this.models.oauthProvider.trim();
+      const providerId = resolveOauthProvider(this.models);
       if (!providerId) {
         return;
       }

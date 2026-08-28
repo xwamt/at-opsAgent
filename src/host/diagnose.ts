@@ -12,10 +12,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type * as vscode from 'vscode';
 import { atSeriesRootDir, bridgesDirForHostApp, listBridgeRecords } from '@at-series/mcp-hub';
+import { shouldSkipAtSeriesMcpServer } from '../mcp-client';
 import { OPS_ERROR, type HubHost } from '../protocol';
-import { shouldSkipAtSeriesMcpServerFallback } from './fallback/fallbackDedup';
 import type { McpServerEntryLike } from './hostTypes';
-import { loadDedupModule } from './modules';
 
 const STALE_MS = 90_000;
 
@@ -122,17 +121,13 @@ async function scanUserMcpConfigs(
   log: (line: string) => void
 ): Promise<void> {
   log('MCP 去重扫描:');
-  const dedupModule = await loadDedupModule(log);
   const shouldSkip = (entry: McpServerEntryLike): boolean => {
-    if (dedupModule) {
-      try {
-        const result = dedupModule.shouldSkipAtSeriesMcpServer(entry);
-        return typeof result === 'boolean' ? result : result.skip;
-      } catch {
-        // 落回启发式。
-      }
+    try {
+      return shouldSkipAtSeriesMcpServer(entry);
+    } catch {
+      // 判定器自身异常按「不跳过」处理（只影响提示，不影响运行时）。
+      return false;
     }
-    return shouldSkipAtSeriesMcpServerFallback(entry);
   };
 
   const files = [

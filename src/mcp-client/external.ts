@@ -330,6 +330,9 @@ async function connectWithSdk(entry: McpServerEntry): Promise<McpConnection> {
 
 // ── proxy tools ──────────────────────────────────────────────────────────
 
+/** Risk level of a proxy tool (same vocabulary as AgentToolDescriptor.risk). */
+export type ProxyToolRisk = 'read' | 'write' | 'exec';
+
 /**
  * Tool shape handed to the runtime (same contract as DiscoveryToolSpec:
  * `parameters` is a JSON Schema object, `execute` resolves to a JSON string
@@ -340,6 +343,12 @@ export interface ProxyToolSource {
   label: string;
   description: string;
   parameters: Record<string, unknown>;
+  /**
+   * Declared risk for the policy gate: list/search are read-only;
+   * `mcp_call_tool` defaults to write (the target tool's real risk is
+   * unknown, so the host must NOT treat it as read).
+   */
+  risk: ProxyToolRisk;
   execute(args: Record<string, unknown>): Promise<string>;
 }
 
@@ -348,6 +357,20 @@ export const EXTERNAL_MCP_PROXY_TOOL_NAMES = [
   'mcp_search_tools',
   'mcp_call_tool'
 ] as const;
+
+/**
+ * Risk of each proxy tool, for hosts that only know the tool name (the hub
+ * catalog does not contain these tools, so a name-keyed map is the lookup
+ * the policy gate needs — fail-closed alternatives would mark the read-only
+ * search tools as exec).
+ */
+export const RISK_BY_PROXY_TOOL: Readonly<
+  Record<(typeof EXTERNAL_MCP_PROXY_TOOL_NAMES)[number], ProxyToolRisk>
+> = {
+  mcp_list_servers: 'read',
+  mcp_search_tools: 'read',
+  mcp_call_tool: 'write'
+};
 
 /** Hard cap on a single `mcp_call_tool` result handed to the model (8 KB). */
 export const MAX_TOOL_RESULT_BYTES = 8 * 1024;
@@ -472,6 +495,7 @@ export async function createExternalMcpProxyTools(
     description:
       '列出 mcp.json 里配置的第三方 MCP 服务器：keep 为可连接项，skipped 为与内嵌 AT Series hub 重复、' +
       '永不 spawn 的项。不触发任何连接。',
+    risk: RISK_BY_PROXY_TOOL.mcp_list_servers,
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     execute: async () => {
       const invalid = configErrorPayload();
@@ -498,6 +522,7 @@ export async function createExternalMcpProxyTools(
     description:
       '按关键词搜索第三方 MCP 服务器的工具（匹配 name/description，不区分大小写）。' +
       '按需惰性连接目标服务器；连不上的服务器返回空结果并附 hint。可用 server 限定范围。',
+    risk: RISK_BY_PROXY_TOOL.mcp_search_tools,
     parameters: {
       type: 'object',
       properties: {
@@ -589,7 +614,9 @@ export async function createExternalMcpProxyTools(
     label: 'MCP：调用第三方工具',
     description:
       '调用某个第三方 MCP 服务器上的工具（先用 mcp_search_tools 找到 server 与 name）。' +
-      `结果最多返回 ${MAX_TOOL_RESULT_BYTES} 字节，超出会截断。`,
+      `结果最多返回 ${MAX_TOOL_RESULT_BYTES} 字节，超出会截断。` +
+      '目标工具的真实风险未知：按 write 对待，可能触发会话审批。',
+    risk: RISK_BY_PROXY_TOOL.mcp_call_tool,
     parameters: {
       type: 'object',
       properties: {

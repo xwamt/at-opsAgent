@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { envelope, type Envelope } from '../protocol';
+import { webviewResourceRoots } from './chatView';
 import type { HostController } from './hostController';
 import { buildWebviewHtml } from './webviewHtml';
 
@@ -46,10 +47,7 @@ export function showSettingsPanel(deps: SettingsPanelDeps, tab?: SettingsTab): v
     {
       enableScripts: true,
       retainContextWhenHidden: true,
-      localResourceRoots: [
-        vscode.Uri.joinPath(extensionUri, 'dist', 'webview'),
-        vscode.Uri.joinPath(extensionUri, 'media')
-      ]
+      localResourceRoots: webviewResourceRoots(extensionUri)
     }
   );
   currentPanel = panel;

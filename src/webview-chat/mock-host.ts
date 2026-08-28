@@ -10,6 +10,12 @@ function emit(type: string, payload: unknown): void {
   window.dispatchEvent(new MessageEvent('message', { data: envelope }));
 }
 
+/** req → res 应答（真 host 由 ChatViewProvider.onMessage 回同 id 的 res）。 */
+function emitRes(id: string, type: string, payload: unknown): void {
+  const envelope: Envelope = { v: 1, id, dir: 'res', type, payload, ts: Date.now() };
+  window.dispatchEvent(new MessageEvent('message', { data: envelope }));
+}
+
 /** 历史侧滑演示数据：sess-demo 有完整 transcript，其余会话是空态（演示欢迎页）。 */
 const MOCK_SESSIONS = [
   { id: 'sess-demo', title: '网关 5xx 事故调查', createdAt: Date.now() - 20 * 60_000 },
@@ -195,10 +201,10 @@ function providersSnapshot(model = 'qwen3-max') {
   };
 }
 
-/** session/switch、session/new 与启动都走同一个 hydrate 出口。 */
-function emitHydrate(sessionId: string): void {
+/** hydrate 快照（evt push 与 req/res pull 同一形状）。 */
+function hydrateSnapshot(sessionId: string): Record<string, unknown> {
   if (sessionId === 'sess-demo') {
-    emit('hydrate', {
+    return {
       sessionId,
       playbook: { id: 'pb.incident', stage: 'Investigating' },
       items: HYDRATE_ITEMS,
@@ -209,25 +215,66 @@ function emitHydrate(sessionId: string): void {
       ],
       providers: providersSnapshot(),
       pendingApproval: demoBrief(),
-      sessions: MOCK_SESSIONS
-    });
-    return;
+      sessions: MOCK_SESSIONS,
+      hasApiKey: true,
+      usage: { inputTokens: 18_432, outputTokens: 2_105, contextUsed: 41_000, contextWindow: 128_000 }
+    };
   }
-  emit('hydrate', {
+  return {
     sessionId,
     playbook: null,
     items: [],
     providers: providersSnapshot(),
     pendingApproval: null,
-    sessions: MOCK_SESSIONS
-  });
+    sessions: MOCK_SESSIONS,
+    hasApiKey: true
+  };
+}
+
+/** session/switch、session/new 与启动都走同一个 hydrate 出口。 */
+function emitHydrate(sessionId: string): void {
+  emit('hydrate', hydrateSnapshot(sessionId));
 }
 
 export function installMockHost(): void {
+  let currentSessionId = 'sess-demo';
   (window as unknown as Record<string, unknown>).__opsMockPostMessage = (raw: unknown) => {
     const msg = raw as Partial<Envelope>;
     console.info('[ops-mock-host] req', msg.type, msg.payload);
-    if (msg.type === 'chat/prompt') {
+    if (msg.type === 'hydrate') {
+      // hydrate pull（store.attach 后主动 req）：res 回快照
+      emitRes(msg.id ?? '', 'hydrate', hydrateSnapshot(currentSessionId));
+    } else if (msg.type === 'asset/pick') {
+      // 真 host 是 VS Code QuickPick；mock 直接回两条演示资产
+      emitRes(msg.id ?? '', 'asset/pick', {
+        items: [
+          { kind: 'file', label: 'nginx.conf', text: '', uri: 'file:///etc/nginx/nginx.conf' },
+          { kind: 'terminal', label: 'prod-gw-01', text: '', uri: 'host://prod-gw-01' }
+        ]
+      });
+    } else if (msg.type === 'chat/abort') {
+      const mode = ((msg.payload ?? {}) as { mode?: string }).mode ?? 'stop';
+      emit('turn/end', {});
+      emit('transcript/append', {
+        kind: 'system',
+        id: `sys-abort-${Date.now().toString(36)}`,
+        text: mode === 'cancel' ? '已软停：等待当前工具结束。' : '已立即停止。'
+      });
+    } else if (msg.type === 'chat/retry') {
+      const itemId = ((msg.payload ?? {}) as { itemId?: string }).itemId ?? '';
+      const retryId = `a-retry-${Date.now().toString(36)}`;
+      emit('transcript/patch', { itemId, patch: { retryable: false } });
+      emit('transcript/append', { kind: 'assistant', id: retryId, text: '', streaming: true });
+      window.setTimeout(() => {
+        emit('transcript/patch', { itemId: retryId, patch: { appendText: '重试成功：这次连通了。', streaming: false } });
+      }, 400);
+    } else if (msg.type === 'settings/open') {
+      emit('transcript/append', {
+        kind: 'system',
+        id: `sys-settings-${Date.now().toString(36)}`,
+        text: '[mock] settings/open → 打开设置面板',
+      });
+    } else if (msg.type === 'chat/prompt') {
       const payload = (msg.payload ?? {}) as { text?: string };
       const stamp = Date.now().toString(36);
       // /spam：一次性灌 150 条，用来验证 ChatTranscript 虚拟化
@@ -241,15 +288,52 @@ export function installMockHost(): void {
         }
         return;
       }
+      // /fail：演示可重试的失败 assistant 消息（P1-5 Retry）
+      if ((payload.text ?? '').trim() === '/fail') {
+        emit('transcript/append', { kind: 'user', id: `u-${stamp}`, text: payload.text ?? '' });
+        emit('transcript/append', {
+          kind: 'assistant',
+          id: `a-fail-${stamp}`,
+          text: '模型调用失败：401 Unauthorized（mock）',
+          error: true,
+          retryable: true
+        });
+        return;
+      }
+      // /notice：演示 notice 卡（错误 + 动作按钮）
+      if ((payload.text ?? '').trim() === '/notice') {
+        emit('transcript/append', {
+          kind: 'notice',
+          id: `n-${stamp}`,
+          variant: 'error',
+          text: '还没有可用的模型。点击下方按钮完成配置（约 1 分钟）。',
+          actions: [
+            { id: 'open-models', label: '打开模型设置', request: 'settings/open' },
+            { id: 'diagnose', label: '运行诊断', request: 'diagnose' }
+          ]
+        });
+        return;
+      }
       emit('transcript/append', { kind: 'user', id: `u-${stamp}`, text: payload.text ?? '' });
       const assistantId = `a-${stamp}`;
       emit('transcript/append', { kind: 'assistant', id: assistantId, text: '', streaming: true });
-      const chunks = ['收到。', '按 pb.incident 纪律：', '先窄窗确认尖刺，再查业务日志。'];
+      const chunks = [
+        '收到。\n\n',
+        '按 **pb.incident** 纪律：\n\n',
+        '1. 先窄窗确认尖刺\n2. 再查业务日志\n\n```promql\nsum(rate(http_requests_total{code=~"5.."}[1m]))\n```'
+      ];
       chunks.forEach((chunk, i) => {
         window.setTimeout(() => {
           emit('transcript/patch', { itemId: assistantId, patch: { appendText: chunk } });
           if (i === chunks.length - 1) {
             emit('transcript/patch', { itemId: assistantId, patch: { streaming: false } });
+            emit('usage', {
+              inputTokens: 19_020,
+              outputTokens: 2_444,
+              contextUsed: 46_500,
+              contextWindow: 128_000
+            });
+            emit('turn/end', {});
           }
         }, 350 * (i + 1));
       });
@@ -273,9 +357,12 @@ export function installMockHost(): void {
       const payload = (msg.payload ?? {}) as { provider?: string; model?: string };
       emit('capabilities/snapshot', providersSnapshot(payload.model));
     } else if (msg.type === 'session/switch') {
-      const payload = (msg.payload ?? {}) as { sessionId?: string };
-      if (payload.sessionId) {
-        emitHydrate(payload.sessionId);
+      // 协议字段是 { id }（SessionSwitchReq）；容忍旧 { sessionId } 以防回归
+      const payload = (msg.payload ?? {}) as { id?: string; sessionId?: string };
+      const id = payload.id ?? payload.sessionId;
+      if (id) {
+        currentSessionId = id;
+        emitHydrate(id);
       }
     } else if (msg.type === 'session/new') {
       const session = {
@@ -284,6 +371,7 @@ export function installMockHost(): void {
         createdAt: Date.now()
       };
       MOCK_SESSIONS.unshift(session);
+      currentSessionId = session.id;
       emitHydrate(session.id);
     } else if (msg.type === 'guidedManual/complete') {
       emit('playbook/stage', { id: 'pb.config-change', stage: 'Verifying' });

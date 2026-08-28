@@ -11,7 +11,9 @@ const props = defineProps<{
        仅渲染外部引用原文；思考步骤（CoT）永不进入本组件（pi hideThinkingBlock 恒开）。 -->
   <div class="untrusted" role="note" :aria-label="t('untrustedData')">
     <div class="untrusted__head">
-      <span class="ops-badge untrusted__badge">⚠ {{ t('untrustedData') }}</span>
+      <span class="ops-badge untrusted__badge">
+        <span class="codicon codicon-warning" aria-hidden="true"></span> {{ t('untrustedData') }}
+      </span>
       <span class="untrusted__hint">{{ t('untrustedQuotesHint') }}</span>
     </div>
     <blockquote
