@@ -1,0 +1,131 @@
+import { defineStore } from 'pinia';
+import type { Envelope } from '../protocol/host-protocol';
+import { getVsCodeApi, isMockHost } from '../webview-chat/vscode-api';
+
+export interface TimelineEventView {
+  id: string;
+  ts: number;
+  title: string;
+  detail?: string;
+  severity: 'info' | 'warn' | 'crit';
+  incidentId?: string;
+  kind?: string;
+  status?: string;
+}
+
+type AnyRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): AnyRecord {
+  return typeof value === 'object' && value !== null ? (value as AnyRecord) : {};
+}
+
+function toSeverity(value: unknown): TimelineEventView['severity'] {
+  const raw = String(value ?? '').toLowerCase();
+  if (raw === 'crit' || raw === 'critical' || raw === 'error' || raw === 'fatal') {
+    return 'crit';
+  }
+  if (raw === 'warn' || raw === 'warning' || raw === 'degraded') {
+    return 'warn';
+  }
+  return 'info';
+}
+
+function toTimestamp(rec: AnyRecord): number {
+  for (const key of ['ts', 'at', 'time', 'timestamp']) {
+    const value = rec[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return Date.now();
+}
+
+function normalizeEvent(payload: unknown): TimelineEventView | null {
+  const outer = asRecord(payload);
+  const rec = outer.event ? asRecord(outer.event) : outer;
+  const id = rec.id ?? rec.eventId;
+  if (id === undefined || id === null || id === '') {
+    return null;
+  }
+  return {
+    id: String(id),
+    ts: toTimestamp(rec),
+    title: String(rec.title ?? rec.summary ?? rec.text ?? '（无标题）'),
+    detail: typeof rec.detail === 'string' ? rec.detail : undefined,
+    severity: toSeverity(rec.severity ?? rec.level),
+    incidentId: rec.incidentId !== undefined ? String(rec.incidentId) : undefined,
+    kind: rec.kind !== undefined ? String(rec.kind) : undefined,
+    status: rec.status !== undefined ? String(rec.status) : undefined
+  };
+}
+
+let reqSeq = 0;
+
+export const useBoardStore = defineStore('ops-board', {
+  state: () => ({
+    events: [] as TimelineEventView[],
+    mock: false
+  }),
+
+  getters: {
+    sorted(state): TimelineEventView[] {
+      return [...state.events].sort((a, b) => b.ts - a.ts);
+    }
+  },
+
+  actions: {
+    post(type: string, payload: unknown = {}): void {
+      reqSeq += 1;
+      const envelope: Envelope = {
+        v: 1,
+        id: `board-${Date.now().toString(36)}-${reqSeq}`,
+        dir: 'req',
+        type,
+        payload,
+        ts: Date.now()
+      };
+      getVsCodeApi().postMessage(envelope);
+    },
+
+    attach(): void {
+      this.mock = isMockHost();
+      window.addEventListener('message', (event: MessageEvent) => {
+        const data = event.data as Partial<Envelope> | undefined;
+        if (!data || data.v !== 1 || data.dir !== 'evt' || typeof data.type !== 'string') {
+          return;
+        }
+        if (data.type === 'timeline/upsert') {
+          this.upsert(data.payload);
+        } else if (data.type === 'hydrate') {
+          const rec = asRecord(data.payload);
+          const list = rec.timeline ?? rec.events ?? rec.items;
+          if (Array.isArray(list)) {
+            this.events = [];
+            for (const entry of list) {
+              this.upsert(entry);
+            }
+          }
+        }
+      });
+    },
+
+    upsert(payload: unknown): void {
+      const event = normalizeEvent(payload);
+      if (!event) {
+        return;
+      }
+      const idx = this.events.findIndex((existing) => existing.id === event.id);
+      if (idx >= 0) {
+        this.events.splice(idx, 1, { ...this.events[idx], ...event });
+      } else {
+        this.events.push(event);
+      }
+    }
+  }
+});

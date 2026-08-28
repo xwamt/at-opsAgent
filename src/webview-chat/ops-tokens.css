@@ -1,0 +1,156 @@
+/* 运维专属设计 token：映射 --vscode-* 主题变量（docs/05 §2）。 */
+:root {
+  --ops-bg: var(--vscode-sideBar-background);
+  --ops-fg: var(--vscode-foreground);
+  --ops-border: var(--vscode-panel-border);
+  --ops-healthy: var(--vscode-testing-iconPassed, #3fb950);
+  --ops-warn: var(--vscode-editorWarning-foreground, #d29922);
+  --ops-crit: var(--vscode-testing-iconFailed, #f85149);
+  --ops-pending: var(--vscode-descriptionForeground);
+  --ops-read: var(--ops-healthy);
+  --ops-write: var(--ops-warn);
+  --ops-exec: var(--ops-crit);
+  --ops-density: 4px; /* 高信息密度间距基数 */
+  --ops-mono: var(--vscode-editor-font-family, ui-monospace, 'SF Mono', Menlo, Consolas, monospace);
+
+  --ops-muted: var(--vscode-descriptionForeground);
+  --ops-accent: var(--vscode-focusBorder, #3794ff);
+  --ops-code-bg: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  --ops-hover-bg: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.1));
+  --ops-input-bg: var(--vscode-input-background);
+  --ops-input-fg: var(--vscode-input-foreground);
+  --ops-input-border: var(--vscode-input-border, var(--ops-border));
+  --ops-btn-bg: var(--vscode-button-background);
+  --ops-btn-fg: var(--vscode-button-foreground);
+  --ops-btn2-bg: var(--vscode-button-secondaryBackground, transparent);
+  --ops-btn2-fg: var(--vscode-button-secondaryForeground, var(--ops-fg));
+  --ops-radius: 4px; /* 圆角 ≤6px，避免消费级气泡感 */
+  --ops-font-size: var(--vscode-font-size, 13px);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--ops-bg);
+  color: var(--ops-fg);
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: var(--ops-font-size);
+}
+
+#app {
+  height: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(128, 128, 128, 0.3));
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* ---- 共享工具类 ---- */
+
+.ops-mono {
+  font-family: var(--ops-mono);
+  font-size: calc(var(--ops-font-size) - 1px);
+}
+
+.ops-codeblock {
+  font-family: var(--ops-mono);
+  font-size: calc(var(--ops-font-size) - 1px);
+  background: var(--ops-code-bg);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  padding: calc(var(--ops-density) * 1.5);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: auto;
+  max-height: 220px;
+}
+
+.ops-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid currentColor;
+  border-radius: var(--ops-radius);
+  padding: 0 calc(var(--ops-density) + 1px);
+  line-height: 1.5;
+  font-size: calc(var(--ops-font-size) - 2px);
+  white-space: nowrap;
+}
+
+/* 风险三色：只用于风险/健康，不做装饰 */
+.ops-risk-read {
+  color: var(--ops-read);
+}
+
+.ops-risk-write {
+  color: var(--ops-write);
+}
+
+.ops-risk-exec {
+  color: var(--ops-exec);
+}
+
+/* 结论三态：confirmed 绿 / hypothesis 琥珀 / pending 灰（同时必须有文字） */
+.ops-confidence-confirmed {
+  color: var(--ops-healthy);
+}
+
+.ops-confidence-hypothesis {
+  color: var(--ops-warn);
+}
+
+.ops-confidence-pending {
+  color: var(--ops-pending);
+}
+
+.ops-muted {
+  color: var(--ops-muted);
+}
+
+.ops-btn {
+  border: 1px solid transparent;
+  border-radius: var(--ops-radius);
+  padding: calc(var(--ops-density) - 1px) calc(var(--ops-density) * 2.5);
+  cursor: pointer;
+  background: var(--ops-btn-bg);
+  color: var(--ops-btn-fg);
+}
+
+.ops-btn:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: 1px;
+}
+
+.ops-btn--secondary {
+  background: var(--ops-btn2-bg);
+  color: var(--ops-btn2-fg);
+  border-color: var(--ops-border);
+}
+
+.ops-btn--danger {
+  background: transparent;
+  color: var(--ops-crit);
+  border-color: var(--ops-crit);
+}
+
+.ops-btn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
