@@ -18,6 +18,7 @@
 | 9 | [09-extensibility.md](09-extensibility.md) | 新插件、新 Playbook、新模型、新 MCP |
 | 10 | [10-implementation-plan.md](10-implementation-plan.md) | 分阶段施工与验收 |
 | 11 | [11-redesign-recommendations.md](11-redesign-recommendations.md) | **下一阶段输入**：对照 OpenCode / Kilo / Cline 的架构、UI、体验、基础功能整改建议 |
+| 12 | [12-inspection-ux.md](12-inspection-ux.md) | 巡检实录：先认客户端、单机不拆子代理、子代理 inspector |
 
 配套：
 
