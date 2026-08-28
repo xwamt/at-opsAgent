@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../webview-chat/i18n';
 import { useBoardStore } from '../store';
 import IncidentTimeline from './IncidentTimeline.vue';
 
@@ -8,8 +9,8 @@ const store = useBoardStore();
 <template>
   <div class="board">
     <header class="board__head">
-      <span class="board__title">事故 / 任务</span>
-      <span class="ops-muted">{{ store.events.length }} 条</span>
+      <span class="board__title">{{ t('boardTitle') }}</span>
+      <span class="ops-muted">{{ store.events.length }} {{ t('boardCountUnit') }}</span>
       <span v-if="store.mock" class="board__mock" title="未检测到 acquireVsCodeApi，使用本地 mock host">mock</span>
     </header>
     <IncidentTimeline class="board__timeline" />

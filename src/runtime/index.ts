@@ -34,12 +34,22 @@ import type {
 } from '../protocol';
 import { composeSystemPrompt } from '../prompts/layers';
 import { composeSubagentPrompt } from '../prompts/roles';
+import { recoverFromPromptError } from './compaction';
 import {
   discoveryToolSpecs,
   executeDiscoveryTool,
+  isBusinessToolName,
   listBusinessToolDescriptors,
   type DiscoveryHub
 } from './discovery-tools';
+import {
+  createOpsResourceLoader,
+  createReadSkillTool,
+  defaultBundledSkillsDir,
+  skillRootsFor,
+  type OpsCustomToolSpec
+} from './resource-loader';
+import { createWorkspaceReadTool } from './workspace-read';
 import {
   buildTaskSpec,
   createSubagentManager,
@@ -94,6 +104,35 @@ export {
   type SubagentStatusEvent
 } from './subagents';
 
+export {
+  createOpsResourceLoader,
+  createReadSkillTool,
+  defaultBundledSkillsDir,
+  readSkillFile,
+  resolveUnderRoot,
+  skillRootsFor,
+  READ_SKILL_TOOL_NAME,
+  SKILL_FILE_CHAR_LIMIT,
+  type CreateOpsResourceLoaderOptions,
+  type OpsCustomToolSpec,
+  type ReadSkillResult
+} from './resource-loader';
+
+export {
+  isPromptTooLongError,
+  recoverFromPromptError,
+  COMPACTION_NEW_SESSION_MESSAGE,
+  type CompactableSessionLike
+} from './compaction';
+
+export {
+  createWorkspaceReadTool,
+  readWorkspaceFile,
+  READ_WORKSPACE_FILE_TOOL_NAME,
+  WORKSPACE_FILE_CHAR_LIMIT,
+  type ReadWorkspaceFileResult
+} from './workspace-read';
+
 // ── 对外契约 ─────────────────────────────────────────────────────────────
 
 export type OpsRuntimeHandlers = {
@@ -114,6 +153,14 @@ export type OpsRuntimeHandlers = {
   onEvent?: (e: OpsRuntimeEvent) => void;
   /** 子代理生命周期（可选；host 后续接 SubagentBoard 时消费）。 */
   onSubagentEvent?: (e: OpsSubagentEvent) => void;
+  /**
+   * 工具目录出现「原始注册集之外的新业务工具」时回调。pi 的 AgentSession
+   * 只在 createAgentSession 期注册 customTools，之后没有公开 API 追加/替换
+   * ToolDefinition（见 createPiRuntime 内注释）——host 收到该回调后应
+   * disposeRuntime 并重建，让新工具进模型工具面。下线/重新上线的已注册
+   * 工具无需重建：setActiveToolsByName 即时同步。
+   */
+  onCatalogNeedsRebuild?: () => void;
 };
 
 export type OpsSubagentEvent = {
@@ -148,12 +195,17 @@ export type DispatchSubagentResult = {
   notice?: string;
 };
 
+/** pi 思考等级（与 pi-agent-core 的 ThinkingLevel 字面量一致，避免类型再导出依赖）。 */
+export type OpsThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface OpsRuntime {
   prompt(text: string, opts?: { mode?: 'steer' | 'followUp' }): Promise<void>;
   /** 中止主会话，并级联中止所有在跑子代理。 */
   abort(): void;
   dispose(): Promise<void>;
   setSystemPrompt(prompt: string): void;
+  /** 调整思考等级（会话支持 setThinkingLevel 时生效；Fallback 为安全 no-op）。 */
+  setThinkingLevel(level: OpsThinkingLevel): void;
   /** 派发子代理（TaskSpec 子集或 orchestrator 的完整 TaskSpec）。立即返回。 */
   dispatchSubagent(spec: SubagentDispatchInput | TaskSpec): Promise<DispatchSubagentResult>;
   /** 中止单个子代理（AbortSignal 级联到其 LLM 子会话与 in-flight invoke）。 */
@@ -172,6 +224,19 @@ export interface CreateOpsRuntimeOptions {
    * key 只在内存中传递，绝不写日志、绝不落盘。
    */
   getApiKey?: () => Promise<string | undefined>;
+  /** 思考等级；透传 createAgentSession({ thinkingLevel })，pi 按模型能力收敛。 */
+  thinkingLevel?: OpsThinkingLevel;
+  /**
+   * 打包 skills 根目录（host 后续传 extensionPath/skills）。
+   * 默认 join(cwd ?? process.cwd(), 'skills')。与 agentDir/skills 一起构成
+   * ops_read_skill 的路径白名单与 OpsResourceLoader 的 skills 发现根。
+   */
+  bundledSkillsDir?: string;
+  /**
+   * 允许工作区文件访问（默认 false=关）。开启后也只注册只读的
+   * ops_read_workspace_file（限 cwd、64KB、禁 ..），绝不注入不受限 bash。
+   */
+  workspaceShellEnabled?: boolean;
 }
 
 /** 组装主代理系统提示词：L0+L1+L2+L3（+可选 L4 playbook 注入层）。 */
@@ -352,6 +417,9 @@ export function createFallbackRuntime(handlers: OpsRuntimeHandlers, reason?: str
     setSystemPrompt(): void {
       // 无会话，忽略；等模型配置好后重建 runtime 时再生效。
     },
+    setThinkingLevel(): void {
+      // 无会话，忽略；host 重建 runtime 时经 options.thinkingLevel 生效。
+    },
     async dispatchSubagent(): Promise<DispatchSubagentResult> {
       // no-op：模型不可用时不派发，也不抛错。
       return { taskId: '', status: 'unavailable', notice: `无法派发子代理：${message}` };
@@ -438,13 +506,31 @@ function exposedBusinessToolNames(handlers: OpsRuntimeHandlers): string[] {
   return listBusinessToolDescriptors(handlers.hub.listExposedTools()).map((t) => t.name);
 }
 
-function activeToolNames(handlers: OpsRuntimeHandlers): string[] {
+function activeToolNames(
+  handlers: OpsRuntimeHandlers,
+  extraToolNames: readonly string[] = []
+): string[] {
   // ops_dispatch_subagent 仅主会话常驻；子会话（runSubagentSession）不注册。
+  // extraToolNames：ops_read_skill / ops_read_workspace_file / 外部 MCP 代理
+  // 等常驻工具，不受 hub 暴露集 selection 影响。
   return [
     ...discoveryToolSpecs.map((s) => s.name),
     dispatchToolSpec.name,
+    ...extraToolNames,
     ...exposedBusinessToolNames(handlers)
   ];
+}
+
+/**
+ * 热目录判定：hub 目录里出现了「原始注册集之外的新业务工具名」时返回 true。
+ * 此时 runtime 会触发 handlers.onCatalogNeedsRebuild（pi 无法事后追加
+ * customTools，只有 host 重建 runtime 才能把新工具送进模型工具面）。
+ */
+export function catalogGainedNewBusinessTool(
+  registeredNames: ReadonlySet<string>,
+  allTools: readonly AgentToolDescriptor[]
+): boolean {
+  return listBusinessToolDescriptors(allTools).some((t) => !registeredNames.has(t.name));
 }
 
 function subscribeSessionEvents(
@@ -643,6 +729,50 @@ async function runSubagentSession(env: SubagentSessionEnv, spec: TaskSpec, signa
   }
 }
 
+// ── 外部 MCP 代理工具（可选增强，导出缺席时静默跳过）─────────────────────
+
+/** mcp-client 侧（未来）createExternalMcpProxyTools 返回项的最小面。 */
+interface ExternalProxyToolLike {
+  name: string;
+  label?: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+  execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+}
+
+/**
+ * 动态探测 src/mcp-client 的 createExternalMcpProxyTools（phase-4 能力，
+ * 当前可能尚未导出）。导出缺席、创建失败或返回形状不符时一律返回 []，
+ * 绝不影响 AT 主链路。shouldSkip 透传 AT Series 去重判定。
+ */
+async function loadExternalMcpProxyTools(agentDir: string): Promise<ExternalProxyToolLike[]> {
+  let mcp: Record<string, unknown>;
+  try {
+    mcp = (await import('../mcp-client')) as unknown as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const create = mcp.createExternalMcpProxyTools;
+  if (typeof create !== 'function') return [];
+  const shouldSkip = mcp.shouldSkipAtSeriesMcpServer;
+  try {
+    const created: unknown = await (create as (opts: Record<string, unknown>) => unknown)({
+      agentDir,
+      ...(typeof shouldSkip === 'function' ? { shouldSkip } : {})
+    });
+    if (!Array.isArray(created)) return [];
+    return created.filter(
+      (t): t is ExternalProxyToolLike =>
+        !!t &&
+        typeof t === 'object' &&
+        typeof (t as { name?: unknown }).name === 'string' &&
+        typeof (t as { execute?: unknown }).execute === 'function'
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function createPiRuntime(
   handlers: OpsRuntimeHandlers,
   options: CreateOpsRuntimeOptions
@@ -747,17 +877,15 @@ async function createPiRuntime(
 
   let systemPrompt = buildSystemPrompt({});
   const settingsManager = pi.SettingsManager.inMemory();
-  const resourceLoader = new pi.DefaultResourceLoader({
+  // OpsResourceLoader：skills 只从两个白名单根（打包 skills + agentDir/skills）
+  // 发现，noExtensions 恒为 true；其余资源面全关。
+  const bundledSkillsDir = options.bundledSkillsDir ?? defaultBundledSkillsDir(cwd);
+  const skillRoots = skillRootsFor({ bundledSkillsDir, agentDir });
+  const resourceLoader = createOpsResourceLoader(pi, {
     cwd,
     agentDir,
+    bundledSkillsDir,
     settingsManager,
-    // 资源发现由 OpsResourceLoader（后续迭代）负责；这里保持最小面，
-    // 不加载用户目录下的任意扩展/皮肤/上下文文件。
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
     systemPromptOverride: () => systemPrompt
   });
   await resourceLoader.reload();
@@ -774,11 +902,71 @@ async function createPiRuntime(
     }
   });
 
+  // 常驻附加工具（不受 hub selection 影响；仅主会话，子会话一律没有）。
+  const gatedTool = (spec: OpsCustomToolSpec): ToolDefinition =>
+    toPiTool(pi, {
+      ...spec,
+      execute: async (args) => {
+        await applyToolGate(handlers, spec.name, args);
+        return spec.execute(args);
+      }
+    });
+
+  const extraToolNames: string[] = [];
+  const extraTools: ToolDefinition[] = [];
+
+  // ops_read_skill：命中 playbook/vendor 后按需读 SKILL.md / references。
+  const readSkillSpec = createReadSkillTool(skillRoots);
+  extraTools.push(gatedTool(readSkillSpec));
+  extraToolNames.push(readSkillSpec.name);
+
+  // 可选工作区只读（默认关）；开启也只给 ops_read_workspace_file，绝无 bash。
+  if (options.workspaceShellEnabled === true) {
+    const workspaceReadSpec = createWorkspaceReadTool(cwd);
+    extraTools.push(gatedTool(workspaceReadSpec));
+    extraToolNames.push(workspaceReadSpec.name);
+  }
+
+  // 目录热更新判定基线：本次注册进会话的业务工具名快照。
+  const registeredBusinessNames = new Set(
+    listBusinessToolDescriptors(handlers.hub.listAllTools()).map((t) => t.name)
+  );
+
   const customTools = [
     ...buildDiscoveryTools(pi, handlers),
     dispatchTool,
+    ...extraTools,
     ...buildBusinessTools(pi, handlers, agentDir)
   ];
+
+  // 外部 MCP 代理工具（phase-4 可选增强）：导出缺席/失败时静默跳过。
+  const externalProxyTools = await loadExternalMcpProxyTools(agentDir);
+  const takenNames = new Set<string>([
+    ...discoveryToolSpecs.map((s) => s.name),
+    dispatchToolSpec.name,
+    ...extraToolNames,
+    ...registeredBusinessNames
+  ]);
+  for (const proxy of externalProxyTools) {
+    // 保留 at_/ops_ 命名空间给内部工具；重名以 hub 业务工具优先。
+    if (!isBusinessToolName(proxy.name) || takenNames.has(proxy.name)) continue;
+    takenNames.add(proxy.name);
+    extraToolNames.push(proxy.name);
+    customTools.push(
+      toPiTool(pi, {
+        name: proxy.name,
+        label: proxy.label ?? proxy.name,
+        description: proxy.description ?? '',
+        parameters: proxy.parameters ?? { type: 'object', properties: {} },
+        execute: async (args, signal) => {
+          await applyToolGate(handlers, proxy.name, args);
+          const result = await proxy.execute(args, signal);
+          const text = typeof result === 'string' ? result : JSON.stringify(result) ?? String(result);
+          return truncateForModel(text, { pluginId: 'external-mcp', name: proxy.name });
+        }
+      })
+    );
+  }
 
   // P1：主会话 JSONL 持久化到 agentDir/sessions（默认 ~/.at-series/agent/sessions）。
   // 创建失败（目录不可写等）时静默回退 in-memory：runtime 层无 vscode logger，
@@ -795,6 +983,8 @@ async function createPiRuntime(
     agentDir,
     modelRuntime,
     model,
+    // 思考等级透传（缺省时由 pi 按 settings/模型能力决定）。
+    ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}),
     // 不要内置 coding 四件套（read/bash/edit/write）；只保留 custom 工具。
     noTools: 'builtin',
     customTools,
@@ -804,24 +994,31 @@ async function createPiRuntime(
   });
   mainSession = session;
 
-  // 初始 active = 发现工具 + 当前暴露的业务工具；select 变化后即时同步。
-  session.setActiveToolsByName(activeToolNames(handlers));
+  // 初始 active = 发现工具 + 常驻附加工具 + 当前暴露的业务工具；
+  // select 变化后即时同步。
+  session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
   const selectionSub = handlers.hub.selection.onDidChange(() => {
-    session.setActiveToolsByName(activeToolNames(handlers));
+    session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
   });
   // P1：工具目录变化（插件桥接上线/下线）时热刷新工具面。
-  // 已知限制：pi 的 AgentSession 只在 createAgentSession 时注册 customTools，
-  // 之后没有公开 API 追加新的 ToolDefinition——目录里“新增”的工具要等 host
-  // 侧重建 runtime 才能进模型工具面；这里至少把 active 名单同步成最新暴露集
-  // （下线工具立即消失、重新上线的已注册工具立即恢复）。
+  // 已知限制：pi 的 AgentSession 只在 createAgentSession 期接收 customTools
+  // （AgentSessionConfig.customTools，之后是私有 _customTools），0.84.3 没有
+  // 任何公开 API 能事后追加/替换 ToolDefinition（reload() 只重载资源）。
+  // 因此：
+  // - 下线工具立即消失、重新上线的已注册工具立即恢复（setActiveToolsByName）；
+  // - 目录里出现全新的业务工具时，通过 handlers.onCatalogNeedsRebuild 通知
+  //   host disposeRuntime 并重建，新工具才能进模型工具面。
   const toolsSub = handlers.hub.onDidChangeTools?.(() => {
-    session.setActiveToolsByName(activeToolNames(handlers));
+    session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
+    if (catalogGainedNewBusinessTool(registeredBusinessNames, handlers.hub.listAllTools())) {
+      handlers.onCatalogNeedsRebuild?.();
+    }
   });
   const unsubscribe = subscribeSessionEvents(session, handlers);
 
   return {
     async prompt(text: string, opts?: { mode?: 'steer' | 'followUp' }): Promise<void> {
-      try {
+      const run = async (): Promise<void> => {
         if (opts?.mode) {
           await session.prompt(text, { streamingBehavior: opts.mode });
         } else if (session.isStreaming) {
@@ -830,14 +1027,24 @@ async function createPiRuntime(
         } else {
           await session.prompt(text);
         }
+      };
+      try {
+        await run();
       } catch (error) {
-        // prompt 期错误（如凭证被吊销）不往上抛：给 UI 一条事件并回 idle。
-        handlers.onEvent?.({
-          type: 'text_delta',
-          id: 'runtime-error',
-          text: `模型调用失败：${describeError(error)}`
-        });
-        handlers.onEvent?.({ type: 'idle' });
+        try {
+          // Compaction 第 2–3 层：prompt 过长时 session.compact() 一次并
+          // 重试同一条 prompt 一次（严格一次，绝不无限重试）；仍失败抛中文
+          // 「请开新会话」提示。非溢出错误原样 rethrow，走下面的统一上报。
+          await recoverFromPromptError({ session, error, retry: run });
+        } catch (finalError) {
+          // prompt 期错误（如凭证被吊销）不往上抛：给 UI 一条事件并回 idle。
+          handlers.onEvent?.({
+            type: 'text_delta',
+            id: 'runtime-error',
+            text: `模型调用失败：${describeError(finalError)}`
+          });
+          handlers.onEvent?.({ type: 'idle' });
+        }
       }
     },
     abort(): void {
@@ -865,6 +1072,15 @@ async function createPiRuntime(
       // 立即生效于下一次 LLM 调用；后续 setActiveToolsByName 触发的
       // rebuild 会经 resourceLoader.systemPromptOverride 读到同一份。
       session.agent.state.systemPrompt = prompt;
+    },
+    setThinkingLevel(level: OpsThinkingLevel): void {
+      // AgentSession 0.84 提供 setThinkingLevel（按模型能力收敛并落
+      // 会话 transcript）；防御性探测，实现缺席时静默忽略。
+      const setter = (session as { setThinkingLevel?: (l: OpsThinkingLevel) => void })
+        .setThinkingLevel;
+      if (typeof setter === 'function') {
+        setter.call(session, level);
+      }
     },
     dispatchSubagent,
     abortSubagent(taskId: string): void {

@@ -7,7 +7,8 @@
  * - webview 请求路由（chat/prompt、chat/abort、playbook/start、approval/respond…）
  * - beforeToolCall 权限闸装配（policy.evaluate；orchestrator 侧不重复）
  * - playbook 阶段驱动：首条用户消息 triage → selecting → investigating；
- *   进入 investigating/executing/verifying 时下发子代理；阶段迁移时整体替换 L4；
+ *   进入 investigating/executing/verifying/reporting 时下发子代理；
+ *   阶段迁移时整体替换 L4；无进行中 playbook 时 NL 触发词唯一命中可自动启动；
  *   guidedManual（Jenkins/Nacos 人工步骤）发引导提示，completed 后续链路
  * - 会话审批闭环：write/exec 被策略闸拦下时经 orchestrator 产出 9 要素简报，
  *   批准后 host 内存签发 HMAC 令牌（不进 LLM/webview），模型重试同一命令集放行
@@ -38,6 +39,7 @@ import {
   verifyApprovalToken,
   type ApprovalRef
 } from '../policy';
+import { normalizeThinkingLevel, readAgentSettings } from './agentSettings';
 import { buildApprovalCommandSet, buildApprovalElements } from './approvalGate';
 import { FallbackOrchestrator, loadPlaybooksFallback } from './fallback/fallbackOrchestrator';
 import { FallbackRuntime } from './fallback/fallbackRuntime';
@@ -49,9 +51,11 @@ import type {
   PlaybookMeta,
   PlaybookRunLike,
   RuntimeEventLike,
-  RuntimeLike
+  RuntimeLike,
+  ThinkingLevel
 } from './hostTypes';
 import { loadOrchestratorModule, loadRuntimeModule } from './modules';
+import { loginOAuthViaPi } from './oauthLogin';
 import { PlaybookLayerSource } from './playbookLayer';
 import type { OpsSecrets } from './secrets';
 import type { SessionStore } from './sessionStore';
@@ -94,6 +98,10 @@ export class HostController {
   private playbookCache: PlaybookMeta[] | undefined;
   private modelSelection: ModelSetReq | undefined;
   private selectCountThisTask = 0;
+  /** NL 触发词自动启动 playbook：每会话最多一次，不重复替用户拍板。 */
+  private nlTriggerConsumed = false;
+  /** 已知插件基线（plugins.autoEnableNew=false 时用于识别「新上线」插件）。 */
+  private knownPluginIds: Set<string> | undefined;
   /** briefId → runId（applyApproval 需要 runId 定位 run）。 */
   private readonly briefRuns = new Map<string, string>();
   /** briefId → commandSetSha256（批准时签发令牌用；resolved 后清除）。 */
@@ -134,6 +142,7 @@ export class HostController {
     this.layerSource = new PlaybookLayerSource(this.playbooksDir);
 
     this.hubSub = this.hub.onDidChangeTools(() => {
+      this.handleToolCatalogChange();
       this.broadcast('capabilities/snapshot', { providers: this.safeProviders() });
     });
     this.timelineSub = this.store.onDidAppendTimeline((event) => {
@@ -152,6 +161,49 @@ export class HostController {
       return this.hub.getProviders();
     } catch {
       return { hostApp: this.hub.hostApp, providers: [] };
+    }
+  }
+
+  /**
+   * 工具目录变化：plugins.autoEnableNew=false 时，新上线插件不自动纳入
+   * 已选工具面（只记日志）；默认 true 保持现行为（hub 策略决定暴露）。
+   * 首个事件（启动扫描）作为基线，不算「新插件」。
+   */
+  private handleToolCatalogChange(): void {
+    let currentIds: Set<string>;
+    try {
+      currentIds = new Set(this.hub.listAllTools().map((t) => t.pluginId));
+    } catch {
+      return;
+    }
+    const known = this.knownPluginIds;
+    this.knownPluginIds = currentIds;
+    if (!known) return;
+    const fresh = [...currentIds].filter((id) => !known.has(id));
+    if (fresh.length === 0) return;
+    const autoEnable = vscode.workspace
+      .getConfiguration('atOpsAgent')
+      .get<boolean>('plugins.autoEnableNew', true);
+    if (autoEnable) return;
+    this.log(
+      `[hub] 新插件上线：${fresh.join(', ')}；plugins.autoEnableNew=false，不自动纳入已选工具面`
+    );
+    // 有显式选择且新插件工具混进了暴露面时剔除（保持原选择不变）；
+    // 无显式选择（发现模式管理暴露面）只记通知，不强加选择。
+    try {
+      if (this.hub.selection.state().selected.length === 0) return;
+      const freshSet = new Set(fresh);
+      const exposed = this.hub.listExposedTools();
+      const keep = exposed.filter((t) => !freshSet.has(t.pluginId)).map((t) => t.name);
+      if (keep.length === exposed.length) return;
+      void this.hub.selection
+        .select({ names: keep, mode: 'replace' })
+        .then(() =>
+          this.log(`[hub] 已从当前选择剔除新插件工具 ${exposed.length - keep.length} 个`)
+        )
+        .catch((err) => this.log(`[hub] 剔除新插件工具失败: ${describeError(err)}`));
+    } catch (err) {
+      this.log(`[hub] autoEnableNew 处理失败: ${describeError(err)}`);
     }
   }
 
@@ -185,6 +237,8 @@ export class HostController {
         return this.setModel(payload as ModelSetReq);
       case 'playbook/start':
         return this.startPlaybook((payload as { playbookId: string }).playbookId);
+      case 'playbook/escalate-select':
+        return this.applyEscalateSelect();
       case 'approval/respond':
         return this.applyApproval(payload as ApprovalRespondReq);
       case 'subagent/abort': {
@@ -223,6 +277,8 @@ export class HostController {
     const userItem = { kind: 'user' as const, id: randomUUID(), text };
     this.store.appendItem(userItem);
     this.broadcast('transcript/append', { item: userItem });
+    // 无进行中 playbook 时按 yaml triggers（kind=nl）尝试自动启动，再继续对话。
+    await this.maybeAutoStartPlaybook(text);
     const runtime = await this.ensureRuntime();
     // playbook 阶段驱动 + 当前阶段 L4 注入在首次模型调用之前完成。
     await this.advancePlaybookForPrompt();
@@ -258,6 +314,7 @@ export class HostController {
   newSession(): void {
     this.store.newSession();
     this.selectCountThisTask = 0;
+    this.nlTriggerConsumed = false;
     this.briefRuns.clear();
     this.briefHashes.clear();
     this.currentApproval = null;
@@ -320,6 +377,76 @@ export class HostController {
       this.broadcast('playbook/stage', { playbookId, stage: run.stage });
     }
     return { ok: true, stage };
+  }
+
+  /**
+   * NL 触发词（playbook.yaml triggers.kind=nl 的 patterns）自动启动 playbook：
+   * 仅在没有进行中 playbook、且 **唯一** 命中一条时启动（多条命中视为不确定，
+   * 绝不静默替用户拍板，也绝不默认落到 pb.incident）。每会话最多自动启动一次。
+   */
+  private async maybeAutoStartPlaybook(text: string): Promise<void> {
+    if (this.nlTriggerConsumed || this.activeRun || this.store.playbook) return;
+    let playbooks: PlaybookMeta[];
+    try {
+      playbooks = await this.getPlaybooks();
+    } catch {
+      return;
+    }
+    const matches = playbooks.filter((pb) => matchesNlTrigger(pb, text));
+    if (matches.length !== 1) {
+      if (matches.length > 1) {
+        this.log(
+          `[playbook] NL 触发词命中多条（${matches.map((p) => p.id).join(', ')}），不自动启动`
+        );
+      }
+      return;
+    }
+    this.nlTriggerConsumed = true;
+    const target = matches[0];
+    this.log(`[playbook] 用户输入命中 ${target.id} 的 NL 触发词，自动启动`);
+    try {
+      const result = await this.startPlaybook(target.id);
+      if (result.ok) {
+        this.emitAssistantNotice(
+          `已根据触发词自动启动 playbook **${target.title ?? target.id}**（${target.id}）。` +
+            `如不需要可通过标题栏重新选择链路。`
+        );
+      }
+    } catch (err) {
+      this.log(`[playbook] NL 自动启动 ${target.id} 失败: ${describeError(err)}`);
+    }
+  }
+
+  /**
+   * playbook/escalate-select：把当前阶段 yaml 的 escalateSelect（mode=add）
+   * 应用到 hub.selection。首轮 investigating 之后 host 绝不自动调用——
+   * 扩面由用户/模型显式请求驱动。
+   */
+  async applyEscalateSelect(): Promise<{ ok: boolean; reason?: string }> {
+    const run = this.activeRun;
+    if (!run) return { ok: false, reason: '没有进行中的 playbook run' };
+    const orchestrator = await this.ensureOrchestrator();
+    let desired = orchestrator.desiredEscalateSelect?.(run);
+    if (!desired) {
+      // orchestrator 未实现时退回 playbook 元数据（同一 yaml 真源）。
+      const playbookId = this.store.playbook?.id ?? run.playbookId;
+      const stage = this.currentStage(run);
+      const meta = (await this.getPlaybooks()).find((p) => p.id === playbookId);
+      desired = meta?.stages?.find((s) => s.id === stage)?.escalateSelect;
+    }
+    if (!desired) return { ok: false, reason: '当前阶段没有 escalateSelect 定义' };
+    try {
+      await this.hub.selection.select({ ...desired, mode: 'add' });
+      this.selectCountThisTask += 1;
+      orchestrator.recordSelect?.(run);
+      this.log(
+        `[hub] escalateSelect 已应用（${(desired.pluginIds ?? desired.names ?? []).join(', ')}）`
+      );
+      return { ok: true };
+    } catch (err) {
+      this.log(`[hub] escalateSelect 失败: ${describeError(err)}`);
+      return { ok: false, reason: describeError(err) };
+    }
   }
 
   async applyApproval(req: ApprovalRespondReq): Promise<{ ok: boolean }> {
@@ -425,7 +552,13 @@ export class HostController {
 
   /** 阶段进入钩子：下发子代理、注入 L4、guidedManual 提示。绝不抛出。 */
   private handleStageEntered(runId: string, playbookId: string, stage: string): void {
-    if (stage === 'investigating' || stage === 'executing' || stage === 'verifying') {
+    // reporting 阶段的 parallelGroup 是 writer（运维文档产出），一并下发。
+    if (
+      stage === 'investigating' ||
+      stage === 'executing' ||
+      stage === 'verifying' ||
+      stage === 'reporting'
+    ) {
       void this.spawnSubagentsFor(runId, stage).catch((err) =>
         this.log(`[subagent] spawn 失败: ${describeError(err)}`)
       );
@@ -734,6 +867,7 @@ export class HostController {
     let runtime: RuntimeLike;
     if (mod) {
       try {
+        const config = vscode.workspace.getConfiguration('atOpsAgent');
         // 真 runtime 创建期内部兜底（缺 key → 自带 FallbackRuntime），不抛出。
         runtime = await Promise.resolve(
           mod.createOpsRuntime(
@@ -744,6 +878,12 @@ export class HostController {
               onSubagentEvent: (e) => {
                 this.patchSubagentCard(e.taskId, e.status, e.summary ?? e.error);
                 if (e.evidenceNote) this.appendEvidenceNote(e.evidenceNote);
+              },
+              // pi 会话无法追加新 ToolDefinition：目录需要重建时释放 runtime，
+              // 下一次 prompt 以最新工具目录重建。
+              onCatalogNeedsRebuild: () => {
+                this.log('[runtime] 工具目录需重建：释放当前 runtime，下次 prompt 重建工具面');
+                this.disposeRuntime();
               }
             },
             {
@@ -752,7 +892,10 @@ export class HostController {
               model: this.modelSelection
                 ? { provider: this.modelSelection.provider, id: this.modelSelection.model }
                 : undefined,
-              getApiKey: () => Promise.resolve(this.secrets.getLlmApiKey())
+              getApiKey: () => Promise.resolve(this.secrets.getLlmApiKey()),
+              bundledSkillsDir: path.join(this.extensionPath, 'skills'),
+              thinkingLevel: await this.resolveThinkingLevel(config),
+              workspaceShellEnabled: config.get<boolean>('workspaceShell.enabled', false)
             }
           )
         );
@@ -800,6 +943,39 @@ export class HostController {
     void Promise.resolve()
       .then(() => runtime.dispose())
       .catch((err) => this.log(`[runtime] dispose 失败: ${describeError(err)}`));
+  }
+
+  /** 思考等级：会话内 model/set → agentDir settings.json → 配置默认（medium）。 */
+  private async resolveThinkingLevel(config: vscode.WorkspaceConfiguration): Promise<ThinkingLevel> {
+    if (this.modelSelection?.thinkingLevel) return this.modelSelection.thinkingLevel;
+    const fromSettings = normalizeThinkingLevel(
+      (await readAgentSettings(this.agentDir)).thinkingLevel
+    );
+    if (fromSettings) return fromSettings;
+    return (
+      normalizeThinkingLevel(config.get<string>('models.defaultThinkingLevel', 'medium')) ??
+      'medium'
+    );
+  }
+
+  /**
+   * Models 面板 OAuth 页入口：优先 runtime.loginOAuth（已创建且支持时），
+   * 否则 host 直驱 pi ModelRuntime.login（src/host/oauthLogin.ts）。
+   * 结果消息绝不含 token。
+   */
+  async loginOAuth(providerId: string): Promise<{ ok: boolean; message: string }> {
+    const trimmed = typeof providerId === 'string' ? providerId.trim() : '';
+    if (trimmed.length === 0) return { ok: false, message: '请先填写 provider id。' };
+    const runtime = this.runtime;
+    if (runtime?.loginOAuth) {
+      try {
+        await runtime.loginOAuth(trimmed);
+        return { ok: true, message: `OAuth 登录完成（${trimmed}），凭证已写入 auth.json。` };
+      } catch (err) {
+        this.log(`[oauth] runtime.loginOAuth 失败: ${describeError(err)}，改走 host 直驱`);
+      }
+    }
+    return loginOAuthViaPi({ providerId: trimmed, agentDir: this.agentDir, log: (m) => this.log(m) });
   }
 
   // ── 权限闸（policy.evaluate 装配点） ──────────────────────────────────
@@ -958,7 +1134,12 @@ export class HostController {
           this.broadcast('transcript/append', { item });
         }
         this.store.appendThinkingText(e.id, e.text);
-        this.broadcast('thinking/delta', { itemId: e.id, text: e.text });
+        const untrustedQuotes = this.collectUntrustedQuotes(e.id);
+        this.broadcast('thinking/delta', {
+          itemId: e.id,
+          text: e.text,
+          ...(untrustedQuotes !== undefined ? { untrustedQuotes } : {})
+        });
         break;
       }
       case 'tool_start': {
@@ -1000,6 +1181,36 @@ export class HostController {
         // runtime 可扩展事件面；未知类型忽略。
         break;
     }
+  }
+
+  /**
+   * pb.security-triage 的思考卡片附「不可信引用」（docs/07 提示注入防线）：
+   * 最近工具输出 preview 里疑似日志/SQL 的片段单独框出，提醒操作者
+   * 这些内容来自被调查对象、可能包含注入指令，不能当作 Agent 结论。
+   */
+  private collectUntrustedQuotes(thinkingItemId: string): string[] | undefined {
+    if (this.store.playbook?.id !== 'pb.security-triage') return undefined;
+    const item = this.store.findItem(thinkingItemId);
+    if (item?.kind !== 'thinking') return undefined;
+    const items = this.store.items;
+    let idx = items.findIndex((i) => i.id === thinkingItemId);
+    if (idx < 0) idx = items.length;
+    // 从思考卡片往前扫本轮（遇 user 停）最近的工具输出，最多取 3 条命中。
+    const quotes: string[] = [];
+    for (let i = idx - 1, scanned = 0; i >= 0 && scanned < 8 && quotes.length < 3; i -= 1) {
+      const candidate = items[i];
+      if (candidate.kind === 'user') break;
+      if (candidate.kind !== 'tool') continue;
+      scanned += 1;
+      const preview = candidate.call.preview;
+      if (typeof preview === 'string' && looksLikeLogOrSql(preview)) {
+        quotes.push(truncateUntrustedQuote(preview));
+      }
+    }
+    if (quotes.length === 0) return item.untrustedQuotes;
+    const merged = [...new Set([...(item.untrustedQuotes ?? []), ...quotes.reverse()])].slice(0, 5);
+    item.untrustedQuotes = merged;
+    return merged;
   }
 
   // ── orchestrator 事件 → host-protocol ─────────────────────────────────
@@ -1068,6 +1279,41 @@ export class HostController {
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** kind=nl 触发词匹配：pattern 先按（大小写不敏感）正则试，非法正则退回子串包含。 */
+function matchesNlTrigger(pb: PlaybookMeta, text: string): boolean {
+  const lower = text.toLowerCase();
+  for (const trigger of pb.triggers ?? []) {
+    if (trigger.kind !== 'nl') continue;
+    for (const pattern of trigger.patterns ?? []) {
+      if (typeof pattern !== 'string' || pattern.trim().length === 0) continue;
+      try {
+        if (new RegExp(pattern, 'i').test(text)) return true;
+      } catch {
+        if (lower.includes(pattern.toLowerCase())) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** 简单启发式：工具输出是否像日志 / SQL（时间戳、日志级别、异常栈、SQL 关键字）。 */
+function looksLikeLogOrSql(text: string): boolean {
+  return (
+    /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?/.test(text) ||
+    /\b(ERROR|WARN(ING)?|FATAL|SEVERE|PANIC)\b/.test(text) ||
+    /\b(exception|stack ?trace|traceback)\b/i.test(text) ||
+    /^\s*at\s+[\w$.<>]+\s*\(/m.test(text) ||
+    /\b(select|insert|update|delete|drop|alter|union)\b[\s\S]{0,200}\b(from|into|table|where|values|set)\b/i.test(
+      text
+    )
+  );
+}
+
+function truncateUntrustedQuote(text: string, limit = 240): string {
+  const single = text.replace(/\s+/g, ' ').trim();
+  return single.length > limit ? `${single.slice(0, limit)}…` : single;
 }
 
 const SUBAGENT_STATUSES: ReadonlySet<string> = new Set([

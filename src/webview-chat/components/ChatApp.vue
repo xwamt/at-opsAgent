@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { t } from '../i18n';
 import { useOpsStore } from '../store';
 import ApprovalBar from './ApprovalBar.vue';
 import ChatTranscript from './ChatTranscript.vue';
@@ -12,9 +13,9 @@ import SkillPicker from './SkillPicker.vue';
 
 const store = useOpsStore();
 
-const runState = computed(() => (store.streaming ? '运行中' : '空闲'));
+const runState = computed(() => (store.streaming ? t('statusRunning') : t('statusIdle')));
 const sessionShort = computed(() =>
-  store.sessionId ? store.sessionId.slice(0, 12) : '无会话'
+  store.sessionId ? store.sessionId.slice(0, 12) : t('statusNoSession')
 );
 </script>
 
@@ -42,7 +43,7 @@ const sessionShort = computed(() =>
           :label="p.label"
           :connected="p.connected"
         />
-        <span v-if="store.providerChips.length === 0" class="ops-muted">无能力插件</span>
+        <span v-if="store.providerChips.length === 0" class="ops-muted">{{ t('statusNoProviders') }}</span>
       </span>
       <span v-if="store.mock" class="chat-app__mock" title="未检测到 acquireVsCodeApi，使用本地 mock host">mock</span>
     </footer>

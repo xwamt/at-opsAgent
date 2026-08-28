@@ -15,7 +15,8 @@ import type {
   OrchestratorEventLike,
   OrchestratorLike,
   PlaybookMeta,
-  PlaybookRunLike
+  PlaybookRunLike,
+  PlaybookTriggerMeta
 } from '../hostTypes';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -43,6 +44,20 @@ function toGuidedManual(value: unknown): GuidedManualMeta | undefined {
   };
 }
 
+function toTriggers(value: unknown): PlaybookTriggerMeta[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const triggers = value
+    .filter(isRecord)
+    .filter((t): t is Record<string, unknown> & { kind: string } => typeof t.kind === 'string')
+    .map((t) => ({
+      kind: t.kind,
+      patterns: Array.isArray(t.patterns)
+        ? t.patterns.filter((p): p is string => typeof p === 'string')
+        : undefined
+    }));
+  return triggers.length > 0 ? triggers : undefined;
+}
+
 export async function loadPlaybooksFallback(rootDir: string): Promise<PlaybookMeta[]> {
   let entries: string[];
   try {
@@ -65,6 +80,7 @@ export async function loadPlaybooksFallback(rootDir: string): Promise<PlaybookMe
           id: typeof stage.id === 'string' ? stage.id : '',
           prompt: typeof stage.prompt === 'string' ? stage.prompt : undefined,
           select: toSelect(stage.select),
+          escalateSelect: toSelect(stage.escalateSelect),
           guidedManual: toGuidedManual(stage.guidedManual)
         }))
       : undefined;
@@ -72,6 +88,7 @@ export async function loadPlaybooksFallback(rootDir: string): Promise<PlaybookMe
       id: raw.id,
       title: typeof raw.title === 'string' ? raw.title : undefined,
       description: typeof raw.description === 'string' ? raw.description : undefined,
+      triggers: toTriggers(raw.triggers),
       stages
     });
   }
@@ -112,6 +129,14 @@ export class FallbackOrchestrator implements OrchestratorLike {
     if (!run) return undefined;
     const playbook = this.playbooks.find((p) => p.id === run.playbookId);
     return playbook?.stages?.find((s) => s.id === run.stage)?.select;
+  }
+
+  /** 不自动应用；host 收到 playbook/escalate-select 请求时才用它扩面。 */
+  desiredEscalateSelect(runOrId: PlaybookRunLike | string): SelectToolsInput | undefined {
+    const run = typeof runOrId === 'string' ? this.runs.get(runOrId) : runOrId;
+    if (!run) return undefined;
+    const playbook = this.playbooks.find((p) => p.id === run.playbookId);
+    return playbook?.stages?.find((s) => s.id === run.stage)?.escalateSelect;
   }
 
   getRun(id: string): PlaybookRunLike | undefined {

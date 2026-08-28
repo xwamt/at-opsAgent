@@ -47,7 +47,18 @@ export interface PlaybookStageMeta {
   /** 阶段提示词文件（相对 playbook 目录，如 references/triage.md），L4 注入用。 */
   prompt?: string;
   select?: SelectToolsInput;
+  /**
+   * 升级扩面指令（yaml escalateSelect，mode 恒为 add）。
+   * 不自动应用：由 playbook/escalate-select 请求（用户/模型驱动）触发。
+   */
+  escalateSelect?: SelectToolsInput;
   guidedManual?: GuidedManualMeta;
+}
+
+/** playbook 触发器（真 PlaybookTrigger 的最小面；host 只消费 kind=nl 的 patterns）。 */
+export interface PlaybookTriggerMeta {
+  kind: string;
+  patterns?: string[];
 }
 
 /** playbook.yaml 中 host 需要的最小面（真 Playbook 类型是其超集）。 */
@@ -55,6 +66,7 @@ export interface PlaybookMeta {
   id: string;
   title?: string;
   description?: string;
+  triggers?: PlaybookTriggerMeta[];
   stages?: PlaybookStageMeta[];
 }
 
@@ -82,6 +94,11 @@ export type OrchestratorEventLike =
 export interface OrchestratorLike {
   startPlaybook(playbookId: string, sessionId: string): PlaybookRunLike;
   desiredSelect?(runOrId: PlaybookRunLike | string): SelectToolsInput | undefined;
+  /**
+   * 当前阶段 yaml 的 escalateSelect（mode=add 扩面）。host 绝不自动调用——
+   * 只在收到 playbook/escalate-select 请求时应用到 hub.selection。
+   */
+  desiredEscalateSelect?(runOrId: PlaybookRunLike | string): SelectToolsInput | undefined;
   /**
    * 产出 9 要素审批简报并进入 awaitingApproval（同步 emit approval/request）。
    * 可选：fallback 编排缺席时 host 退回纯文本拒绝。
@@ -116,6 +133,9 @@ export interface OrchestratorModule {
 }
 
 // ── runtime 模块 ─────────────────────────────────────────────────────────
+
+/** 思考等级（与 host-protocol ModelSetReq.thinkingLevel 同一取值集合）。 */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type RuntimeEventLike =
   | { type: 'text_delta'; id: string; text: string }
@@ -153,6 +173,11 @@ export interface RuntimeHandlers {
       refs?: Array<{ kind: string; preview: string; artifactUri?: string }>;
     };
   }) => void;
+  /**
+   * 工具目录需要整体重建时回调（pi 会话无法追加新 ToolDefinition）。
+   * host 收到后 disposeRuntime，下一次 prompt 以最新目录重建工具面。
+   */
+  onCatalogNeedsRebuild?: () => void;
 }
 
 export interface RuntimeLike {
@@ -164,6 +189,11 @@ export interface RuntimeLike {
   dispatchSubagent?(spec: unknown): Promise<{ taskId: string; status: string }>;
   /** 中止单个子代理，不牵连主会话。 */
   abortSubagent?(taskId: string): void;
+  /**
+   * OAuth 登录（Models 面板 OAuth 页驱动）：由 pi ModelRuntime.login 完成，
+   * 凭证写 ~/.at-series/agent/auth.json（0600），不进 models.json、不写日志。
+   */
+  loginOAuth?(providerId: string): Promise<void>;
 }
 
 export interface RuntimeCreateOptions {
@@ -172,6 +202,12 @@ export interface RuntimeCreateOptions {
   model?: { provider?: string; id?: string };
   /** 从 SecretStorage 解析 LLM key；runtime 注入 pi，永不写入日志。 */
   getApiKey?: () => Promise<string | undefined>;
+  /** 打包技能目录（extensionPath/skills）；runtime 资源加载（skills 渐进披露）。 */
+  bundledSkillsDir?: string;
+  /** 主会话思考等级：modelSelection.thinkingLevel → agentDir settings.json → 配置默认。 */
+  thinkingLevel?: ThinkingLevel;
+  /** 受限工作区 shell 开关（atOpsAgent.workspaceShell.enabled，默认关）。 */
+  workspaceShellEnabled?: boolean;
 }
 
 export interface RuntimeModule {

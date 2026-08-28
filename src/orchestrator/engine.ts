@@ -15,7 +15,9 @@ export const STAGE_TRANSITIONS: Readonly<Record<StageId, readonly StageId[]>> = 
   awaitingApproval: ['executing', 'reporting'],
   executing: ['verifying', 'awaitingApproval'],
   verifying: ['reporting'],
-  guidedManual: ['reporting'],
+  // mermaid 只画了 GuidedManual → Reporting；docs/04 §2.2 要求「用户完成后
+  // → Verifying（只读确认）」。两条都合法，pb.release 的 verifying 才可达。
+  guidedManual: ['reporting', 'verifying'],
   reporting: ['closed'],
   escalated: ['closed'],
   closed: []
@@ -26,11 +28,13 @@ export class IllegalStageTransitionError extends Error {
 
   constructor(
     readonly from: StageId,
-    readonly to: StageId
+    readonly to: StageId,
+    allowedNext?: readonly StageId[]
   ) {
+    const next = allowedNext ?? STAGE_TRANSITIONS[from];
     super(
       `非法阶段迁移 ${from} → ${to}；允许的下一步：${
-        STAGE_TRANSITIONS[from].length > 0 ? STAGE_TRANSITIONS[from].join(', ') : '（终态）'
+        next.length > 0 ? next.join(', ') : '（终态）'
       }`
     );
     this.name = 'IllegalStageTransitionError';
@@ -41,9 +45,22 @@ export function canTransition(from: StageId, to: StageId): boolean {
   return STAGE_TRANSITIONS[from].includes(to);
 }
 
-export function assertTransition(from: StageId, to: StageId): void {
-  if (!canTransition(from, to)) {
-    throw new IllegalStageTransitionError(from, to);
+/**
+ * 校验迁移合法性。传 allowedStages（某条 playbook yaml 声明的阶段集合）时，
+ * 目标阶段还必须在该集合内——pb.security-triage 没有 executing /
+ * awaitingApproval 阶段，因此永远进不了执行路径。
+ */
+export function assertTransition(
+  from: StageId,
+  to: StageId,
+  allowedStages?: ReadonlySet<StageId>
+): void {
+  const next =
+    allowedStages === undefined
+      ? STAGE_TRANSITIONS[from]
+      : STAGE_TRANSITIONS[from].filter((stage) => allowedStages.has(stage));
+  if (!next.includes(to)) {
+    throw new IllegalStageTransitionError(from, to, next);
   }
 }
 

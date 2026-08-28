@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -40,26 +40,41 @@ import {
   type DiscoveryHub
 } from '../src/runtime/discovery-tools';
 import {
+  COMPACTION_NEW_SESSION_MESSAGE,
   DEFAULT_SUBAGENT_BUDGET,
   DISPATCH_TOOL_NAME,
   FALLBACK_NOTICE,
   MODEL_RESULT_CHAR_LIMIT,
+  READ_SKILL_TOOL_NAME,
+  READ_WORKSPACE_FILE_TOOL_NAME,
   ROLE_PARALLEL_LIMITS,
+  SKILL_FILE_CHAR_LIMIT,
   SUBAGENT_SUMMARY_CHAR_LIMIT,
   TOOL_END_PREVIEW_LIMIT,
   TOOL_RESULTS_DIRNAME,
+  WORKSPACE_FILE_CHAR_LIMIT,
   buildSystemPrompt,
   buildTaskSpec,
+  catalogGainedNewBusinessTool,
   createFallbackRuntime,
   createOpsRuntime,
+  createReadSkillTool,
   createSubagentManager,
+  createWorkspaceReadTool,
+  defaultBundledSkillsDir,
   dispatchToolSpec,
   executeBusinessTool,
   filterToolsForSubagent,
   isCancelledInvocation,
+  isPromptTooLongError,
   normalizeDispatchInput,
   parseContractJson,
   parseEvidenceNote,
+  readSkillFile,
+  readWorkspaceFile,
+  recoverFromPromptError,
+  resolveUnderRoot,
+  skillRootsFor,
   truncateForModel,
   truncatePreview,
   truncateSummary,
@@ -67,6 +82,7 @@ import {
   type OpsRuntimeEvent,
   type OpsRuntimeHandlers,
   type OpsSubagentEvent,
+  type OpsThinkingLevel,
   type SubagentRunOutcome,
   type SubagentStatusEvent
 } from '../src/runtime';
@@ -1090,5 +1106,307 @@ describe('ops_dispatch_subagent 契约', () => {
     expect(outcome.notice).toContain(FALLBACK_NOTICE);
     expect(() => runtime.abortSubagent('whatever')).not.toThrow();
     expect(events).toHaveLength(0);
+  });
+});
+
+// ── OpsResourceLoader / ops_read_skill ──────────────────────────────────
+
+describe('skills 根目录与 ops_read_skill', () => {
+  it('defaultBundledSkillsDir / skillRootsFor 组装两个白名单根', () => {
+    expect(defaultBundledSkillsDir('/ext')).toBe(join('/ext', 'skills'));
+    expect(defaultBundledSkillsDir()).toBe(join(process.cwd(), 'skills'));
+    expect(
+      skillRootsFor({ bundledSkillsDir: '/bundle/skills', agentDir: '/home/u/.at-series/agent' })
+    ).toEqual(['/bundle/skills', join('/home/u/.at-series/agent', 'skills')]);
+  });
+
+  it('resolveUnderRoot 拒绝路径穿越：..、绝对路径、反斜杠、空串', () => {
+    const root = '/roots/skills';
+    expect(resolveUnderRoot(root, '../secret')).toBeUndefined();
+    expect(resolveUnderRoot(root, 'a/../../etc/passwd')).toBeUndefined();
+    // 保守策略：含 .. 段一律拒绝，即使解析结果仍在根内
+    expect(resolveUnderRoot(root, 'a/../b')).toBeUndefined();
+    expect(resolveUnderRoot(root, '/etc/passwd')).toBeUndefined();
+    expect(resolveUnderRoot(root, 'a\\..\\b')).toBeUndefined();
+    expect(resolveUnderRoot(root, '')).toBeUndefined();
+    expect(resolveUnderRoot(root, '   ')).toBeUndefined();
+
+    expect(resolveUnderRoot(root, 'playbooks/incident-response/SKILL.md')).toBe(
+      join(root, 'playbooks/incident-response/SKILL.md')
+    );
+    expect(resolveUnderRoot(root, './SKILL.md')).toBe(join(root, 'SKILL.md'));
+  });
+
+  it('readSkillFile 按根顺序读 utf8，64KB 截断，缺失/穿越给中文错误', async () => {
+    const bundled = mkdtempSync(join(tmpdir(), 'ops-skills-bundled-'));
+    const user = mkdtempSync(join(tmpdir(), 'ops-skills-user-'));
+    mkdirSync(join(bundled, 'playbooks', 'incident-response'), { recursive: true });
+    writeFileSync(join(bundled, 'playbooks', 'incident-response', 'SKILL.md'), '# 演练\n中文内容');
+    writeFileSync(join(user, 'mine.md'), 'x'.repeat(SKILL_FILE_CHAR_LIMIT + 10));
+
+    const roots = [bundled, user];
+    const hit = await readSkillFile(roots, 'playbooks/incident-response/SKILL.md');
+    expect(hit.ok).toBe(true);
+    if (hit.ok) {
+      expect(hit.root).toBe(bundled);
+      expect(hit.content).toContain('中文内容');
+      expect(hit.truncated).toBe(false);
+    }
+
+    // 第一根不存在时回退到第二根（用户 skills）
+    const big = await readSkillFile(roots, 'mine.md');
+    expect(big.ok).toBe(true);
+    if (big.ok) {
+      expect(big.root).toBe(user);
+      expect(big.truncated).toBe(true);
+      expect(big.content.length).toBe(SKILL_FILE_CHAR_LIMIT);
+      expect(big.notice).toContain('截断');
+    }
+
+    const missing = await readSkillFile(roots, 'nope.md');
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain('未找到');
+
+    const traversal = await readSkillFile(roots, '../evil');
+    expect(traversal.ok).toBe(false);
+    if (!traversal.ok) expect(traversal.error).toContain('不合法');
+  });
+
+  it('ops_read_skill spec：固定名、按需读取指引、execute 返回 JSON 且拒绝穿越', async () => {
+    const bundled = mkdtempSync(join(tmpdir(), 'ops-skills-spec-'));
+    writeFileSync(join(bundled, 'SKILL.md'), 'hello skill');
+    const spec = createReadSkillTool([bundled]);
+
+    expect(spec.name).toBe(READ_SKILL_TOOL_NAME);
+    expect(READ_SKILL_TOOL_NAME).toBe('ops_read_skill');
+    expect(spec.parameters).toMatchObject({ type: 'object', required: ['path'] });
+    // 描述必须告诉模型：命中 playbook/vendor 后按需读，不整段进 system prompt
+    expect(spec.description).toContain('playbook');
+    expect(spec.description).toContain('不要把全文塞进 system prompt');
+
+    const okText = await spec.execute({ path: 'SKILL.md' });
+    expect(JSON.parse(okText)).toMatchObject({ ok: true, content: 'hello skill', truncated: false });
+
+    const badText = await spec.execute({ path: '../../etc/passwd' });
+    expect(JSON.parse(badText)).toMatchObject({ ok: false });
+    const absText = await spec.execute({ path: '/etc/passwd' });
+    expect(JSON.parse(absText)).toMatchObject({ ok: false });
+  });
+});
+
+// ── thinkingLevel 选项 ───────────────────────────────────────────────────
+
+describe('CreateOpsRuntimeOptions.thinkingLevel', () => {
+  it('类型接受全部 7 档；bundledSkillsDir / workspaceShellEnabled 同为可选', () => {
+    const levels: OpsThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    for (const level of levels) {
+      const options: CreateOpsRuntimeOptions = { thinkingLevel: level };
+      expect(options.thinkingLevel).toBe(level);
+    }
+    const full: CreateOpsRuntimeOptions = {
+      thinkingLevel: 'high',
+      bundledSkillsDir: '/ext/skills',
+      workspaceShellEnabled: true
+    };
+    expect(full.bundledSkillsDir).toBe('/ext/skills');
+    expect(full.workspaceShellEnabled).toBe(true);
+    // 默认关：不显式开启时应为 undefined（不注册工作区读取工具）
+    const bare: CreateOpsRuntimeOptions = {};
+    expect(bare.workspaceShellEnabled).toBeUndefined();
+  });
+
+  it('OpsRuntime.setThinkingLevel 在 Fallback 上是安全 no-op', () => {
+    const runtime = createFallbackRuntime({ hub: makeFakeHub() });
+    expect(() => runtime.setThinkingLevel('high')).not.toThrow();
+    expect(() => runtime.setThinkingLevel('off')).not.toThrow();
+  });
+});
+
+// ── Compaction 第 2–3 层（prompt 过长恢复）──────────────────────────────
+
+describe('compaction（prompt 过长时 compact 一次 + 重试一次）', () => {
+  it('isPromptTooLongError 识别典型溢出错误，放过其他错误', () => {
+    expect(isPromptTooLongError(new Error('Prompt is too long: 210000 tokens > 200000 maximum'))).toBe(true);
+    expect(isPromptTooLongError(new Error('context_length_exceeded'))).toBe(true);
+    expect(isPromptTooLongError(new Error("This model's maximum context length is 128000 tokens"))).toBe(true);
+    expect(isPromptTooLongError('input is too long for this model')).toBe(true);
+    expect(isPromptTooLongError(new Error('ECONNRESET'))).toBe(false);
+    expect(isPromptTooLongError(new Error('凭证被吊销'))).toBe(false);
+    expect(isPromptTooLongError(undefined)).toBe(false);
+  });
+
+  it('非溢出错误原样上抛，不触发 compact 也不重试', async () => {
+    let compactCalls = 0;
+    let retries = 0;
+    const boom = new Error('凭证被吊销');
+    await expect(
+      recoverFromPromptError({
+        session: {
+          compact: async () => {
+            compactCalls += 1;
+          }
+        },
+        error: boom,
+        retry: async () => {
+          retries += 1;
+        }
+      })
+    ).rejects.toBe(boom);
+    expect(compactCalls).toBe(0);
+    expect(retries).toBe(0);
+  });
+
+  it('溢出：compact 一次 + retry 一次成功即恢复', async () => {
+    let compactCalls = 0;
+    let retries = 0;
+    await recoverFromPromptError({
+      session: {
+        compact: async () => {
+          compactCalls += 1;
+        }
+      },
+      error: new Error('prompt is too long'),
+      retry: async () => {
+        retries += 1;
+      }
+    });
+    expect(compactCalls).toBe(1);
+    expect(retries).toBe(1);
+  });
+
+  it('compact 后重试仍失败 → 中文「开新会话」错误，绝不无限重试', async () => {
+    let compactCalls = 0;
+    let retries = 0;
+    await expect(
+      recoverFromPromptError({
+        session: {
+          compact: async () => {
+            compactCalls += 1;
+          }
+        },
+        error: new Error('prompt is too long'),
+        retry: async () => {
+          retries += 1;
+          throw new Error('prompt is too long');
+        }
+      })
+    ).rejects.toThrow(COMPACTION_NEW_SESSION_MESSAGE);
+    expect(compactCalls).toBe(1);
+    expect(retries).toBe(1);
+    expect(COMPACTION_NEW_SESSION_MESSAGE).toContain('新会话');
+  });
+
+  it('会话不支持 compact / compact 本身失败 → 中文错误且不重试', async () => {
+    await expect(
+      recoverFromPromptError({
+        session: {},
+        error: new Error('prompt too long'),
+        retry: async () => {
+          throw new Error('不应被调用');
+        }
+      })
+    ).rejects.toThrow(COMPACTION_NEW_SESSION_MESSAGE);
+
+    let retries = 0;
+    await expect(
+      recoverFromPromptError({
+        session: {
+          compact: async () => {
+            throw new Error('compaction failed');
+          }
+        },
+        error: new Error('prompt too long'),
+        retry: async () => {
+          retries += 1;
+        }
+      })
+    ).rejects.toThrow(COMPACTION_NEW_SESSION_MESSAGE);
+    expect(retries).toBe(0);
+  });
+});
+
+// ── 可选工作区只读（ops_read_workspace_file）────────────────────────────
+
+describe('ops_read_workspace_file（默认关，开启也只读）', () => {
+  it('readWorkspaceFile 限定 cwd、拒绝 .. 与绝对路径、64KB 截断', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'ops-ws-'));
+    mkdirSync(join(cwd, 'config'), { recursive: true });
+    writeFileSync(join(cwd, 'config', 'app.yaml'), 'port: 8080');
+    writeFileSync(join(cwd, 'big.log'), 'y'.repeat(WORKSPACE_FILE_CHAR_LIMIT + 5));
+
+    const ok = await readWorkspaceFile(cwd, 'config/app.yaml');
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.content).toBe('port: 8080');
+      expect(ok.truncated).toBe(false);
+    }
+
+    const big = await readWorkspaceFile(cwd, 'big.log');
+    expect(big.ok).toBe(true);
+    if (big.ok) {
+      expect(big.truncated).toBe(true);
+      expect(big.content.length).toBe(WORKSPACE_FILE_CHAR_LIMIT);
+    }
+
+    const traversal = await readWorkspaceFile(cwd, '../outside');
+    expect(traversal.ok).toBe(false);
+    if (!traversal.ok) expect(traversal.error).toContain('不合法');
+    const absolute = await readWorkspaceFile(cwd, '/etc/passwd');
+    expect(absolute.ok).toBe(false);
+    const missing = await readWorkspaceFile(cwd, 'nope.txt');
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain('无法读取');
+  });
+
+  it('工具 spec：固定名、只读描述、execute 返回 JSON', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'ops-ws-spec-'));
+    writeFileSync(join(cwd, 'a.txt'), 'abc');
+    const spec = createWorkspaceReadTool(cwd);
+    expect(spec.name).toBe(READ_WORKSPACE_FILE_TOOL_NAME);
+    expect(READ_WORKSPACE_FILE_TOOL_NAME).toBe('ops_read_workspace_file');
+    expect(spec.parameters).toMatchObject({ type: 'object', required: ['path'] });
+    expect(spec.description).toContain('只读');
+    expect(JSON.parse(await spec.execute({ path: 'a.txt' }))).toMatchObject({
+      ok: true,
+      content: 'abc'
+    });
+    expect(JSON.parse(await spec.execute({ path: '../b' }))).toMatchObject({ ok: false });
+  });
+});
+
+// ── 热目录：新业务工具需要重建 runtime ──────────────────────────────────
+
+describe('catalogGainedNewBusinessTool / onCatalogNeedsRebuild', () => {
+  it('出现注册集之外的新业务工具名 → true；仅 at_/ops_ 新增或子集 → false', () => {
+    const registered = new Set(['grafana_query_prometheus', 'grafana_list_dashboards']);
+    const base = [descriptor({ name: 'grafana_query_prometheus' })];
+    expect(catalogGainedNewBusinessTool(registered, base)).toBe(false);
+    expect(catalogGainedNewBusinessTool(registered, [])).toBe(false);
+    // at_/ops_ 前缀不是业务工具，不触发重建
+    expect(
+      catalogGainedNewBusinessTool(registered, [...base, descriptor({ name: 'at_registry_scan' })])
+    ).toBe(false);
+    expect(
+      catalogGainedNewBusinessTool(registered, [...base, descriptor({ name: 'ops_new_meta' })])
+    ).toBe(false);
+    // 全新业务工具 → 需要 host disposeRuntime 后重建
+    expect(
+      catalogGainedNewBusinessTool(registered, [...base, descriptor({ name: 'loki_query_range' })])
+    ).toBe(true);
+  });
+
+  it('OpsRuntimeHandlers.onCatalogNeedsRebuild 为可选回调，类型可赋值', () => {
+    let rebuilds = 0;
+    const handlers: OpsRuntimeHandlers = {
+      hub: makeFakeHub(),
+      onCatalogNeedsRebuild: () => {
+        rebuilds += 1;
+      }
+    };
+    handlers.onCatalogNeedsRebuild?.();
+    expect(rebuilds).toBe(1);
+    // 不提供回调同样合法（host 未接线时 runtime 静默跳过）
+    const bare: OpsRuntimeHandlers = { hub: makeFakeHub() };
+    expect(bare.onCatalogNeedsRebuild).toBeUndefined();
   });
 });

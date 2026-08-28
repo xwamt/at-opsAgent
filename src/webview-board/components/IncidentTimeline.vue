@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import HostSessionChip from '../../webview-chat/components/HostSessionChip.vue';
 import PipelineStatus from '../../webview-chat/components/PipelineStatus.vue';
+import { confidenceClass, confidenceLabel } from '../../webview-chat/confidence';
+import { t } from '../../webview-chat/i18n';
 import { useBoardStore, type TimelineEventView } from '../store';
 
 const store = useBoardStore();
@@ -9,16 +11,6 @@ const SEVERITY_META: Record<TimelineEventView['severity'], { icon: string; label
   info: { icon: '○', label: 'info', cls: 'tl__sev--info' },
   warn: { icon: '△', label: 'warn', cls: 'tl__sev--warn' },
   crit: { icon: '✗', label: 'crit', cls: 'tl__sev--crit' }
-};
-
-/** 证据三态：颜色 + 文字（不只靠颜色）。 */
-const CONFIDENCE_META: Record<
-  NonNullable<TimelineEventView['confidence']>,
-  { label: string; cls: string }
-> = {
-  confirmed: { label: '已确证 confirmed', cls: 'ops-confidence-confirmed' },
-  hypothesis: { label: '假设 hypothesis', cls: 'ops-confidence-hypothesis' },
-  pending: { label: '待定 pending', cls: 'ops-confidence-pending' }
 };
 
 function fmtTime(ts: number): string {
@@ -30,7 +22,7 @@ function fmtTime(ts: number): string {
 
 <template>
   <div class="tl" role="log" aria-label="事故时间线">
-    <div v-if="store.sorted.length === 0" class="tl__empty ops-muted">尚无事故</div>
+    <div v-if="store.sorted.length === 0" class="tl__empty ops-muted">{{ t('boardEmpty') }}</div>
     <ol v-else class="tl__list">
       <li v-for="event in store.sorted" :key="event.id" class="tl__row">
         <span class="tl__time ops-mono ops-muted">{{ fmtTime(event.ts) }}</span>
@@ -45,8 +37,8 @@ function fmtTime(ts: number): string {
             <span
               v-if="event.confidence"
               class="ops-badge tl__confidence"
-              :class="CONFIDENCE_META[event.confidence].cls"
-            >{{ CONFIDENCE_META[event.confidence].label }}</span>
+              :class="confidenceClass(event.confidence)"
+            >{{ confidenceLabel(event.confidence) }}</span>
           </div>
           <div class="tl__meta ops-muted ops-mono">
             <span v-if="event.incidentId">{{ event.incidentId }}</span>

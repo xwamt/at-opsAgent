@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { t } from '../i18n';
 import { useOpsStore } from '../store';
 
 const store = useOpsStore();
@@ -42,8 +43,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="rootEl" class="pbpick" role="listbox" aria-label="选择 Playbook" @keydown="onKeydown">
-    <header class="pbpick__head ops-muted">Playbook · 选择链路</header>
+  <div ref="rootEl" class="pbpick" role="listbox" :aria-label="t('pickerPlaybookAria')" @keydown="onKeydown">
+    <header class="pbpick__head ops-muted">{{ t('pickerPlaybookTitle') }}</header>
     <button
       v-for="pb in store.playbooks"
       :key="pb.id"

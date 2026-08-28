@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { t } from '../i18n';
 import { useOpsStore } from '../store';
 
 const store = useOpsStore();
@@ -36,8 +37,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="rootEl" class="skpick" role="listbox" aria-label="选择技能" @keydown="onKeydown">
-    <header class="skpick__head ops-muted">技能 · /skill</header>
+  <div ref="rootEl" class="skpick" role="listbox" :aria-label="t('pickerSkillAria')" @keydown="onKeydown">
+    <header class="skpick__head ops-muted">{{ t('pickerSkillTitle') }}</header>
     <button
       v-for="skill in store.skills"
       :key="skill.name"

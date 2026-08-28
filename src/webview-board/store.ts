@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import type { Envelope } from '../protocol/host-protocol';
+import { setLocale } from '../webview-chat/i18n';
 import { getVsCodeApi, isMockHost } from '../webview-chat/vscode-api';
 
 export interface TimelinePipelineView {
@@ -164,6 +165,7 @@ export const useBoardStore = defineStore('ops-board', {
           this.upsert(data.payload);
         } else if (data.type === 'hydrate') {
           const rec = asRecord(data.payload);
+          setLocale(rec.locale);
           const list = rec.timeline ?? rec.events ?? rec.items;
           if (Array.isArray(list)) {
             this.events = [];

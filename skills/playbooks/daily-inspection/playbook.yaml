@@ -32,4 +32,10 @@ stages:
   - id: reporting
     prompt: references/reporting.md
     artifact: service-inspection
+    parallelGroup:
+      - id: writer
+        role: writer
+        allowTools: []
+        riskCeiling: read
+        goal: 产出 service-inspection 工件
   - id: closed

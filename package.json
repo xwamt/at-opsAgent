@@ -6,6 +6,15 @@
   "publisher": "at-series",
   "license": "MIT",
   "private": true,
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xwamt/at-opsAgent"
+  },
+  "bugs": {
+    "url": "https://github.com/xwamt/at-opsAgent/issues"
+  },
+  "homepage": "https://github.com/xwamt/at-opsAgent#readme",
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=20"
@@ -248,13 +257,15 @@
     "watch": "node esbuild.extension.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies"
   },
   "dependencies": {
     "@at-series/mcp-hub": "^0.3.3",
     "@earendil-works/pi-agent-core": "0.84.3",
     "@earendil-works/pi-ai": "0.84.3",
     "@earendil-works/pi-coding-agent": "0.84.3",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "js-yaml": "^4.1.1",
     "markdown-it": "^14.1.0",
     "pinia": "^3.0.3",

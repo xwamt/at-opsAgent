@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { EvidenceNoteView } from '../../protocol/host-protocol';
+import { confidenceClass, confidenceLabel, normalizeConfidence } from '../confidence';
+import { t } from '../i18n';
 import HostSessionChip from './HostSessionChip.vue';
 import LogViewer from './LogViewer.vue';
 import MetricSnippet from './MetricSnippet.vue';
@@ -10,16 +12,12 @@ const props = defineProps<{ note: EvidenceNoteView }>();
 
 const REF_PREVIEW_CAP = 512;
 
-/** 结论三态：颜色 + 文字，不允许只靠颜色。 */
-const CONFIDENCE_META: Record<EvidenceNoteView['confidence'], { label: string; cls: string }> = {
-  confirmed: { label: '已确证 confirmed', cls: 'ops-confidence-confirmed' },
-  hypothesis: { label: '假设 hypothesis', cls: 'ops-confidence-hypothesis' },
-  pending: { label: '待定 pending', cls: 'ops-confidence-pending' }
-};
-
-const confidence = computed(
-  () => CONFIDENCE_META[props.note.confidence] ?? CONFIDENCE_META.pending
-);
+/** 结论三态：颜色 + 文字，不允许只靠颜色（helper 抽到 confidence.ts 供单测）。 */
+const confidence = computed(() => ({
+  level: normalizeConfidence(props.note.confidence),
+  label: confidenceLabel(props.note.confidence),
+  cls: confidenceClass(props.note.confidence)
+}));
 
 interface PipelineRef {
   job: string;
@@ -98,7 +96,7 @@ const refs = computed<RefView[]>(() =>
 </script>
 
 <template>
-  <section class="evidence" :class="'evidence--' + props.note.confidence">
+  <section class="evidence" :class="'evidence--' + confidence.level">
     <header class="evidence__head">
       <span aria-hidden="true">📌</span>
       <span class="evidence__summary">{{ props.note.summary }}</span>
@@ -134,7 +132,7 @@ const refs = computed<RefView[]>(() =>
         </template>
         <template v-else>
           <span class="ops-badge evidence__kind ops-muted">{{ ref.kind }}</span>
-          <span class="evidence__preview ops-mono">{{ ref.preview }}<span v-if="ref.clipped" class="ops-muted">（已截断）</span></span>
+          <span class="evidence__preview ops-mono">{{ ref.preview }}<span v-if="ref.clipped" class="ops-muted">（{{ t('truncated') }}）</span></span>
         </template>
       </div>
     </div>

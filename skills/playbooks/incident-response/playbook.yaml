@@ -69,4 +69,10 @@ stages:
   - id: reporting
     prompt: references/reporting.md
     artifact: troubleshooting-report
+    parallelGroup:
+      - id: writer
+        role: writer
+        allowTools: []
+        riskCeiling: read
+        goal: 产出 troubleshooting-report 工件
   - id: closed

@@ -24,4 +24,10 @@ stages:
   - id: reporting
     prompt: references/reporting.md
     artifact: evidence-only
+    parallelGroup:
+      - id: writer
+        role: writer
+        allowTools: []
+        riskCeiling: read
+        goal: 产出 evidence-only 工件
   - id: closed

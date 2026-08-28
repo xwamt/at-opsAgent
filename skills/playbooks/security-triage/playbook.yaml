@@ -24,4 +24,10 @@ stages:
   - id: reporting
     prompt: references/reporting.md
     artifact: security-triage
+    parallelGroup:
+      - id: writer
+        role: writer
+        allowTools: []
+        riskCeiling: read
+        goal: 产出 security-triage 工件
   - id: closed

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { t } from '../i18n';
 import { postEnvelope } from '../vscode-api';
 
 const props = defineProps<{
@@ -73,11 +74,11 @@ function openInEditor(): void {
         class="ops-btn ops-btn--secondary logv__open"
         @click="openInEditor"
       >
-        已截断 · 在编辑器打开
+        {{ t('truncatedOpenEditor') }}
       </button>
       <template v-else>
-        <span class="logv__flag">已截断</span>
-        <span class="ops-muted">完整输出未随消息下发</span>
+        <span class="logv__flag">{{ t('truncated') }}</span>
+        <span class="ops-muted">{{ t('truncatedNotSent') }}</span>
       </template>
     </div>
   </section>

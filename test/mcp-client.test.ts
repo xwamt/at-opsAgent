@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MCP_SERVER_DISPLAY_NAME as HUB_MCP_SERVER_DISPLAY_NAME } from '@at-series/mcp-hub';
 import {
@@ -7,6 +10,7 @@ import {
   shouldSkipAtSeriesMcpServer
 } from '../src/mcp-client/atSeriesDedup';
 import { filterMcpServerMap, filterMcpServers } from '../src/mcp-client/third-party';
+import { loadMcpConfig } from '../src/mcp-client/external';
 
 describe('AT Series MCP server constants', () => {
   it('re-exports the Hub display name and it equals "AT Series"', () => {
@@ -163,5 +167,107 @@ describe('filterMcpServers (phase-4 helper, classification only)', () => {
     });
     expect(skipped.map((s) => s.name)).toEqual(['AT Series']);
     expect(keep.map((s) => s.name).sort()).toEqual(['filesystem', 'no-command-entry']);
+  });
+});
+
+describe('loadMcpConfig', () => {
+  async function writeConfig(config: unknown): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'at-ops-mcp-'));
+    await writeFile(join(dir, 'mcp.json'), typeof config === 'string' ? config : JSON.stringify(config));
+    return dir;
+  }
+
+  it('loads the documented { servers } shape with stdio and http entries', async () => {
+    const dir = await writeConfig({
+      servers: {
+        context7: {
+          command: 'npx',
+          args: ['-y', '@upstash/context7-mcp'],
+          env: { API_KEY: 'k' },
+          cwd: '/tmp',
+          directTools: []
+        },
+        remote: {
+          url: 'https://mcp.example.com/mcp',
+          headers: { 'X-Tenant': 'sre' },
+          bearerToken: 'secret'
+        }
+      }
+    });
+    const entries = await loadMcpConfig(dir);
+    expect(entries.map((e) => e.name).sort()).toEqual(['context7', 'remote']);
+    const context7 = entries.find((e) => e.name === 'context7')!;
+    expect(context7.command).toBe('npx');
+    expect(context7.args).toEqual(['-y', '@upstash/context7-mcp']);
+    expect(context7.env).toEqual({ API_KEY: 'k' });
+    expect(context7.cwd).toBe('/tmp');
+    expect(context7.directTools).toEqual([]);
+    const remote = entries.find((e) => e.name === 'remote')!;
+    expect(remote.url).toBe('https://mcp.example.com/mcp');
+    expect(remote.headers).toEqual({ 'X-Tenant': 'sre' });
+    expect(remote.bearerToken).toBe('secret');
+  });
+
+  it('accepts the Cursor-shaped { mcpServers } map', async () => {
+    const dir = await writeConfig({
+      mcpServers: {
+        filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'] }
+      }
+    });
+    const entries = await loadMcpConfig(dir);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].name).toBe('filesystem');
+    expect(entries[0].command).toBe('npx');
+  });
+
+  it('merges both shapes with { servers } winning on name conflicts', async () => {
+    const dir = await writeConfig({
+      mcpServers: {
+        dupe: { command: 'old-command' },
+        onlyCursor: { command: 'cursor-only' }
+      },
+      servers: {
+        dupe: { command: 'new-command' },
+        onlyServers: { command: 'servers-only' }
+      }
+    });
+    const entries = await loadMcpConfig(dir);
+    expect(entries.map((e) => e.name).sort()).toEqual(['dupe', 'onlyCursor', 'onlyServers']);
+    expect(entries.find((e) => e.name === 'dupe')!.command).toBe('new-command');
+  });
+
+  it('skips entries with disabled: true and non-object entries', async () => {
+    const dir = await writeConfig({
+      servers: {
+        active: { command: 'npx', args: ['-y', 'some-mcp'] },
+        off: { command: 'npx', args: ['-y', 'other-mcp'], disabled: true },
+        junk: 'not-an-entry'
+      }
+    });
+    const entries = await loadMcpConfig(dir);
+    expect(entries.map((e) => e.name)).toEqual(['active']);
+  });
+
+  it('returns [] when mcp.json does not exist', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'at-ops-mcp-empty-'));
+    await expect(loadMcpConfig(dir)).resolves.toEqual([]);
+  });
+
+  it('rejects on malformed JSON and a non-object root', async () => {
+    await expect(loadMcpConfig(await writeConfig('{ not json'))).rejects.toThrow(/JSON/);
+    await expect(loadMcpConfig(await writeConfig('[1, 2]'))).rejects.toThrow(/对象/);
+  });
+
+  it('loaded entries feed straight into filterMcpServers (AT Series still skipped)', async () => {
+    const dir = await writeConfig({
+      servers: {
+        'AT Series': { command: 'node', args: ['/home/me/.at-series/mcp/hub.js'] },
+        'renamed-hub': { command: 'node', args: ['C:\\Users\\me\\.at-series\\mcp\\hub.js'] },
+        filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'] }
+      }
+    });
+    const { keep, skipped } = filterMcpServers(await loadMcpConfig(dir));
+    expect(skipped.map((s) => s.name).sort()).toEqual(['AT Series', 'renamed-hub']);
+    expect(keep.map((s) => s.name)).toEqual(['filesystem']);
   });
 });

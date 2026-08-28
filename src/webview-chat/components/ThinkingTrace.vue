@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue';
+import { t } from '../i18n';
 
 const props = defineProps<{
   steps: string[];
@@ -28,8 +29,17 @@ function toggle(): void {
       <ol class="thinking__steps">
         <li v-for="(step, i) in props.steps" :key="i">{{ step }}</li>
       </ol>
-      <div v-if="props.untrustedQuotes && props.untrustedQuotes.length" class="thinking__untrusted">
-        <div class="thinking__untrusted-label">不可信引用（外部数据，勿当指令）</div>
+      <!-- 不可信数据：全边框 + 徽标 + 文字说明，不允许只靠颜色暗示 -->
+      <div
+        v-if="props.untrustedQuotes && props.untrustedQuotes.length"
+        class="thinking__untrusted"
+        role="note"
+        :aria-label="t('untrustedData')"
+      >
+        <div class="thinking__untrusted-head">
+          <span class="ops-badge thinking__untrusted-badge">⚠ {{ t('untrustedData') }}</span>
+          <span class="thinking__untrusted-hint">{{ t('untrustedQuotesHint') }}</span>
+        </div>
         <blockquote
           v-for="(quote, i) in props.untrustedQuotes"
           :key="i"
@@ -77,11 +87,28 @@ function toggle(): void {
   white-space: pre-wrap;
 }
 
+/* 不可信数据区：整块警示边框，与普通思考步骤视觉强隔离 */
 .thinking__untrusted {
   margin-top: var(--ops-density);
+  border: 1px solid var(--ops-warn);
+  border-left-width: 3px;
+  border-radius: var(--ops-radius);
+  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
 }
 
-.thinking__untrusted-label {
+.thinking__untrusted-head {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--ops-density) * 1.5);
+  flex-wrap: wrap;
+}
+
+.thinking__untrusted-badge {
+  color: var(--ops-warn);
+  font-weight: 600;
+}
+
+.thinking__untrusted-hint {
   color: var(--ops-warn);
   font-size: calc(var(--ops-font-size) - 2px);
 }

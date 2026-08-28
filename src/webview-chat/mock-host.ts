@@ -270,6 +270,11 @@ export function installMockHost(): void {
       sessionId: 'sess-demo',
       playbook: { id: 'pb.incident', stage: 'Investigating' },
       items: HYDRATE_ITEMS,
+      // 事件脉络条演示：host 也可能完全不发 timeline（届时仅证据便签撑起条带）
+      timeline: [
+        { id: 'tl-1', ts: Date.now() - 8 * 60_000, title: '09:02 Jenkins #482 发布 api-gateway v2.14.1', severity: 'warn' },
+        { id: 'tl-2', ts: Date.now() - 5 * 60_000, title: '09:05 5xx 比例 0.2%→14%', severity: 'crit' }
+      ],
       providers: {
         providers: [
           { id: 'at.grafana', label: 'AT Grafana', connected: true },

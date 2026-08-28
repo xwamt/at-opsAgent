@@ -6,7 +6,19 @@ import type {
   ToolCallView,
   TranscriptItem
 } from '../protocol/host-protocol';
+import { setLocale } from './i18n';
+import {
+  buildPromptPayload,
+  buildTimelineStrip,
+  canFollowUpFrom,
+  normalizeTimelineEvent,
+  type ChatTimelineEvent,
+  type PromptAttachment,
+  type TimelineStripEntry
+} from './store-helpers';
 import { getVsCodeApi, isMockHost } from './vscode-api';
+
+export type { ChatTimelineEvent, PromptAttachment, TimelineStripEntry } from './store-helpers';
 
 export interface ProviderChip {
   id: string;
@@ -68,6 +80,10 @@ interface HydratePayload {
   items?: TranscriptItem[];
   providers?: unknown;
   pendingApproval?: ApprovalBriefView | null;
+  /** 可选语言标记（缺省用 <html lang>，默认 zh-CN）。 */
+  locale?: unknown;
+  /** 可选时间线快照（host 目前只发给看板；chat 侧证据便签兜底）。 */
+  timeline?: unknown;
 }
 
 type AnyRecord = Record<string, unknown>;
@@ -114,10 +130,21 @@ export const useOpsStore = defineStore('ops-chat', {
     modelOptions: [...DEFAULT_MODELS] as ModelOption[],
     skills: [...DEFAULT_SKILLS] as SkillMeta[],
     activePicker: null as 'playbook' | 'skill' | null,
+    timeline: [] as ChatTimelineEvent[],
     mock: false
   }),
 
   getters: {
+    /** 刚结束一轮（最近的 user/assistant 是已完成的 assistant 回复）⇒ 可追问。 */
+    canFollowUp(state): boolean {
+      return canFollowUpFrom(state.items, state.streaming);
+    },
+
+    /** 紧凑事件脉络条：timeline 事件 + 证据便签（host 不发 timeline 也能渲染）。 */
+    timelineStrip(state): TimelineStripEntry[] {
+      return buildTimelineStrip(state.timeline, state.items);
+    },
+
     providerChips(state): ProviderChip[] {
       const raw = state.providers;
       const list = Array.isArray(raw)
@@ -152,15 +179,16 @@ export const useOpsStore = defineStore('ops-chat', {
       getVsCodeApi().postMessage(envelope);
     },
 
-    sendPrompt(text: string): void {
-      const trimmed = text.trim();
-      if (!trimmed) {
+    sendPrompt(text: string, attachments?: readonly PromptAttachment[]): void {
+      const payload = buildPromptPayload(
+        text,
+        { streaming: this.streaming, canFollowUp: this.canFollowUp },
+        attachments
+      );
+      if (!payload) {
         return;
       }
-      this.post('chat/prompt', {
-        text: trimmed,
-        mode: this.streaming ? 'steer' : undefined
-      });
+      this.post('chat/prompt', payload);
     },
 
     abortRun(): void {
@@ -241,6 +269,9 @@ export const useOpsStore = defineStore('ops-chat', {
         case 'subagent/upsert':
           this.upsertSubagent(asRecord(payload));
           break;
+        case 'timeline/upsert':
+          this.upsertTimeline(payload);
+          break;
         case 'approval/request':
           this.pendingApproval = asRecord(payload) as unknown as ApprovalBriefView;
           break;
@@ -288,7 +319,7 @@ export const useOpsStore = defineStore('ops-chat', {
       }
       if (Array.isArray(rec.playbooks)) {
         const playbooks = rec.playbooks
-          .map((entry) => {
+          .map((entry): PlaybookMeta | null => {
             const p = asRecord(entry);
             const id = String(p.id ?? '');
             if (!id) {
@@ -332,12 +363,20 @@ export const useOpsStore = defineStore('ops-chat', {
 
     /** hydrate 全量覆盖当前状态。 */
     applyHydrate(snapshot: HydratePayload): void {
+      setLocale(snapshot.locale);
       this.sessionId = snapshot.sessionId ?? '';
       this.playbook = snapshot.playbook ?? null;
       this.items = Array.isArray(snapshot.items) ? [...snapshot.items] : [];
       this.providers = snapshot.providers ?? null;
       this.absorbCapabilities(asRecord(snapshot.providers));
       this.pendingApproval = snapshot.pendingApproval ?? null;
+      // timeline 是可选字段：只有下发数组时才整体重放，否则保留已收到的 upsert
+      if (Array.isArray(snapshot.timeline)) {
+        this.timeline = [];
+        for (const entry of snapshot.timeline) {
+          this.upsertTimeline(entry);
+        }
+      }
       const streamingItem = this.items.find(
         (item) => item.kind === 'assistant' && item.streaming
       );
@@ -455,6 +494,19 @@ export const useOpsStore = defineStore('ops-chat', {
         board.agents.splice(idx, 1, { ...board.agents[idx], ...card });
       } else {
         board.agents.push(card);
+      }
+    },
+
+    upsertTimeline(payload: unknown): void {
+      const event = normalizeTimelineEvent(payload);
+      if (!event) {
+        return;
+      }
+      const idx = this.timeline.findIndex((existing) => existing.id === event.id);
+      if (idx >= 0) {
+        this.timeline.splice(idx, 1, event);
+      } else {
+        this.timeline.push(event);
       }
     }
   }

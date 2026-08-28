@@ -18,6 +18,8 @@ import {
 } from './engine';
 import {
   findStage,
+  type EscalateSelectDirective,
+  type ParallelTaskDef,
   type Playbook,
   type PlaybookStage,
   type RiskLevel,
@@ -83,6 +85,27 @@ const DEFAULT_MAX_PARALLEL = 3;
 const HARD_MAX_PARALLEL = 4;
 const DEFAULT_MAX_SUMMARY_TOKENS = 800;
 
+/**
+ * 把 playbook 的 payloadCaps 注入工具调用缺省参数（docs/04 §3.2）。
+ * 目前只有一条规则：caps.lokiLimit 存在、工具名含 loki、调用方没给
+ * args.limit 时补上 limit。不修改传入的 args，命中时返回新对象。
+ */
+export function injectPayloadCaps(
+  toolName: string,
+  args: Record<string, unknown>,
+  caps: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  const lokiLimit = caps?.lokiLimit;
+  if (
+    typeof lokiLimit === 'number' &&
+    toolName.toLowerCase().includes('loki') &&
+    args.limit === undefined
+  ) {
+    return { ...args, limit: lokiLimit };
+  }
+  return args;
+}
+
 // ────────────────────────────── 事件 ──────────────────────────────
 
 export type OrchestratorEvent =
@@ -115,6 +138,8 @@ export type Orchestrator = ReturnType<typeof createOrchestrator>;
 export function createOrchestrator(options: CreateOrchestratorOptions) {
   const playbooksById = new Map(options.playbooks.map((pb) => [pb.id, pb]));
   const runs = new Map<string, PlaybookRun>();
+  /** 已下发的 spec 登记，供重试阶梯 clone（docs/04 §3.3：失败 retry 1 → degrade） */
+  const dispatched = new Map<string, { runId: string; spec: TaskSpec; retriesLeft: number }>();
   let runSeq = 0;
   let briefSeq = 0;
 
@@ -163,10 +188,17 @@ export function createOrchestrator(options: CreateOrchestratorOptions) {
     return runs.get(runId);
   }
 
-  /** 非法迁移直接 throw（IllegalStageTransitionError），不静默 */
+  /**
+   * 非法迁移直接 throw（IllegalStageTransitionError），不静默。
+   * 除全局迁移表外，目标阶段必须在该 playbook yaml 声明的阶段集合里——
+   * 所以 pb.security-triage（无 executing / awaitingApproval 阶段）
+   * 永远进不了执行路径。
+   */
   function advanceTo(runOrId: PlaybookRun | string, stage: StageId): PlaybookRun {
     const run = resolveRun(runOrId);
-    assertTransition(run.stage, stage);
+    const playbook = requirePlaybook(run.playbookId);
+    const declaredStages = new Set<StageId>(playbook.stages.map((s) => s.id));
+    assertTransition(run.stage, stage, declaredStages);
     const from = run.stage;
     run.stage = stage;
     emit({ type: 'playbook/stage', runId: run.id, playbookId: run.playbookId, from, stage });
@@ -185,6 +217,22 @@ export function createOrchestrator(options: CreateOrchestratorOptions) {
     };
   }
 
+  /**
+   * 当前 stage 的 yaml escalateSelect 指令（仅允许一次 add 扩面）。
+   * host 决定何时升级；orchestrator 只暴露 yaml 里声明的扩面内容。
+   */
+  function desiredEscalateSelect(runOrId: PlaybookRun | string): EscalateSelectDirective | undefined {
+    const run = resolveRun(runOrId);
+    const stageDef = currentStageDef(run);
+    if (stageDef?.escalateSelect === undefined) return undefined;
+    return {
+      mode: stageDef.escalateSelect.mode,
+      ...(stageDef.escalateSelect.pluginIds !== undefined
+        ? { pluginIds: [...stageDef.escalateSelect.pluginIds] }
+        : {})
+    };
+  }
+
   /** runtime 实际执行了一轮 select 后登记，供 policy 的 selectCountThisTask */
   function recordSelect(runOrId: PlaybookRun | string): number {
     const run = resolveRun(runOrId);
@@ -195,12 +243,28 @@ export function createOrchestrator(options: CreateOrchestratorOptions) {
   /**
    * 把当前阶段的 parallelGroup 转成 TaskSpec[]（并登记 SubagentCard）。
    * 只构造卡片与 spec 数据；真正跑 LLM 在 runtime 层。
+   *
+   * reporting 阶段（或声明了 artifact 却没配 parallelGroup 的阶段）若缺
+   * Writer，自动补一个：role writer、allowTools []（无业务工具）、
+   * 产出 ops-doc，goal 指向 yaml 里点名的 artifact。
    */
   function spawnSubagentSpecs(runOrId: PlaybookRun | string): TaskSpec[] {
     const run = resolveRun(runOrId);
     const playbook = requirePlaybook(run.playbookId);
     const stageDef = currentStageDef(run);
-    const group = stageDef?.parallelGroup ?? [];
+    const group: ParallelTaskDef[] = [...(stageDef?.parallelGroup ?? [])];
+    const artifact = stageDef?.artifact;
+    const wantsWriter =
+      run.stage === 'reporting' || (group.length === 0 && artifact !== undefined);
+    if (wantsWriter && !group.some((task) => task.role === 'writer')) {
+      group.push({
+        id: 'writer',
+        role: 'writer',
+        allowTools: [],
+        riskCeiling: 'read',
+        goal: artifact !== undefined ? `产出 ${artifact} 工件` : '产出运维文档'
+      });
+    }
     const cap = Math.min(
       HARD_MAX_PARALLEL,
       options.maxParallel ?? playbook.defaults?.maxParallelInvestigators ?? DEFAULT_MAX_PARALLEL
@@ -243,10 +307,62 @@ export function createOrchestrator(options: CreateOrchestratorOptions) {
         wallMs: { used: 0, max: spec.toolPolicy.budget.maxWallMs }
       };
       run.subagents.set(spec.taskId, card);
+      dispatched.set(spec.taskId, {
+        runId: run.id,
+        spec,
+        retriesLeft: spec.escalation?.retries ?? 0
+      });
       emit({ type: 'subagent/upsert', runId: run.id, card });
 
       return spec;
     });
+  }
+
+  /**
+   * 重试阶梯（docs/04 §3.3：失败 retry 1 → degrade）。host 回报子代理结果：
+   * 更新卡片状态；failed 且还有重试额度时 clone 原 spec（taskId 加 `-retry`
+   * 后缀）返回给 host 再次下发，额度用尽返回 undefined（host 走 degrade）。
+   */
+  function recordSubagentResult(
+    taskId: string,
+    status: SubagentCard['status']
+  ): TaskSpec | undefined {
+    const entry = dispatched.get(taskId);
+    if (entry === undefined) {
+      throw new Error(`Unknown subagent task ${taskId}`);
+    }
+    const run = resolveRun(entry.runId);
+    const card = run.subagents.get(taskId);
+    if (card !== undefined) {
+      card.status = status;
+      emit({ type: 'subagent/upsert', runId: run.id, card });
+    }
+    if (status !== 'failed' || entry.retriesLeft <= 0) {
+      return undefined;
+    }
+    entry.retriesLeft -= 1;
+    const retrySpec: TaskSpec = structuredClone(entry.spec);
+    retrySpec.taskId = `${taskId}-retry`;
+    retrySpec.escalation = { ...retrySpec.escalation, retries: entry.retriesLeft };
+
+    const retryCard: SubagentCard = {
+      taskId: retrySpec.taskId,
+      role: retrySpec.role,
+      label: retrySpec.goal,
+      status: 'queued',
+      riskCeiling: retrySpec.toolPolicy.riskCeiling,
+      toolCalls: { used: 0, max: retrySpec.toolPolicy.budget.maxToolCalls },
+      wallMs: { used: 0, max: retrySpec.toolPolicy.budget.maxWallMs }
+    };
+    run.subagents.set(retrySpec.taskId, retryCard);
+    dispatched.set(retrySpec.taskId, {
+      runId: run.id,
+      spec: retrySpec,
+      retriesLeft: entry.retriesLeft
+    });
+    emit({ type: 'subagent/upsert', runId: run.id, card: retryCard });
+
+    return retrySpec;
   }
 
   /** 按 timeWindow 归并证据；同窗口冲突写进 note.conflicts，不静默取舍 */
@@ -318,8 +434,10 @@ export function createOrchestrator(options: CreateOrchestratorOptions) {
     getRun,
     advanceTo,
     desiredSelect,
+    desiredEscalateSelect,
     recordSelect,
     spawnSubagentSpecs,
+    recordSubagentResult,
     mergeEvidence,
     requestApproval,
     applyApproval,

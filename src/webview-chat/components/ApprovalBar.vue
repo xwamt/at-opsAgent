@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { dualConfirmText, t } from '../i18n';
 import { useOpsStore } from '../store';
 
 const store = useOpsStore();
 const expanded = ref(false);
+
+/** 双确认提示（docs/05 §3.1）：仅 brief.dualConfirmHint === true 时有值。 */
+const dualText = computed(() => dualConfirmText(store.pendingApproval));
 
 /**
  * GuidedManual 变体（docs/research/06 §B.1）：写操作属只读插件域（Nacos 发布、
@@ -21,7 +25,7 @@ const guided = computed(() => {
   }
   if (typeof gm === 'string') {
     return {
-      label: '去 IDE 操作',
+      label: t('guidedManualOpen'),
       commandUri: gm.startsWith('command:') ? gm : '',
       hint: gm.startsWith('command:') ? '' : gm
     };
@@ -29,7 +33,7 @@ const guided = computed(() => {
   const rec = (gm ?? {}) as Record<string, unknown>;
   const link = String(rec.command ?? rec.href ?? rec.link ?? '');
   return {
-    label: String(rec.label ?? '去 IDE 操作'),
+    label: String(rec.label ?? t('guidedManualOpen')),
     commandUri: link.startsWith('command:') ? link : '',
     hint: typeof rec.hint === 'string' ? rec.hint : link.startsWith('command:') ? '' : link
   };
@@ -115,33 +119,34 @@ const riskLabel = computed(() => {
 </script>
 
 <template>
-  <section v-if="store.pendingApproval" class="approval" :class="'approval--' + store.pendingApproval.risk" aria-label="待审批">
+  <section v-if="store.pendingApproval" class="approval" :class="'approval--' + store.pendingApproval.risk" :aria-label="t('approvalPendingTitle')">
     <div class="approval__row">
       <span aria-hidden="true">⚠</span>
-      <span class="approval__title">待审批</span>
+      <span class="approval__title">{{ t('approvalPendingTitle') }}</span>
       <span class="ops-badge" :class="'ops-risk-' + store.pendingApproval.risk">{{ riskLabel }}</span>
       <span class="approval__target" :title="store.pendingApproval.targetLabel">{{ store.pendingApproval.targetLabel }}</span>
       <span class="approval__spacer"></span>
       <button type="button" class="ops-btn ops-btn--secondary" :aria-expanded="expanded" @click="expanded = !expanded">
-        简报 {{ expanded ? '▾' : '▸' }}
+        {{ t('approvalBriefToggle') }} {{ expanded ? '▾' : '▸' }}
       </button>
       <!-- GuidedManual：Agent 不代执行，引导去 IDE，完成后回报 -->
       <template v-if="guided">
         <a v-if="guided.commandUri" class="ops-btn approval__deeplink" :href="guided.commandUri">{{ guided.label }}</a>
         <button v-else type="button" class="ops-btn" @click="openGuided">{{ guided.label }}</button>
         <button type="button" class="ops-btn ops-btn--secondary" @click="store.completeGuidedManual()">
-          我已在 UI 完成
+          {{ t('guidedManualDone') }}
         </button>
-        <button type="button" class="ops-btn ops-btn--danger" @click="store.respondApproval('rejected')">拒绝</button>
+        <button type="button" class="ops-btn ops-btn--danger" @click="store.respondApproval('rejected')">{{ t('approvalReject') }}</button>
       </template>
       <template v-else>
-        <button type="button" class="ops-btn" @click="store.respondApproval('approved')">批准</button>
-        <button type="button" class="ops-btn ops-btn--danger" @click="store.respondApproval('rejected')">拒绝</button>
+        <button type="button" class="ops-btn" @click="store.respondApproval('approved')">{{ t('approvalApprove') }}</button>
+        <button type="button" class="ops-btn ops-btn--danger" @click="store.respondApproval('rejected')">{{ t('approvalReject') }}</button>
       </template>
     </div>
 
     <p v-if="guided && guided.hint" class="approval__guided-hint ops-muted">{{ guided.hint }}</p>
-    <p class="approval__hint">批准后插件仍可能再次确认。插件弹窗不是本次批准。</p>
+    <!-- 双确认句只在 dualConfirmHint（dedupePluginModal 取反）为 true 时出现 -->
+    <p v-if="dualText" class="approval__hint">{{ dualText }}</p>
 
     <dl v-if="expanded" class="approval__brief">
       <template v-for="row in rows" :key="row.key">

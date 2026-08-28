@@ -33,4 +33,10 @@ stages:
   - id: reporting
     prompt: references/reporting.md
     artifact: operation-record
+    parallelGroup:
+      - id: writer
+        role: writer
+        allowTools: []
+        riskCeiling: read
+        goal: 产出 operation-record 工件
   - id: closed

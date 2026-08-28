@@ -1,17 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
+import { t } from '../i18n';
 import { useOpsStore } from '../store';
+import type { PromptAttachment } from '../store-helpers';
 import { getVsCodeApi } from '../vscode-api';
 
 const store = useOpsStore();
 const draft = ref('');
+const attachments = ref<PromptAttachment[]>([]);
 const textarea = ref<HTMLTextAreaElement | null>(null);
 
 const PLAYBOOK_RE = /^\/playbook(\s|$)/;
 const SKILL_RE = /^\/skill(\s|$)/;
 
 const placeholder = computed(() =>
-  store.streaming ? '正在运行 · 输入将作为 steer 引导当前任务…' : '描述运维问题… @资产 /playbook /skill'
+  store.streaming ? t('composerPlaceholderStreaming') : t('composerPlaceholder')
+);
+
+// 发送按钮三态：流式中 Steer / 刚结束一轮 追问(followUp) / 其它 发送
+const sendLabel = computed(() =>
+  store.streaming ? t('composerSteer') : store.canFollowUp ? t('composerFollowUp') : t('composerSend')
 );
 
 onMounted(() => {
@@ -52,6 +60,21 @@ store.$onAction(({ name, after }) => {
   });
 });
 
+/** @资产：window.prompt 输入 URI，作为 {kind:'file', uri} 附件随 chat/prompt 上行。 */
+function addAsset(): void {
+  const uri = window.prompt(t('composerAttachPrompt'));
+  const trimmed = uri?.trim();
+  if (!trimmed) {
+    return;
+  }
+  attachments.value.push({ kind: 'file', uri: trimmed });
+  textarea.value?.focus();
+}
+
+function removeAsset(index: number): void {
+  attachments.value.splice(index, 1);
+}
+
 function send(): void {
   const text = draft.value.trim();
   if (!text) {
@@ -66,8 +89,9 @@ function send(): void {
     store.activePicker = 'skill';
     return;
   }
-  store.sendPrompt(text);
+  store.sendPrompt(text, attachments.value.length > 0 ? [...attachments.value] : undefined);
   draft.value = '';
+  attachments.value = [];
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -80,34 +104,58 @@ function onKeydown(event: KeyboardEvent): void {
 
 <template>
   <div class="composer">
-    <textarea
-      ref="textarea"
-      v-model="draft"
-      class="composer__input"
-      rows="2"
-      :placeholder="placeholder"
-      aria-label="消息输入"
-      @keydown="onKeydown"
-    ></textarea>
-    <div class="composer__actions">
-      <button
-        v-if="store.streaming"
-        type="button"
-        class="ops-btn ops-btn--secondary"
-        aria-label="停止当前运行"
-        @click="store.abortRun()"
-      >
-        ⏹ 停止
-      </button>
-      <button
-        type="button"
-        class="ops-btn"
-        :disabled="!draft.trim()"
-        :aria-label="store.streaming ? '发送 steer' : '发送'"
-        @click="send"
-      >
-        {{ store.streaming ? 'Steer' : '发送' }}
-      </button>
+    <div v-if="attachments.length > 0" class="composer__chips" aria-label="附件">
+      <span v-for="(item, i) in attachments" :key="(item.uri ?? '') + i" class="composer__chip">
+        <span class="ops-mono composer__chip-uri" :title="item.uri">@{{ item.uri }}</span>
+        <button
+          type="button"
+          class="composer__chip-x"
+          :aria-label="t('composerAttachRemove') + ' ' + (item.uri ?? '')"
+          @click="removeAsset(i)"
+        >
+          ✕
+        </button>
+      </span>
+    </div>
+    <div class="composer__row">
+      <textarea
+        ref="textarea"
+        v-model="draft"
+        class="composer__input"
+        rows="2"
+        :placeholder="placeholder"
+        :aria-label="t('composerInputAria')"
+        @keydown="onKeydown"
+      ></textarea>
+      <div class="composer__actions">
+        <button
+          type="button"
+          class="ops-btn ops-btn--secondary composer__at"
+          :aria-label="t('composerAttachAria')"
+          :title="t('composerAttachAria')"
+          @click="addAsset"
+        >
+          @
+        </button>
+        <button
+          v-if="store.streaming"
+          type="button"
+          class="ops-btn ops-btn--secondary"
+          :aria-label="t('composerStopAria')"
+          @click="store.abortRun()"
+        >
+          ⏹ {{ t('composerStop') }}
+        </button>
+        <button
+          type="button"
+          class="ops-btn"
+          :disabled="!draft.trim()"
+          :aria-label="sendLabel"
+          @click="send"
+        >
+          {{ sendLabel }}
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -115,10 +163,55 @@ function onKeydown(event: KeyboardEvent): void {
 <style scoped>
 .composer {
   display: flex;
+  flex-direction: column;
   gap: var(--ops-density);
-  align-items: flex-end;
   padding: var(--ops-density) calc(var(--ops-density) * 2);
   border-top: 1px solid var(--ops-border);
+}
+
+.composer__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ops-density);
+}
+
+.composer__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ops-density);
+  border: 1px solid var(--ops-accent);
+  border-radius: var(--ops-radius);
+  padding: 0 var(--ops-density);
+  font-size: calc(var(--ops-font-size) - 2px);
+  color: var(--ops-accent);
+  max-width: 100%;
+}
+
+.composer__chip-uri {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.composer__chip-x {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.composer__chip-x:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: 1px;
+}
+
+.composer__row {
+  display: flex;
+  gap: var(--ops-density);
+  align-items: flex-end;
 }
 
 .composer__input {
@@ -144,5 +237,11 @@ function onKeydown(event: KeyboardEvent): void {
 .composer__actions {
   display: flex;
   gap: var(--ops-density);
+}
+
+.composer__at {
+  font-family: var(--ops-mono);
+  padding-left: calc(var(--ops-density) * 1.5);
+  padding-right: calc(var(--ops-density) * 1.5);
 }
 </style>

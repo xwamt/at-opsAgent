@@ -102,6 +102,18 @@ describe('playbooks · skills/playbooks catalog', () => {
     }
   });
 
+  it('every reporting stage names an artifact and ships exactly one no-tool writer task', () => {
+    for (const pb of playbooks) {
+      const reporting = findStage(pb, 'reporting');
+      expect(reporting?.artifact, `${pb.id} reporting.artifact`).toBeDefined();
+      const writers = (reporting?.parallelGroup ?? []).filter((task) => task.role === 'writer');
+      expect(writers, `${pb.id} reporting writer task`).toHaveLength(1);
+      // Writer 无业务工具（docs/04 §3.1），只产出 ops-doc
+      expect(writers[0].allowTools).toEqual([]);
+      expect(writers[0].riskCeiling ?? 'read').toBe('read');
+    }
+  });
+
   it('every playbook starts at triage, ends at closed, and selects via the orchestrator', () => {
     for (const pb of playbooks) {
       expect(pb.stages[0].id).toBe('triage');

@@ -30,4 +30,10 @@ stages:
   - id: reporting
     prompt: references/reporting.md
     artifact: service-deployment
+    parallelGroup:
+      - id: writer
+        role: writer
+        allowTools: []
+        riskCeiling: read
+        goal: 产出 service-deployment 工件
   - id: closed

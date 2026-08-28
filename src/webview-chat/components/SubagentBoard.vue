@@ -1,10 +1,22 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, reactive } from 'vue';
 import type { SubagentCard } from '../../protocol/host-protocol';
+import { t } from '../i18n';
 import { useOpsStore } from '../store';
 
 const props = defineProps<{ agents: SubagentCard[] }>();
 const store = useOpsStore();
+
+/** 展开态：卡片级「详情」开关，展开后 latest 全文显示（docs/05 §3.3 展开）。 */
+const detailsOpen = reactive(new Set<string>());
+
+function toggleDetails(taskId: string): void {
+  if (detailsOpen.has(taskId)) {
+    detailsOpen.delete(taskId);
+  } else {
+    detailsOpen.add(taskId);
+  }
+}
 
 const ROLE_ICON: Record<SubagentCard['role'], string> = {
   investigator: '🔍',
@@ -82,8 +94,22 @@ function secs(ms: number): string {
           <span>tools {{ agent.toolCalls.used }}/{{ agent.toolCalls.max }}</span>
           <span>wall {{ secs(agent.wallMs.used) }}/{{ secs(agent.wallMs.max) }}</span>
           <span class="ops-mono">{{ agent.taskId }}</span>
+          <button
+            v-if="agent.latest"
+            type="button"
+            class="sa__details"
+            :aria-expanded="detailsOpen.has(agent.taskId)"
+            :aria-label="t('subagentDetails') + ' ' + agent.label"
+            @click="toggleDetails(agent.taskId)"
+          >
+            {{ detailsOpen.has(agent.taskId) ? '▾' : '▸' }} {{ t('subagentDetails') }}
+          </button>
         </div>
-        <div v-if="agent.latest" class="sa__latest">{{ agent.latest }}</div>
+        <div
+          v-if="agent.latest"
+          class="sa__latest"
+          :class="{ 'sa__latest--full': detailsOpen.has(agent.taskId) }"
+        >{{ agent.latest }}</div>
       </article>
     </div>
   </section>
@@ -178,6 +204,25 @@ function secs(ms: number): string {
   flex-wrap: wrap;
 }
 
+.sa__details {
+  background: transparent;
+  border: none;
+  color: var(--ops-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: calc(var(--ops-font-size) - 2px);
+  font-family: inherit;
+}
+
+.sa__details:hover {
+  color: var(--ops-fg);
+}
+
+.sa__details:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: 1px;
+}
+
 .sa__latest {
   margin-top: 2px;
   font-size: calc(var(--ops-font-size) - 1px);
@@ -185,5 +230,15 @@ function secs(ms: number): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 详情展开：latest 全文，不再截为单行 */
+.sa__latest--full {
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-overflow: clip;
+  color: var(--ops-fg);
+  border-left: 2px solid var(--ops-border);
+  padding-left: calc(var(--ops-density) * 1.5);
 }
 </style>
