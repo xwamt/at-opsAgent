@@ -1,5 +1,6 @@
 /**
- * package.json contributes.commands 中九条命令的实现与注册。
+ * package.json contributes.commands 中九条命令的实现与注册，
+ * 外加两条不进 contributes 的程序化命令（escalateSelect / openArtifact）。
  */
 import * as vscode from 'vscode';
 import { diagnoseHub } from './diagnose';
@@ -53,12 +54,16 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
   });
 
   const openModels = vscode.commands.registerCommand('atOpsAgent.openModels', () => {
-    // 配置页 webview（表单 + SecretStorage key）；「打开 models.json」是页内次级动作。
+    // 配置页 webview（表单 + SecretStorage key + Compat/OAuth 页签）；
+    // 「打开 models.json」是页内次级动作。
     showModelsPanel({
       modelsPath: controller.modelsPath,
+      agentDir: controller.agentDir,
       secrets: controller.secrets,
       output,
-      refreshTrees
+      refreshTrees,
+      loginOAuth: (providerId) => controller.loginOAuth(providerId),
+      applyModelSelection: (req) => controller.setModel(req)
     });
   });
 
@@ -89,6 +94,18 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
 
   const abort = vscode.commands.registerCommand('atOpsAgent.abort', async () => {
     await controller.abort();
+  });
+
+  // 不进 package.json contributes：escalateSelect 绝不自动触发（首轮
+  // investigating 之后由用户/模型显式驱动），这里给 webview 深链 /
+  // 程序化调用留一个入口，等价于 host 请求 playbook/escalate-select。
+  const escalateSelect = vscode.commands.registerCommand('atOpsAgent.escalateSelect', async () => {
+    const result = await controller.applyEscalateSelect();
+    if (result.ok) {
+      void vscode.window.showInformationMessage('已按当前阶段 escalateSelect 扩充工具面。');
+    } else {
+      void vscode.window.showWarningMessage(`无法扩面：${result.reason ?? '未知原因'}`);
+    }
   });
 
   // 不进 package.json contributes（也就不进命令面板）：只服务 webview 的
@@ -122,6 +139,7 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     approve,
     reject,
     abort,
+    escalateSelect,
     openArtifact
   ];
 }
