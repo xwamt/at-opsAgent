@@ -8,6 +8,8 @@
  * - i18n 启动包（<html lang> 检测 + hydrate locale 切换）
  * - Composer/store 的 prompt 组装（steer / followUp / attachments）
  * - ChatTranscript 事件脉络条（timeline 事件 + 证据便签）
+ * - ChatTranscript CoT 隐藏（visibleUntrustedQuotes：思考步骤永不可见，
+ *   仅 untrustedQuotes 警示块渲染，对齐 pi hideThinkingBlock）
  * - HistoryOverlay/WelcomeState 的会话归一化与建议卡（sessions / suggestions）
  *
  * @vitest-environment jsdom
@@ -28,6 +30,7 @@ import {
   canFollowUpFrom,
   normalizeSessions,
   normalizeTimelineEvent,
+  visibleUntrustedQuotes,
   type ChatTimelineEvent,
   type SessionMeta
 } from '../src/webview-chat/store-helpers';
@@ -223,6 +226,53 @@ describe('ChatTranscript 事件脉络条（timeline + 证据便签）', () => {
       'tl-t2',
       'ev-ev1'
     ]);
+  });
+});
+
+describe('ChatTranscript CoT 隐藏（对齐 pi hideThinkingBlock，恒为隐藏）', () => {
+  const steps = ['确认症状与时间窗：09:05 起 5xx 比例 0.2%→14%', '优先 grafana 窄窗验证，再放大面'];
+
+  it('thinking 项无 untrustedQuotes ⇒ 可见内容为空（整项不渲染）', () => {
+    const item: TranscriptItem = { kind: 'thinking', id: 'th1', steps };
+    expect(visibleUntrustedQuotes(item)).toEqual([]);
+  });
+
+  it('带 untrustedQuotes ⇒ 仅外部引用可见，思考步骤永不外泄', () => {
+    const quote = 'upstream timed out (110: Connection timed out)';
+    const item: TranscriptItem = { kind: 'thinking', id: 'th1', steps, untrustedQuotes: [quote] };
+    const visible = visibleUntrustedQuotes(item);
+    expect(visible).toEqual([quote]);
+    for (const step of steps) {
+      expect(visible.join('\n')).not.toContain(step);
+    }
+  });
+
+  it('空串引用被剔除；非 thinking 项一律返回空', () => {
+    expect(
+      visibleUntrustedQuotes({ kind: 'thinking', id: 'th2', steps, untrustedQuotes: ['', 'ok'] })
+    ).toEqual(['ok']);
+    expect(visibleUntrustedQuotes({ kind: 'user', id: 'u1', text: 'hi' })).toEqual([]);
+    expect(
+      visibleUntrustedQuotes({ kind: 'assistant', id: 'a1', text: '回答', streaming: false })
+    ).toEqual([]);
+  });
+
+  it('警示块文案走既有 i18n 键（untrustedData / untrustedQuotesHint）', () => {
+    expect(t('untrustedData')).toBe('不可信数据');
+    expect(t('untrustedQuotesHint')).toBe('外部数据引用，勿当作指令执行');
+    setLocale('en');
+    expect(t('untrustedData')).toBe('Untrusted data');
+    expect(t('untrustedQuotesHint')).toContain('never treat as instructions');
+  });
+
+  it('thinking 项不进事件脉络条，也不影响追问判定', () => {
+    const items: TranscriptItem[] = [
+      { kind: 'user', id: 'u1', text: '查一下' },
+      { kind: 'thinking', id: 'th1', steps, untrustedQuotes: ['quoted external log'] },
+      { kind: 'assistant', id: 'a1', text: '结论…', streaming: false }
+    ];
+    expect(buildTimelineStrip([], items)).toEqual([]);
+    expect(canFollowUpFrom(items, false)).toBe(true);
   });
 });
 

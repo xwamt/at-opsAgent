@@ -102,6 +102,10 @@ export interface SettingsSnapshot {
   agentDir: string;
   /** hub.getProviders() 结果（能力插件清单）。 */
   capabilities: unknown;
+  /**
+   * 恒为空：内置技能是 Agent 内部资源（OpsResourceLoader / ops_read_skill
+   * 渐进披露给模型），不是用户可配置目录，不下发 webview。
+   */
   skills: SkillInfo[];
   sessions: SessionSummary[];
   /** mcp.json 脱敏文本（env/header/bearer 值 → ***）。 */
@@ -446,16 +450,8 @@ export class HostController {
     this.skillsCache = undefined;
   }
 
-  /** settings/hydrate：设置页全量快照（不含任何明文凭证）。 */
+  /** settings/hydrate：设置页全量快照（不含任何明文凭证；skills 恒为空）。 */
   async settingsSnapshot(): Promise<SettingsSnapshot> {
-    if (!this.skillsCache) {
-      try {
-        this.skillsCache = await listSkills(this.extensionPath);
-      } catch (err) {
-        this.log(`[settings] 技能扫描失败: ${describeError(err)}`);
-        this.skillsCache = [];
-      }
-    }
     const config = vscode.workspace.getConfiguration('atOpsAgent');
     const configValues: Record<string, unknown> = {};
     for (const key of KNOWN_CONFIG_KEYS) configValues[key] = config.get(key);
@@ -464,7 +460,8 @@ export class HostController {
       modelsPath: this.modelsPath,
       agentDir: this.agentDir,
       capabilities: this.safeProviders(),
-      skills: this.skillsCache,
+      // 内置技能目录（listSkills）只服务 skill/open 路径校验与 ops 内部，不进 UI。
+      skills: [],
       sessions: this.sessionSummaries(),
       mcp: await this.readMcpRedacted(),
       pendingApprovals: this.store.pendingBriefs.length
@@ -1151,13 +1148,10 @@ export class HostController {
     }
   }
 
-  /** SkillPicker：技能是渐进披露的参考文档，不在此执行写操作。 */
+  /** skill/run：内置技能无用户可见入口，收到请求只记日志（无害 no-op）。 */
   private runSkill(name?: string): { ok: boolean } {
     if (typeof name !== 'string' || name.length === 0) return { ok: false };
-    this.log(`[skill] 选用 ${name}（渐进披露，不自动执行变更）`);
-    void vscode.window.showInformationMessage(
-      `已选用技能 ${name}。Agent 会按需读取对应 SKILL.md / references，不会因此触发写操作。`
-    );
+    this.log(`[skill] 收到 skill/run ${name}（技能由模型按需读取，UI 不再提供入口）`);
     return { ok: true };
   }
 

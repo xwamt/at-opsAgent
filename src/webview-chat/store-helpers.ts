@@ -56,6 +56,19 @@ export function buildPromptPayload(
   return payload;
 }
 
+/**
+ * CoT 隐藏（对齐 pi-coding-agent hideThinkingBlock，且恒为隐藏、无开关）：
+ * thinking 项的推理步骤永不进入可见渲染；唯一可见的是 security-triage 等
+ * 链路附带的 untrustedQuotes 警示块（只含外部引用原文，不含任何思考步骤）。
+ * 返回空数组 ⇒ 该 thinking 项完全不渲染。
+ */
+export function visibleUntrustedQuotes(item: TranscriptItem): string[] {
+  if (item.kind !== 'thinking' || !Array.isArray(item.untrustedQuotes)) {
+    return [];
+  }
+  return item.untrustedQuotes.filter((quote) => typeof quote === 'string' && quote !== '');
+}
+
 export interface ChatTimelineEvent {
   id: string;
   ts: number;

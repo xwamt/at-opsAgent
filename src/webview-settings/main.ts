@@ -10,7 +10,7 @@
  *     { config: Record<atOpsAgent 键, 值>, modelsPath, agentDir,
  *       capabilities: { providers: [{ pluginId, displayName, healthy,
  *                                     toolNames|toolCount, bridgeCount }] },
- *       skills: [{ label, description?, skillFile }],
+ *       skills: []（内置技能是 Agent 内部资源，恒为空、不进 UI）,
  *       sessions: [{ id, title, createdAt }],
  *       mcp: { path, exists, text（已脱敏 ***）, error? }, pendingApprovals }
  * - hydrate              {}                    chat 快照兜底（吸收 sessions/providers/locale）
@@ -34,14 +34,13 @@
  *                                              apiKey?（缺省=保持现有 key，绝不回显）}
  * - capabilities/refresh {}                    重扫能力插件（本侧同时重发 settings/hydrate）
  * - diagnose             {}                    hub 诊断（同 atOpsAgent.diagnoseHub）
- * - skill/open           { name, path? }       打开技能 SKILL.md
  *
  * host → webview（dir:'evt'）：
  * - settings/hydrate                           打开面板时的全量快照（同 res 载荷）
  * - settings/tab { tab }                       聚焦指定页签（openModels → 'models'）
  * - 兼容扩展：settings/config { config } / models/state | models/saved |
  *   models/error | models/oauthStatus / capabilities/snapshot { providers } /
- *   mcp/state { path, text } / skills/state { skills } / sessions/state { sessions }
+ *   mcp/state { path, text } / sessions/state { sessions }
  *
  * 红线：API key / OAuth token 绝不下行、绝不回显、绝不写日志；
  * mcp.json 凭证经 webview 往返时永远是 *** 占位。

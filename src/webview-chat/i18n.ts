@@ -11,7 +11,7 @@ import { ref } from 'vue';
 export type OpsLocale = 'zh-CN' | 'en';
 
 const zhCN = {
-  composerPlaceholder: '描述运维问题… @资产 /playbook /skill',
+  composerPlaceholder: '描述运维问题… @资产 /playbook',
   composerPlaceholderStreaming: '正在运行 · 输入将作为 steer 引导当前任务…',
   composerSend: '发送',
   composerSteer: 'Steer',
@@ -46,8 +46,6 @@ const zhCN = {
   guidedManualDone: '我已在 UI 完成',
   pickerPlaybookTitle: 'Playbook · 选择链路',
   pickerPlaybookAria: '选择 Playbook',
-  pickerSkillTitle: '技能 · /skill',
-  pickerSkillAria: '选择技能',
   truncated: '已截断',
   truncatedOpenEditor: '已截断 · 在编辑器打开',
   truncatedNotSent: '完整输出未随消息下发',
@@ -68,7 +66,7 @@ const zhCN = {
 export type OpsMessageKey = keyof typeof zhCN;
 
 const en: Record<OpsMessageKey, string> = {
-  composerPlaceholder: 'Describe the ops problem… @asset /playbook /skill',
+  composerPlaceholder: 'Describe the ops problem… @asset /playbook',
   composerPlaceholderStreaming: 'Running · input will steer the current task…',
   composerSend: 'Send',
   composerSteer: 'Steer',
@@ -104,8 +102,6 @@ const en: Record<OpsMessageKey, string> = {
   guidedManualDone: 'Done in plugin UI',
   pickerPlaybookTitle: 'Playbook · choose a workflow',
   pickerPlaybookAria: 'Choose playbook',
-  pickerSkillTitle: 'Skills · /skill',
-  pickerSkillAria: 'Choose skill',
   truncated: 'truncated',
   truncatedOpenEditor: 'Truncated · open in editor',
   truncatedNotSent: 'Full output was not sent to the webview',

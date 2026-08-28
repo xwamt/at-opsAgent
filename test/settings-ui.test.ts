@@ -42,15 +42,15 @@ beforeEach(() => {
 });
 
 describe('页签清单（SettingsApp 左侧竖排导航数据源）', () => {
-  it('六个页签，顺序 = 常规/模型/能力插件/MCP/技能/会话', () => {
+  it('五个页签，顺序 = 常规/模型/能力插件/MCP/会话（无技能页签）', () => {
     expect(SETTINGS_TABS.map((tab) => tab.id)).toEqual([
       'general',
       'models',
       'capabilities',
       'mcp',
-      'skills',
       'sessions'
     ]);
+    expect(SETTINGS_TABS.map((tab) => tab.id)).not.toContain('skills');
   });
 
   it('每个页签在 zh-CN 与 en 都有非空标签', () => {
@@ -68,9 +68,10 @@ describe('页签清单（SettingsApp 左侧竖排导航数据源）', () => {
     expect(t('navGeneral')).toBe('General');
   });
 
-  it('normalizeTabId：未知 / 缺失一律归 general', () => {
+  it('normalizeTabId：未知 / 缺失一律归 general；历史 skills 页签也归 general', () => {
     expect(normalizeTabId('mcp')).toBe('mcp');
     expect(normalizeTabId('models')).toBe('models');
+    expect(normalizeTabId('skills')).toBe('general');
     expect(normalizeTabId('garbage')).toBe('general');
     expect(normalizeTabId(undefined)).toBe('general');
   });

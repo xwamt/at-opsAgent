@@ -8,7 +8,6 @@ import GeneralTab from './GeneralTab.vue';
 import McpTab from './McpTab.vue';
 import ModelsTab from './ModelsTab.vue';
 import SessionsTab from './SessionsTab.vue';
-import SkillsTab from './SkillsTab.vue';
 
 const store = useSettingsStore();
 
@@ -17,7 +16,6 @@ const PANELS = {
   models: ModelsTab,
   capabilities: CapabilitiesTab,
   mcp: McpTab,
-  skills: SkillsTab,
   sessions: SessionsTab
 } as const;
 

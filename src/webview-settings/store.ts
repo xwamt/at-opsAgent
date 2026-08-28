@@ -25,7 +25,6 @@ import {
   normalizeProviders,
   normalizeSessions,
   normalizeSettingsSnapshot,
-  normalizeSkills,
   normalizeTabId,
   openAuthFileReq,
   openModelsFileReq,
@@ -35,8 +34,7 @@ import {
   type OpsConfig,
   type ProviderRow,
   type SessionRow,
-  type SettingsTabId,
-  type SkillRow
+  type SettingsTabId
 } from './helpers';
 import { setLocale, t } from './i18n';
 
@@ -96,7 +94,6 @@ export const useSettingsStore = defineStore('ops-settings', {
     /** host 下发的已打码文本（对比基准）与编辑稿。 */
     mcpText: '',
     mcpDraft: '',
-    skills: [] as SkillRow[],
     sessions: [] as SessionRow[],
     activeSessionId: '',
     status: {} as Partial<Record<StatusArea, StatusLine>>,
@@ -196,9 +193,6 @@ export const useSettingsStore = defineStore('ops-settings', {
           break;
         case 'mcp/state':
           this.applyMcp(payload);
-          break;
-        case 'skills/state':
-          this.skills = normalizeSkills(asRecord(payload).skills ?? payload);
           break;
         case 'sessions/state':
           this.applySessions(payload);
@@ -326,9 +320,7 @@ export const useSettingsStore = defineStore('ops-settings', {
       if (rec.mcp !== undefined) {
         this.applyMcp(rec.mcp);
       }
-      if (rec.skills !== undefined) {
-        this.skills = snapshot.skills;
-      }
+      // snapshot.skills 不吸收：内置技能是 Agent 内部资源，设置页无技能目录。
       if (snapshot.activeSessionId) {
         this.activeSessionId = snapshot.activeSessionId;
       }
@@ -462,11 +454,7 @@ export const useSettingsStore = defineStore('ops-settings', {
       this.post('settings/openJson', { kind: 'mcp' });
     },
 
-    // ── 技能 / 会话 ──
-    openSkill(skill: SkillRow): void {
-      this.post('skill/open', { name: skill.name, ...(skill.path ? { path: skill.path } : {}) });
-    },
-
+    // ── 会话 ──
     newSession(): void {
       this.post('session/new', {});
     },

@@ -6,7 +6,6 @@ import Composer from './Composer.vue';
 import HistoryOverlay from './HistoryOverlay.vue';
 import PlaybookHeader from './PlaybookHeader.vue';
 import PlaybookPicker from './PlaybookPicker.vue';
-import SkillPicker from './SkillPicker.vue';
 import WelcomeState from './WelcomeState.vue';
 
 const store = useOpsStore();
@@ -20,7 +19,6 @@ const store = useOpsStore();
     <ChatTranscript v-else class="chat-app__transcript" />
     <div class="chat-app__dock">
       <PlaybookPicker v-if="store.activePicker === 'playbook'" class="chat-app__picker" />
-      <SkillPicker v-else-if="store.activePicker === 'skill'" class="chat-app__picker" />
       <!-- 能力插件健康：composer 上方一条低调的点簇，不再占一整条状态栏 -->
       <div
         v-if="store.providerChips.length > 0 || store.mock"

@@ -71,11 +71,8 @@ function snapshot(): Record<string, unknown> {
       { pluginId: 'at.jenkins', displayName: 'AT Jenkins', healthy: false, toolCount: 5, bridgeCount: 1 }
     ],
     mcp: { path: '~/.cursor/mcp.json', text: MOCK_MCP_TEXT },
-    skills: [
-      { name: 'ops-agent-core', description: '核心纪律：证据优先、审批简报、输出契约', path: 'skills/ops-agent-core/SKILL.md' },
-      { name: 'incident-response', description: '故障排查链路细则', path: 'skills/incident-response/SKILL.md' },
-      { name: 'daily-inspection', description: '日常巡检清单', path: 'skills/daily-inspection/SKILL.md' }
-    ],
+    // 内置技能不下发 UI（与真实 host settingsSnapshot 一致：skills 恒为空）。
+    skills: [],
     sessions: mockSessions
   };
 }

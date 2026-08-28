@@ -2,12 +2,12 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { t } from '../i18n';
 import { useOpsStore } from '../store';
-import type { TimelineStripEntry } from '../store-helpers';
+import { visibleUntrustedQuotes, type TimelineStripEntry } from '../store-helpers';
 import { getVsCodeApi } from '../vscode-api';
 import EvidenceNote from './EvidenceNote.vue';
 import SubagentBoard from './SubagentBoard.vue';
-import ThinkingTrace from './ThinkingTrace.vue';
 import ToolCallCard from './ToolCallCard.vue';
+import UntrustedQuotes from './UntrustedQuotes.vue';
 
 const store = useOpsStore();
 const scroller = ref<HTMLElement | null>(null);
@@ -156,11 +156,14 @@ onMounted(async () => {
         </div>
       </div>
 
-      <ThinkingTrace
-        v-else-if="item.kind === 'thinking'"
-        :steps="item.steps"
-        :untrusted-quotes="item.untrustedQuotes"
-      />
+      <!-- thinking：CoT 永不渲染（对齐 pi hideThinkingBlock，恒为隐藏）；
+           仅 untrustedQuotes 警示块可见。item 仍占虚拟化索引，只是不产出 DOM。 -->
+      <template v-else-if="item.kind === 'thinking'">
+        <UntrustedQuotes
+          v-if="visibleUntrustedQuotes(item).length > 0"
+          :quotes="visibleUntrustedQuotes(item)"
+        />
+      </template>
 
       <ToolCallCard v-else-if="item.kind === 'tool'" :call="item.call" />
 

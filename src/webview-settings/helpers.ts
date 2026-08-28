@@ -13,7 +13,6 @@ export type SettingsTabId =
   | 'models'
   | 'capabilities'
   | 'mcp'
-  | 'skills'
   | 'sessions';
 
 export interface SettingsTabMeta {
@@ -24,16 +23,15 @@ export interface SettingsTabMeta {
     | 'navModels'
     | 'navCapabilities'
     | 'navMcp'
-    | 'navSkills'
     | 'navSessions';
 }
 
+/** 内置技能是 Agent 内部资源，无用户可见页签（历史 tab id 'skills' 归 general）。 */
 export const SETTINGS_TABS: readonly SettingsTabMeta[] = [
   { id: 'general', labelKey: 'navGeneral' },
   { id: 'models', labelKey: 'navModels' },
   { id: 'capabilities', labelKey: 'navCapabilities' },
   { id: 'mcp', labelKey: 'navMcp' },
-  { id: 'skills', labelKey: 'navSkills' },
   { id: 'sessions', labelKey: 'navSessions' }
 ] as const;
 

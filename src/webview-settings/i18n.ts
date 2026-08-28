@@ -16,7 +16,6 @@ const zhCN = {
   navModels: '模型',
   navCapabilities: '能力插件',
   navMcp: 'MCP',
-  navSkills: '技能',
   navSessions: '会话',
   save: '保存',
   saved: '已保存',
@@ -97,10 +96,6 @@ const zhCN = {
   mcpSave: '保存 mcp.json',
   mcpOpen: '打开 mcp.json',
 
-  skillsTitle: '技能',
-  skillsHint: '内置技能（skills/ 渐进披露）；点击在编辑器打开对应 SKILL.md。',
-  skillsEmpty: '暂无技能',
-
   sessionsTitle: '会话',
   sessionsNew: '新建会话',
   sessionsEmpty: '暂无历史会话',
@@ -115,7 +110,6 @@ const en: Record<SettingsMessageKey, string> = {
   navModels: 'Models',
   navCapabilities: 'Capabilities',
   navMcp: 'MCP',
-  navSkills: 'Skills',
   navSessions: 'Sessions',
   save: 'Save',
   saved: 'Saved',
@@ -205,10 +199,6 @@ const en: Record<SettingsMessageKey, string> = {
   mcpSkipped: 'These entries match the AT Series dedupe rule and will not be spawned:',
   mcpSave: 'Save mcp.json',
   mcpOpen: 'Open mcp.json',
-
-  skillsTitle: 'Skills',
-  skillsHint: 'Bundled skills (progressive disclosure); click to open the SKILL.md in an editor.',
-  skillsEmpty: 'No skills yet',
 
   sessionsTitle: 'Sessions',
   sessionsNew: 'New session',

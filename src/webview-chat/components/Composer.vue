@@ -12,7 +12,6 @@ const attachments = ref<PromptAttachment[]>([]);
 const textarea = ref<HTMLTextAreaElement | null>(null);
 
 const PLAYBOOK_RE = /^\/playbook(\s|$)/;
-const SKILL_RE = /^\/skill(\s|$)/;
 
 const placeholder = computed(() =>
   store.streaming ? t('composerPlaceholderStreaming') : t('composerPlaceholder')
@@ -42,26 +41,23 @@ function persistDraft(): void {
   api.setState({ ...prev, draft: draft.value });
 }
 
-// 输入 /playbook 或 /skill 时弹出对应 picker（只在刚敲出命令的瞬间触发一次）
+// 输入 /playbook 时弹出 picker（只在刚敲出命令的瞬间触发一次）
 watch(draft, (next, prev) => {
   persistDraft();
   const now = next.trimStart();
   const before = (prev ?? '').trimStart();
   if (PLAYBOOK_RE.test(now) && !PLAYBOOK_RE.test(before)) {
     store.activePicker = 'playbook';
-  } else if (SKILL_RE.test(now) && !SKILL_RE.test(before)) {
-    store.activePicker = 'skill';
   }
 });
 
 // picker 选中后清掉输入框里的 slash 命令
 store.$onAction(({ name, after }) => {
-  if (name !== 'startPlaybook' && name !== 'runSkill') {
+  if (name !== 'startPlaybook') {
     return;
   }
   after(() => {
-    const trimmed = draft.value.trimStart();
-    if (PLAYBOOK_RE.test(trimmed) || SKILL_RE.test(trimmed)) {
+    if (PLAYBOOK_RE.test(draft.value.trimStart())) {
       draft.value = '';
     }
   });
@@ -90,10 +86,6 @@ function send(): void {
   // slash 命令不发给 host，改为打开 picker
   if (PLAYBOOK_RE.test(text)) {
     store.activePicker = 'playbook';
-    return;
-  }
-  if (SKILL_RE.test(text)) {
-    store.activePicker = 'skill';
     return;
   }
   store.sendPrompt(text, attachments.value.length > 0 ? [...attachments.value] : undefined);

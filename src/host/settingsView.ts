@@ -12,7 +12,7 @@ import { envelope, type Envelope } from '../protocol';
 import type { HostController } from './hostController';
 import { buildWebviewHtml } from './webviewHtml';
 
-export type SettingsTab = 'general' | 'models' | 'capabilities' | 'mcp' | 'skills' | 'sessions';
+export type SettingsTab = 'general' | 'models' | 'capabilities' | 'mcp' | 'sessions';
 
 export interface SettingsPanelDeps {
   extensionUri: vscode.Uri;
