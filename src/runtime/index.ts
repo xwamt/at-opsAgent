@@ -30,7 +30,6 @@ import { composeSystemPrompt } from '../prompts/layers';
 import {
   discoveryToolSpecs,
   executeDiscoveryTool,
-  isBusinessToolName,
   listBusinessToolDescriptors,
   type DiscoveryHub
 } from './discovery-tools';

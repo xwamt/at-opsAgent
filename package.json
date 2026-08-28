@@ -1,32 +1,42 @@
 {
   "name": "at-ops-agent",
-  "displayName": "AT Ops Agent",
-  "description": "AT Series operations agent for VS Code / Cursor. Capability plugins register tools via the embedded MCP Hub — no extra MCP server config.",
-  "version": "0.0.0",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.1.0",
   "publisher": "at-series",
   "license": "MIT",
   "private": true,
   "engines": {
     "vscode": "^1.85.0",
-    "node": ">=22.19.0"
+    "node": ">=20"
   },
-  "categories": ["Other"],
-  "keywords": ["ops", "sre", "mcp", "at-series", "agent"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ops",
+    "sre",
+    "mcp",
+    "at-series",
+    "agent"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
           "id": "atOpsAgent",
-          "title": "AT Ops Agent",
+          "title": "%view.container.title%",
           "icon": "media/icons/ops-agent.svg"
         }
       ],
       "panel": [
         {
           "id": "atOpsAgentBoard",
-          "title": "Ops 看板",
+          "title": "%view.board.title%",
           "icon": "media/icons/ops-board.svg"
         }
       ]
@@ -36,29 +46,30 @@
         {
           "id": "atOpsAgent.chat",
           "type": "webview",
-          "name": "对话"
+          "name": "%view.chat%",
+          "contextualTitle": "AT Ops Agent"
         },
         {
           "id": "atOpsAgent.sessions",
-          "name": "会话",
+          "name": "%view.sessions%",
           "visibility": "collapsed"
         },
         {
           "id": "atOpsAgent.capabilities",
-          "name": "能力插件"
+          "name": "%view.capabilities%"
         },
         {
           "id": "atOpsAgent.approvals",
-          "name": "审批"
+          "name": "%view.approvals%"
         },
         {
           "id": "atOpsAgent.skills",
-          "name": "技能",
+          "name": "%view.skills%",
           "visibility": "collapsed"
         },
         {
           "id": "atOpsAgent.models",
-          "name": "模型",
+          "name": "%view.models%",
           "visibility": "collapsed"
         }
       ],
@@ -66,7 +77,109 @@
         {
           "id": "atOpsAgent.incidentBoard",
           "type": "webview",
-          "name": "事故 / 任务"
+          "name": "%view.incidentBoard%"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "atOpsAgent.capabilities",
+        "contents": "%welcome.noBridges%",
+        "when": "atOpsAgent.bridgeCount == 0"
+      },
+      {
+        "view": "atOpsAgent.approvals",
+        "contents": "%welcome.noApprovals%"
+      }
+    ],
+    "commands": [
+      {
+        "command": "atOpsAgent.newSession",
+        "title": "%cmd.newSession%",
+        "icon": "$(add)"
+      },
+      {
+        "command": "atOpsAgent.pickPlaybook",
+        "title": "%cmd.pickPlaybook%",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "atOpsAgent.openSettings",
+        "title": "%cmd.openSettings%",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "atOpsAgent.openModels",
+        "title": "%cmd.openModels%"
+      },
+      {
+        "command": "atOpsAgent.refreshBridges",
+        "title": "%cmd.refreshBridges%",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "atOpsAgent.diagnoseHub",
+        "title": "%cmd.diagnoseHub%"
+      },
+      {
+        "command": "atOpsAgent.approveChange",
+        "title": "%cmd.approveChange%",
+        "icon": "$(check)"
+      },
+      {
+        "command": "atOpsAgent.rejectChange",
+        "title": "%cmd.rejectChange%",
+        "icon": "$(x)"
+      },
+      {
+        "command": "atOpsAgent.abort",
+        "title": "%cmd.abort%",
+        "icon": "$(debug-stop)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "atOpsAgent.newSession",
+          "when": "view == atOpsAgent.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "atOpsAgent.pickPlaybook",
+          "when": "view == atOpsAgent.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "atOpsAgent.abort",
+          "when": "view == atOpsAgent.chat",
+          "group": "navigation@3"
+        },
+        {
+          "command": "atOpsAgent.openSettings",
+          "when": "view == atOpsAgent.chat",
+          "group": "navigation@9"
+        },
+        {
+          "command": "atOpsAgent.refreshBridges",
+          "when": "view == atOpsAgent.capabilities",
+          "group": "navigation@1"
+        },
+        {
+          "command": "atOpsAgent.diagnoseHub",
+          "when": "view == atOpsAgent.capabilities",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "atOpsAgent.approveChange",
+          "when": "view == atOpsAgent.approvals && viewItem == approval.pending",
+          "group": "inline@1"
+        },
+        {
+          "command": "atOpsAgent.rejectChange",
+          "when": "view == atOpsAgent.approvals && viewItem == approval.pending",
+          "group": "inline@2"
         }
       ]
     },
@@ -75,7 +188,11 @@
       "properties": {
         "atOpsAgent.discovery.mode": {
           "type": "string",
-          "enum": ["auto", "always", "off"],
+          "enum": [
+            "auto",
+            "always",
+            "off"
+          ],
           "default": "auto",
           "description": "Hub progressive tool discovery mode."
         },
@@ -89,8 +206,24 @@
         },
         "atOpsAgent.approval.sessionRequiredFor": {
           "type": "string",
-          "enum": ["write-exec", "exec-only", "never"],
+          "enum": [
+            "write-exec",
+            "exec-only",
+            "never"
+          ],
           "default": "write-exec"
+        },
+        "atOpsAgent.approval.dedupePluginModal": {
+          "type": "boolean",
+          "default": false
+        },
+        "atOpsAgent.models.defaultThinkingLevel": {
+          "type": "string",
+          "default": "medium"
+        },
+        "atOpsAgent.models.toolCallPromptFallback": {
+          "type": "boolean",
+          "default": true
         },
         "atOpsAgent.workspaceShell.enabled": {
           "type": "boolean",
@@ -100,11 +233,43 @@
           "type": "number",
           "default": 3,
           "maximum": 4
+        },
+        "atOpsAgent.streaming.batchMs": {
+          "type": "number",
+          "default": 40
         }
       }
     }
   },
   "scripts": {
-    "compile": "echo 'implementation not started; see docs/10-implementation-plan.md'"
+    "compile": "npm run compile:extension && npm run compile:webview",
+    "compile:extension": "node esbuild.extension.mjs",
+    "compile:webview": "node esbuild.webview.mjs",
+    "watch": "node esbuild.extension.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@at-series/mcp-hub": "^0.3.3",
+    "@earendil-works/pi-agent-core": "0.84.3",
+    "@earendil-works/pi-ai": "0.84.3",
+    "@earendil-works/pi-coding-agent": "0.84.3",
+    "js-yaml": "^4.1.1",
+    "markdown-it": "^14.1.0",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.13",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^22.13.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.25.0",
+    "esbuild-plugin-vue3": "^0.4.2",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9"
   }
 }
