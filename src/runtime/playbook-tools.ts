@@ -145,7 +145,9 @@ export function createPlaybookTools(host: PlaybookToolHost | undefined): OpsCust
       name: CLOSE_PLAYBOOK_TOOL_NAME,
       label: 'Ops：收尾链路',
       description:
-        '收尾当前 playbook（推进到 closed）。仅在产出物（报告/记录）完成、' +
+        '收尾当前 playbook（推进到 closed）。调用之前必须先在对话里输出可见的' +
+        '中文巡检/故障结论 markdown（主机、负载、磁盘、内存、服务、异常、未检查项），' +
+        '禁止只调工具不给结论就 close。仅在产出物（报告/记录）完成、' +
         '或用户明确要求终止时调用；收尾后工具选择回到任务边界，可重新 select。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       execute: async () => {

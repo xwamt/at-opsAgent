@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import type { ToolCallView } from '../../protocol/host-protocol';
 import { t } from '../i18n';
+import { toolCallHeadline } from '../store-helpers';
 import LogViewer from './LogViewer.vue';
 
 const props = defineProps<{ call: ToolCallView }>();
@@ -28,6 +29,9 @@ const STATUS_META: Record<
 };
 
 const status = computed(() => STATUS_META[props.call.status] ?? STATUS_META.running);
+
+/** 标题显示命令意图（docs/14 P1-ui：磁盘/内存/…），原始工具名进 title 提示。 */
+const headline = computed(() => toolCallHeadline(props.call));
 
 const duration = computed(() => {
   const ms = props.call.durationMs;
@@ -73,7 +77,7 @@ const artifactHref = computed(() =>
         aria-hidden="true"
       ></span>
       <span class="codicon codicon-tools tool__icon" aria-hidden="true"></span>
-      <span class="tool__name ops-mono">{{ props.call.name }}</span>
+      <span class="tool__name ops-mono" :title="props.call.name">{{ headline }}</span>
       <span v-if="props.call.pluginId" class="tool__plugin ops-muted ops-mono">{{ props.call.pluginId }}</span>
       <span class="ops-badge" :class="'ops-risk-' + props.call.risk">{{ riskLabel }}</span>
       <span class="tool__spacer"></span>

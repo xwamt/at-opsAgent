@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import type { NoticeAction } from '../../protocol/host-protocol';
 import { t, tf } from '../i18n';
 import { useOpsStore } from '../store';
-import { visibleUntrustedQuotes, type TimelineStripEntry } from '../store-helpers';
+import { assistantDisplay, visibleUntrustedQuotes, type TimelineStripEntry } from '../store-helpers';
 import { getVsCodeApi } from '../vscode-api';
 import EvidenceNote from './EvidenceNote.vue';
 import MarkdownBlock from './MarkdownBlock.vue';
@@ -203,27 +203,42 @@ onMounted(async () => {
           <div class="transcript__text transcript__well">{{ entry.item.text }}</div>
         </div>
 
-        <div v-else-if="entry.item.kind === 'assistant'" class="transcript__msg transcript__msg--agent">
-          <span class="transcript__who transcript__who--agent">{{ t('roleAgent') }}</span>
-          <div v-if="entry.item.error" class="transcript__text transcript__text--error">
-            {{ entry.item.text }}
+        <!-- 空 assistant 不占位（docs/14 P1-ui）：空正文已结束 ⇒ 无 DOM；
+             空正文流式中 ⇒ 单行「正在巡检…」；其余照常渲染 -->
+        <template v-else-if="entry.item.kind === 'assistant'">
+          <div
+            v-if="assistantDisplay(entry.item) === 'progress'"
+            class="transcript__inspecting ops-muted"
+            role="status"
+          >
+            <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
+            <span>{{ t('inspectingProgress') }}</span>
           </div>
-          <MarkdownBlock v-else-if="!entry.item.streaming" :source="entry.item.text" />
-          <div v-else class="transcript__text">
-            {{ entry.item.text }}<span class="transcript__caret" :aria-label="t('generating')">▍</span>
+          <div
+            v-else-if="assistantDisplay(entry.item) === 'content'"
+            class="transcript__msg transcript__msg--agent"
+          >
+            <span class="transcript__who transcript__who--agent">{{ t('roleAgent') }}</span>
+            <div v-if="entry.item.error" class="transcript__text transcript__text--error">
+              {{ entry.item.text }}
+            </div>
+            <MarkdownBlock v-else-if="!entry.item.streaming" :source="entry.item.text" />
+            <div v-else class="transcript__text">
+              {{ entry.item.text }}<span class="transcript__caret" :aria-label="t('generating')">▍</span>
+            </div>
+            <!-- 失败可重试（P1-5）：错误 footer + Retry -->
+            <div v-if="entry.item.error && entry.item.retryable" class="transcript__retry">
+              <button
+                type="button"
+                class="ops-btn ops-btn--secondary transcript__retry-btn"
+                :aria-label="t('retryAria')"
+                @click="store.retryAssistant(entry.item.id)"
+              >
+                <span class="codicon codicon-refresh" aria-hidden="true"></span> {{ t('retry') }}
+              </button>
+            </div>
           </div>
-          <!-- 失败可重试（P1-5）：错误 footer + Retry -->
-          <div v-if="entry.item.error && entry.item.retryable" class="transcript__retry">
-            <button
-              type="button"
-              class="ops-btn ops-btn--secondary transcript__retry-btn"
-              :aria-label="t('retryAria')"
-              @click="store.retryAssistant(entry.item.id)"
-            >
-              <span class="codicon codicon-refresh" aria-hidden="true"></span> {{ t('retry') }}
-            </button>
-          </div>
-        </div>
+        </template>
 
         <!-- thinking：CoT 永不渲染（对齐 pi hideThinkingBlock，恒为隐藏）；
              仅 untrustedQuotes 警示块可见。item 仍占虚拟化索引，只是不产出 DOM。 -->
@@ -416,6 +431,14 @@ onMounted(async () => {
   .transcript__caret {
     animation: none;
   }
+}
+
+/* 空 assistant 流式占位：单行低调「正在巡检…」 */
+.transcript__inspecting {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  font-size: var(--ops-font-sm);
 }
 
 .transcript__retry {

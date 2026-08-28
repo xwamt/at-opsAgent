@@ -18,6 +18,7 @@ import type {
 } from '../hostTypes';
 import { describeError, type HostContext } from './context';
 import { GuidedManualFlow } from './guidedManualFlow';
+import { ensureVisibleInspectionReport } from './inspectionSummary';
 import { StageLayerInjector } from './stageLayers';
 
 /** ops_advance_stage 未显式给目标阶段时的默认推进（合法迁移表的主线）。 */
@@ -232,6 +233,9 @@ export class PlaybookService {
     const sid = sessionId ?? this.ctx.store.activeSessionId;
     const run = this.runs.get(sid);
     if (!run) return { ok: false, error: '没有进行中的 playbook run' };
+    // docs/14 P0-report：模型整轮只调工具就 close 时，先根据工具 preview
+    // 合成一份中文巡检结论上屏，再收尾；合成后绝不以此拒绝 close。
+    ensureVisibleInspectionReport(this.ctx, sid);
     await this.ensureOrchestrator();
     let stage = this.currentStage(run, sid);
     if (stage !== 'closed') {

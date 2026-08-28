@@ -96,7 +96,32 @@ const READ_ONLY_LEADING_COMMANDS = new Set([
   'head',
   'tail',
   'wc',
-  'ls'
+  'ls',
+  // docs/14 P0-read：常见只读巡检命令
+  'w',
+  'who',
+  'last',
+  'id',
+  'date',
+  'timedatectl',
+  'lsblk',
+  'lscpu',
+  'lsmem',
+  'findmnt',
+  'vmstat',
+  'iostat',
+  'netstat',
+  'ss',
+  'dmesg',
+  // 管道滤镜（重定向 / $() / 反引号已被 SHELL_DANGER_RE 整体排除）
+  'awk',
+  'grep',
+  'egrep',
+  'fgrep',
+  'cut',
+  'uniq',
+  'tr',
+  'column'
 ]);
 
 /** systemctl 的只读子命令（无子命令的纯 flag 形式如 `systemctl --failed` 也算只读）。 */
@@ -114,6 +139,34 @@ const SYSTEMCTL_READ_SUBCOMMANDS = new Set([
 /** iptables 的链/规则变更选项（命中即非只读）。 */
 const IPTABLES_MUTATION_RE =
   /^-(?:[ADIRNXPEZF]$|-(?:append|delete|insert|replace|new-chain|delete-chain|policy|flush|zero|rename-chain))/;
+
+/** ip 的只读对象（show / list 类查询）。 */
+const IP_READ_SUBCOMMANDS = new Set(['addr', 'address', 'link', 'route', 'neigh', 'rule']);
+
+/** ip 的变更动作 token（命中即非只读，宁可误伤 `ip addr show up` 这类过滤）。 */
+const IP_MUTATION_TOKENS = new Set([
+  'add',
+  'del',
+  'delete',
+  'change',
+  'replace',
+  'set',
+  'flush',
+  'up',
+  'down'
+]);
+
+/** docker 的只读子命令（stats 另要求 --no-stream / -n，见下）。 */
+const DOCKER_READ_SUBCOMMANDS = new Set([
+  'ps',
+  'stats',
+  'inspect',
+  'logs',
+  'images',
+  'info',
+  'port',
+  'top'
+]);
 
 /** 单段命令（无 && / ; / | 组合）是否只读；不认识的一律 false（保守）。 */
 function isReadOnlyCommandSegment(segment: string): boolean {
@@ -133,7 +186,40 @@ function isReadOnlyCommandSegment(segment: string): boolean {
     // journalctl 只读，除非带 --vacuum-* / --rotate / --flush 维护开关。
     return !rest.some((t) => t.startsWith('--vacuum') || t === '--rotate' || t === '--flush');
   }
-  if (cmd === 'docker') return rest[0] === 'ps';
+  if (cmd === 'mount') {
+    // 仅列出挂载（无参数或纯 flag 如 -l）只读；-o / --bind / --move 或出现
+    // 设备/挂载点等位置参数即真实挂载动作。
+    if (rest.some((t) => /^-o/.test(t) || t.startsWith('--options') || t === '--bind' || t === '--move')) {
+      return false;
+    }
+    return rest.every((t) => t.startsWith('-'));
+  }
+  if (cmd === 'sysctl') {
+    // sysctl 读取内核参数只读；-w / --write 以及 key=value 赋值为写。
+    return !rest.some(
+      (t) => t === '-w' || t === '--write' || (!t.startsWith('-') && t.includes('='))
+    );
+  }
+  if (cmd === 'sed') {
+    // sed 流式过滤只读；-i / --in-place 原地改写文件不算。
+    return !rest.some((t) => /^-[a-zA-Z]*i/.test(t) || t.startsWith('--in-place'));
+  }
+  if (cmd === 'sort') {
+    // sort 只读；-o / --output 写结果文件不算。
+    return !rest.some((t) => /^-[a-zA-Z]*o/.test(t) || t.startsWith('--output'));
+  }
+  if (cmd === 'ip') {
+    const sub = rest.find((t) => !t.startsWith('-'));
+    if (sub === undefined || !IP_READ_SUBCOMMANDS.has(sub)) return false;
+    return !rest.some((t) => IP_MUTATION_TOKENS.has(t));
+  }
+  if (cmd === 'docker') {
+    const sub = rest.find((t) => !t.startsWith('-'));
+    if (sub === undefined || !DOCKER_READ_SUBCOMMANDS.has(sub)) return false;
+    // stats 默认持续刷新（交互式），仅 --no-stream / -n 的一次性输出算只读。
+    if (sub === 'stats') return rest.some((t) => t === '--no-stream' || t === '-n');
+    return true;
+  }
   if (cmd === 'kubectl') return rest.find((t) => !t.startsWith('-')) === 'get';
   if (cmd === 'iptables') {
     const hasList = rest.some((t) => t === '--list' || /^-[a-z]*L/.test(t));

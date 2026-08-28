@@ -3,7 +3,13 @@
  * prompt 上行 payload 组装与「事件脉络」时间线条目归一化。
  * 单独成文件是为了能在 node 环境直接单测（docs/09 §8 组件测降级路径）。
  */
-import type { ChatPromptReq, SubagentCard, TranscriptItem, UsageView } from '../protocol/host-protocol';
+import type {
+  ChatPromptReq,
+  SubagentCard,
+  ToolCallView,
+  TranscriptItem,
+  UsageView
+} from '../protocol/host-protocol';
 import { normalizeConfidence, type ConfidenceLevel } from './confidence';
 
 export type PromptAttachment = NonNullable<ChatPromptReq['attachments']>[number];
@@ -275,6 +281,98 @@ export function buildRenderList(
   }
   flush();
   return out;
+}
+
+// ── 工具卡标题 / 空 assistant 渲染（docs/14 P1-ui）────────────────────────
+
+/** 命令首词 → 中文意图（巡检常见命令族；工具名 list_ssh_servers 也走此表）。 */
+const COMMAND_INTENT_ZH: Record<string, string> = {
+  df: '磁盘',
+  free: '内存',
+  uptime: '负载',
+  w: '负载',
+  top: '负载',
+  ps: '进程',
+  systemctl: '服务',
+  docker: '容器',
+  journalctl: '日志',
+  hostname: '主机',
+  list_ssh_servers: 'SSH 目标'
+};
+
+const HEADLINE_COMMAND_CAP = 48;
+
+/**
+ * preview → 命令文本：JSON 带 .command 用其首行；JSON 无 command 视为
+ * 结构化输出（提不出命令）；非 JSON 纯文本取首行。
+ */
+function extractPreviewCommand(preview: string | undefined | null): string {
+  const raw = String(preview ?? '').trim();
+  if (!raw) {
+    return '';
+  }
+  if (raw.startsWith('{') || raw.startsWith('[')) {
+    try {
+      const rec = asRecord(JSON.parse(raw));
+      const command = typeof rec.command === 'string' ? rec.command : '';
+      return command.split('\n')[0].trim();
+    } catch {
+      // 非合法 JSON：按纯文本首行处理
+    }
+  }
+  return raw.split('\n')[0].trim();
+}
+
+/** 命令首词（跳过 sudo / 环境变量赋值，剥路径前缀），用于意图映射。 */
+function leadingCommandWord(command: string): string {
+  for (const token of command.split(/\s+/)) {
+    if (!token || token === 'sudo' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      continue;
+    }
+    return token.split('/').pop() ?? token;
+  }
+  return '';
+}
+
+/**
+ * 工具卡标题（docs/14 P1-ui）：runtime 里几乎只有 run_remote_command 一个
+ * 工具名，光看名字不知道在干什么。从 preview 提取命令 → 首词映射中文意图，
+ * 标题为「意图 · 短命令」；提不出命令回退「意图 · name」；意图未知回退 name
+ * （有命令时仍带短命令）。
+ */
+export function toolCallHeadline(call: Pick<ToolCallView, 'name' | 'preview'>): string {
+  const command = extractPreviewCommand(call.preview);
+  const lead = leadingCommandWord(command) || call.name;
+  const intent = COMMAND_INTENT_ZH[lead] ?? COMMAND_INTENT_ZH[call.name];
+  const shortCommand =
+    command.length > HEADLINE_COMMAND_CAP
+      ? `${command.slice(0, HEADLINE_COMMAND_CAP)}…`
+      : command;
+  if (!intent) {
+    return shortCommand ? `${call.name} · ${shortCommand}` : call.name;
+  }
+  return `${intent} · ${shortCommand || call.name}`;
+}
+
+export type AssistantDisplay = 'skip' | 'progress' | 'content';
+
+/**
+ * 空 assistant 渲染判定（docs/14 P1-ui）：
+ * - error ⇒ content（错误文案 + Retry 照常渲染）；
+ * - 有正文 ⇒ content；
+ * - 空正文 + 流式中 ⇒ progress（单行「正在巡检…」占位）；
+ * - 空正文 + 已结束 ⇒ skip（不产出 DOM，不留空白气泡）。
+ */
+export function assistantDisplay(
+  item: Pick<Extract<TranscriptItem, { kind: 'assistant' }>, 'text' | 'streaming' | 'error'>
+): AssistantDisplay {
+  if (item.error) {
+    return 'content';
+  }
+  if ((item.text ?? '').trim() !== '') {
+    return 'content';
+  }
+  return item.streaming ? 'progress' : 'skip';
 }
 
 // ── usage（P1-4 context 水位）─────────────────────────────────────────────

@@ -30,6 +30,7 @@ import {
   absorbHydrateMeta,
   absorbHydrateModels,
   activeSubagentCards,
+  assistantDisplay,
   buildHistoryList,
   buildPromptPayload,
   buildRenderList,
@@ -44,6 +45,7 @@ import {
   normalizeUsage,
   resolveInspectedSubagent,
   subagentTitle,
+  toolCallHeadline,
   usagePercent,
   visibleUntrustedQuotes,
   type ChatTimelineEvent,
@@ -622,5 +624,83 @@ describe('SubagentBoard/ChatApp 子代理 inspector（docs/12 §3）', () => {
     expect(t('subagentNoOutput')).toBe('No output yet');
     expect(tf('subagentStripCount', { count: 2 })).toContain('2');
     expect(t('subagentVisibleTools')).toBe('Visible tools');
+  });
+});
+
+describe('ToolCallCard 标题意图（toolCallHeadline，docs/14 P1-ui）', () => {
+  it('纯文本 preview 首行提命令并映射意图：df -h → 磁盘', () => {
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: 'df -h' })).toBe('磁盘 · df -h');
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: 'free -m\nMem: ...' })).toBe(
+      '内存 · free -m'
+    );
+  });
+
+  it('run_remote_command 的 JSON preview 走 .command 字段', () => {
+    expect(
+      toolCallHeadline({
+        name: 'run_remote_command',
+        preview: '{"command":"docker ps -a","serverName":"prod-gw-01"}'
+      })
+    ).toBe('容器 · docker ps -a');
+    expect(
+      toolCallHeadline({ name: 'run_remote_command', preview: JSON.stringify({ command: 'systemctl status nginx' }) })
+    ).toBe('服务 · systemctl status nginx');
+  });
+
+  it('组合命令取首词；sudo 前缀被跳过', () => {
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: 'hostname && uptime && w' })).toBe(
+      '主机 · hostname && uptime && w'
+    );
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: 'sudo journalctl -u nginx -n 50' })).toBe(
+      '日志 · sudo journalctl -u nginx -n 50'
+    );
+  });
+
+  it('长命令截断到 48 字符并加省略号', () => {
+    const cmd = 'journalctl -u nginx --since "2026-08-28" --no-pager | grep -i error | head -n 200';
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: cmd })).toBe(
+      `日志 · ${cmd.slice(0, 48)}…`
+    );
+  });
+
+  it('工具名本身可映射（list_ssh_servers → SSH 目标），无命令时回退 name', () => {
+    expect(toolCallHeadline({ name: 'list_ssh_servers' })).toBe('SSH 目标 · list_ssh_servers');
+    expect(toolCallHeadline({ name: 'list_ssh_servers', preview: '{"servers":[]}' })).toBe(
+      'SSH 目标 · list_ssh_servers'
+    );
+  });
+
+  it('未知工具/提不出意图回退 name（有命令时附短命令）', () => {
+    expect(toolCallHeadline({ name: 'mystery_tool' })).toBe('mystery_tool');
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: '{"result":"ok"}' })).toBe(
+      'run_remote_command'
+    );
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: 'cat /etc/os-release' })).toBe(
+      'run_remote_command · cat /etc/os-release'
+    );
+  });
+});
+
+describe('ChatTranscript 空 assistant（assistantDisplay，docs/14 P1-ui）', () => {
+  it('空正文 + 已结束 ⇒ skip（不留空白气泡，无 DOM）', () => {
+    expect(assistantDisplay({ text: '', streaming: false })).toBe('skip');
+    expect(assistantDisplay({ text: '  \n ' })).toBe('skip');
+  });
+
+  it('空正文 + 流式中 ⇒ progress（「正在巡检…」单行占位）', () => {
+    expect(assistantDisplay({ text: '', streaming: true })).toBe('progress');
+    expect(assistantDisplay({ text: '   ', streaming: true })).toBe('progress');
+  });
+
+  it('有正文 / error ⇒ content 照常渲染（含错误 + Retry）', () => {
+    expect(assistantDisplay({ text: '巡检结论…', streaming: false })).toBe('content');
+    expect(assistantDisplay({ text: '结论', streaming: true })).toBe('content');
+    expect(assistantDisplay({ text: '', streaming: false, error: true })).toBe('content');
+  });
+
+  it('inspectingProgress 文案 zh/en 齐备', () => {
+    expect(t('inspectingProgress')).toBe('正在巡检…');
+    setLocale('en');
+    expect(t('inspectingProgress')).toBe('Inspecting…');
   });
 });

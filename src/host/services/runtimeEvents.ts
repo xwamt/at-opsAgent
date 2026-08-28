@@ -25,28 +25,35 @@ export class RuntimeEventRouter {
     const ctx = this.ctx;
     switch (e.type) {
       case 'text_delta': {
-        if (!ctx.store.findItem(e.id, sid)) {
-          const item = { kind: 'assistant' as const, id: e.id, text: '', streaming: true };
+        // P0-id（docs/14）：runtime 对同一 assistant 消息的 thinking_delta 与
+        // text_delta 共用一个消息 id。若两类 delta 落到同一 transcript 项，
+        // 先到的 thinking 会把该 id 占成 kind:thinking（ChatTranscript 永不
+        // 渲染），随后的正文被 appendAssistantText 静默丢弃。这里按 kind
+        // 拆 id（`:assistant` / `:thinking` 后缀），正文永不写入 thinking 项。
+        const id = assistantItemId(e.id);
+        if (!ctx.store.findItem(id, sid)) {
+          const item = { kind: 'assistant' as const, id, text: '', streaming: true };
           ctx.store.appendItem(item, sid);
           ctx.broadcastToSession(sid, 'transcript/append', { item });
         }
-        ctx.store.appendAssistantText(e.id, e.text, sid);
+        ctx.store.appendAssistantText(id, e.text, sid);
         ctx.broadcastToSession(sid, 'transcript/patch', {
-          itemId: e.id,
+          itemId: id,
           patch: { appendText: e.text }
         });
         break;
       }
       case 'thinking_delta': {
-        if (!ctx.store.findItem(e.id, sid)) {
-          const item = { kind: 'thinking' as const, id: e.id, steps: [] as string[] };
+        const id = thinkingItemId(e.id);
+        if (!ctx.store.findItem(id, sid)) {
+          const item = { kind: 'thinking' as const, id, steps: [] as string[] };
           ctx.store.appendItem(item, sid);
           ctx.broadcastToSession(sid, 'transcript/append', { item });
         }
-        ctx.store.appendThinkingText(e.id, e.text, sid);
-        const untrustedQuotes = this.collectUntrustedQuotes(sid, e.id);
+        ctx.store.appendThinkingText(id, e.text, sid);
+        const untrustedQuotes = this.collectUntrustedQuotes(sid, id);
         ctx.broadcastToSession(sid, 'thinking/delta', {
-          itemId: e.id,
+          itemId: id,
           text: e.text,
           ...(untrustedQuotes !== undefined ? { untrustedQuotes } : {})
         });
@@ -156,6 +163,20 @@ export class RuntimeEventRouter {
     item.untrustedQuotes = merged;
     return merged;
   }
+}
+
+// ── P0-id：thinking / assistant 分 id ────────────────────────────────────
+
+const THINKING_ID_SUFFIX = ':thinking';
+const ASSISTANT_ID_SUFFIX = ':assistant';
+
+/** 防御性幂等：runtime 将来若在发射侧就拆 id（已带后缀），不再二次拼接。 */
+function thinkingItemId(eventId: string): string {
+  return eventId.endsWith(THINKING_ID_SUFFIX) ? eventId : `${eventId}${THINKING_ID_SUFFIX}`;
+}
+
+function assistantItemId(eventId: string): string {
+  return eventId.endsWith(ASSISTANT_ID_SUFFIX) ? eventId : `${eventId}${ASSISTANT_ID_SUFFIX}`;
 }
 
 /** 简单启发式：工具输出是否像日志 / SQL（时间戳、日志级别、异常栈、SQL 关键字）。 */

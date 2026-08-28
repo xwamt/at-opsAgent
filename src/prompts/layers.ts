@@ -78,7 +78,11 @@ export const L3_OUTPUT_FORMAT = `# L3 输出格式
   批准后 host 会计算 commandSetSha256 并把 approvalToken 附给执行——你不要自行计算任何哈希；
   要素实质变化则令牌作废，重新审批。
 - C9：根因未 confirmed 前禁止输出长篇 RCA 报告，只给当前证据 + 下一步动作。
-- 文档模板按链路选择：troubleshooting-report / operation-record / service-deployment / service-inspection。`;
+- 文档模板按链路选择：troubleshooting-report / operation-record / service-deployment / service-inspection。
+- 对用户说话：每个工具批次前后必须有一句中文旁白（正在查磁盘/内存…），
+  禁止整轮只有工具调用、一句话不说。
+- 巡检/playbook 收尾：调用 ops_close_playbook **之前**必须先输出可见 markdown 结论
+  （主机、负载、磁盘、内存、服务、异常、未检查项）。未检查写「未检查」，禁止只 close。`;
 
 export interface ComposeSystemPromptOptions {
   /** L4：当前 playbook 阶段注入层（允许动作、DoD、停止条件），阶段迁移时整体替换。 */

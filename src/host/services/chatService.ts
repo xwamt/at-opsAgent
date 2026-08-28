@@ -23,6 +23,7 @@ import { readAgentSettings } from '../agentSettings';
 import { normalizeRoleModels } from '../modelsView';
 import type { RuntimeLike } from '../hostTypes';
 import { describeError, type HostContext } from './context';
+import { ensureVisibleInspectionReport } from './inspectionSummary';
 import { RuntimeEventRouter } from './runtimeEvents';
 import { SessionPoolExhaustedError, SessionRuntimePool } from './runtimePool';
 import { StageLayerInjector } from './stageLayers';
@@ -55,7 +56,12 @@ export class ChatService {
       log: (m) => ctx.log(m)
     });
     this.events = new RuntimeEventRouter(ctx, {
-      onIdle: (sessionId) => this.pool.markIdle(sessionId),
+      // docs/14 P0-report：idle 时本轮若只有工具、无可见 assistant 结论，
+      // host 先合成中文巡检结论上屏再释放席位。
+      onIdle: (sessionId) => {
+        ensureVisibleInspectionReport(ctx, sessionId);
+        this.pool.markIdle(sessionId);
+      },
       setUsage: (sessionId, usage) => {
         this.lastUsage.set(sessionId, usage);
       }

@@ -199,6 +199,78 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
     }
   });
 
+  it('扩充的只读巡检命令与管道滤镜推断为 read（docs/14 P0-read）', () => {
+    const readOnly = [
+      'w',
+      'hostname && uptime && w',
+      'who -b',
+      'last -n 5',
+      'id',
+      'date',
+      'timedatectl',
+      'lsblk',
+      'lscpu',
+      'lsmem',
+      'findmnt',
+      'mount',
+      'mount -l',
+      'vmstat 1 5',
+      'iostat -x 1 3',
+      'netstat -tlnp',
+      'ss -lnt',
+      'dmesg -T',
+      'sysctl -a',
+      'sysctl net.ipv4.ip_forward',
+      'ip addr',
+      'ip -s link',
+      'ip route show',
+      'ip addr; ss -lnt',
+      'df -h; free -m; docker ps',
+      'docker stats --no-stream',
+      'docker inspect nginx',
+      'docker logs --tail 100 app',
+      'docker images',
+      'docker info',
+      'docker port app',
+      'docker top app',
+      'ps aux | grep nginx | head',
+      'cat /proc/net/sockstat',
+      'journalctl -p err --since "24 hours"',
+      "ps aux | awk '{print $2}' | sort | uniq -c",
+      'grep -c error /var/log/syslog',
+      'egrep -i "warn" /var/log/messages | tail -n 20',
+      'fgrep OOM /var/log/kern.log',
+      'cut -d: -f1 /etc/passwd | sort | uniq | column',
+      'cat /etc/passwd | tr a-z A-Z',
+      'sed -n 1,10p /etc/hosts'
+    ];
+    for (const command of readOnly) {
+      expect(inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('read');
+    }
+  });
+
+  it('扩充命令的变更/交互形态维持申报风险', () => {
+    const notReadOnly = [
+      'docker stats',
+      'docker run -d nginx',
+      'docker rm app',
+      'ip link set eth0 down',
+      'ip addr add 10.0.0.2/24 dev eth0',
+      'ip route flush cache',
+      'mount /dev/sdb1 /mnt',
+      'mount -o remount,ro /',
+      'mount --bind /a /b',
+      'sysctl -w net.ipv4.ip_forward=1',
+      'sysctl net.ipv4.ip_forward=1',
+      'sed -i s/a/b/ /etc/nginx/nginx.conf',
+      'sort -o /tmp/out /tmp/in',
+      'systemctl restart nginx'
+    ];
+    for (const command of notReadOnly) {
+      expect(inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('exec');
+    }
+  });
+
   it('组合命令要求每段只读；重定向/命令替换一律不推断', () => {
     expect(inferEffectiveRisk('run_remote_command', { command: 'ps aux | head -n 20' }, 'exec')).toBe('read');
     expect(inferEffectiveRisk('run_remote_command', { command: 'df -h; free -m' }, 'exec')).toBe('read');
