@@ -1,0 +1,163 @@
+/**
+ * package.json contributes.commands 中九条命令的实现与注册。
+ */
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+import * as vscode from 'vscode';
+import { diagnoseHub } from './diagnose';
+import type { HostController } from './hostController';
+import { LLM_API_KEY_SECRET } from './secrets';
+import type { ApprovalTreeItem } from './trees/approvalsTree';
+import type { ChatViewProvider } from './chatView';
+
+export interface CommandDeps {
+  controller: HostController;
+  chatView: ChatViewProvider;
+  hostApp: string;
+  output: vscode.OutputChannel;
+  refreshTrees: () => void;
+}
+
+/** openModels 写入的模板：apiKey 用 SecretStorage 占位符，不落明文。 */
+const MODELS_TEMPLATE = `{
+  "providers": {
+    "internal-gateway": {
+      "baseUrl": "https://llm.example.internal/v1",
+      "api": "openai-completions",
+      "apiKey": "\${secret:${LLM_API_KEY_SECRET}}",
+      "headers": {},
+      "models": [
+        { "id": "qwen3-max", "name": "Qwen3 Max", "thinking": true }
+      ]
+    }
+  }
+}
+`;
+
+export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
+  const { controller, chatView, hostApp, output, refreshTrees } = deps;
+
+  const newSession = vscode.commands.registerCommand('atOpsAgent.newSession', () => {
+    controller.newSession();
+    chatView.postHydrate();
+    refreshTrees();
+  });
+
+  const pickPlaybook = vscode.commands.registerCommand('atOpsAgent.pickPlaybook', async () => {
+    const playbooks = await controller.getPlaybooks();
+    if (playbooks.length === 0) {
+      void vscode.window.showWarningMessage('未找到任何 playbook（skills/playbooks 为空）。');
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      playbooks.map((pb) => ({
+        label: pb.title ?? pb.id,
+        description: pb.id,
+        detail: pb.description
+      })),
+      { placeHolder: '选择要启动的运维链路（playbook）', matchOnDescription: true }
+    );
+    if (!picked) return;
+    const result = await controller.startPlaybook(picked.description ?? picked.label);
+    if (result.ok) {
+      void vscode.window.showInformationMessage(
+        `Playbook ${picked.description} 已启动（阶段: ${result.stage ?? 'triage'}）。`
+      );
+    }
+  });
+
+  const openSettings = vscode.commands.registerCommand('atOpsAgent.openSettings', () => {
+    void vscode.commands.executeCommand('workbench.action.openSettings', 'atOpsAgent');
+  });
+
+  const openModels = vscode.commands.registerCommand('atOpsAgent.openModels', async () => {
+    const modelsPath = controller.modelsPath;
+    try {
+      await fs.mkdir(path.dirname(modelsPath), { recursive: true });
+      try {
+        await fs.access(modelsPath);
+      } catch {
+        await fs.writeFile(modelsPath, MODELS_TEMPLATE, { encoding: 'utf8', mode: 0o600 });
+        output.appendLine(`[models] 已创建模板 ${modelsPath}（apiKey 使用 SecretStorage 占位符）`);
+      }
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(modelsPath));
+      await vscode.window.showTextDocument(doc, { preview: false });
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `打开 models.json 失败: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    refreshTrees();
+  });
+
+  const refreshBridges = vscode.commands.registerCommand('atOpsAgent.refreshBridges', async () => {
+    try {
+      await controller.hub.refresh();
+    } catch (err) {
+      output.appendLine(
+        `[hub] refresh 失败: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    refreshTrees();
+  });
+
+  const diagnose = vscode.commands.registerCommand('atOpsAgent.diagnoseHub', async () => {
+    await diagnoseHub({ hostApp, hub: controller.hub, output });
+  });
+
+  const approve = vscode.commands.registerCommand(
+    'atOpsAgent.approveChange',
+    (item?: ApprovalTreeItem) => respondToApproval(controller, 'approved', item)
+  );
+
+  const reject = vscode.commands.registerCommand(
+    'atOpsAgent.rejectChange',
+    (item?: ApprovalTreeItem) => respondToApproval(controller, 'rejected', item)
+  );
+
+  const abort = vscode.commands.registerCommand('atOpsAgent.abort', async () => {
+    await controller.abort();
+  });
+
+  return [
+    newSession,
+    pickPlaybook,
+    openSettings,
+    openModels,
+    refreshBridges,
+    diagnose,
+    approve,
+    reject,
+    abort
+  ];
+}
+
+async function respondToApproval(
+  controller: HostController,
+  decision: 'approved' | 'rejected',
+  item?: ApprovalTreeItem
+): Promise<void> {
+  let briefId = item?.brief.id;
+  if (!briefId) {
+    const pending = controller.store.pendingBriefs;
+    if (pending.length === 0) {
+      void vscode.window.showInformationMessage('没有待审批的变更简报。');
+      return;
+    }
+    if (pending.length === 1) {
+      briefId = pending[0].id;
+    } else {
+      const picked = await vscode.window.showQuickPick(
+        pending.map((b) => ({
+          label: b.targetLabel,
+          description: `${b.risk} · ${b.id.slice(0, 8)}`,
+          briefId: b.id
+        })),
+        { placeHolder: `选择要${decision === 'approved' ? '批准' : '拒绝'}的简报` }
+      );
+      briefId = picked?.briefId;
+    }
+  }
+  if (!briefId) return;
+  await controller.applyApproval({ briefId, decision });
+}
