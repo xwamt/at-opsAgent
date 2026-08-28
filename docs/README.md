@@ -17,10 +17,11 @@
 | 8 | [08-performance.md](08-performance.md) | 激活、流式、工具爆炸、超时、崩溃恢复 |
 | 9 | [09-extensibility.md](09-extensibility.md) | 新插件、新 Playbook、新模型、新 MCP |
 | 10 | [10-implementation-plan.md](10-implementation-plan.md) | 分阶段施工与验收 |
-| 11 | [11-redesign-recommendations.md](11-redesign-recommendations.md) | **下一阶段输入**：对照 OpenCode / Kilo / Cline 的架构、UI、体验、基础功能整改建议 |
+| 11 | [11-redesign-recommendations.md](11-redesign-recommendations.md) | **历史基线**（`764756c`）：对照 OpenCode / Kilo / Cline；P0 已落地，不再当待办 |
 | 12 | [12-inspection-ux.md](12-inspection-ux.md) | 巡检实录：先认客户端、单机不拆子代理、子代理 inspector |
 | 13 | [13-ops-agent-loop.md](13-ops-agent-loop.md) | **Agent loop**：L-env 现场注入、声明工具直接 select、禁止 get_tool 空转（pi + Claude/Codex/DeepSeek） |
 | 14 | [14-inspection-report-ux.md](14-inspection-report-ux.md) | 巡检结论必须上屏：thinking/正文分 id、过程旁白、close 前合成报告 |
+| 15 | [15-optimization-recommendations.md](15-optimization-recommendations.md) | **下一阶段输入**：对照 OpenCode / Kilo / Codex / Claude Code；编排、UI、Hub、记忆、运行时、导出/文档、其它方向 |
 
 配套：
 
@@ -28,7 +29,8 @@
 - [schemas/](schemas/) — 机器可读契约（playbook / task-spec / host protocol）
 - [../skills/](../skills/README.md) — 运行时技能包与 Playbook YAML 初稿
 - [research/](research/README.md) — 对 AT 插件、Hub、piagent、业界的原始调研
-- [reviews/](reviews/README.md) — 整改评审分项原文（架构 / UI / 体验 / 功能 / 竞品）
+- [reviews/](reviews/README.md) — 首轮整改评审（docs/11，基线已过期）
+- [reviews/round2/](reviews/round2/README.md) — 第二轮分项原文（docs/15）
 
 ## 已冻结的决策（速查）
 

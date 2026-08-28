@@ -1,5 +1,7 @@
 # 11 · 整改优化建议（对照 OpenCode / Kilo / Cline）
 
+> **状态：历史基线。** 评审对象是 `764756c`。其中 P0 已在后续提交落地（见 `7f02f86` 起）。下一阶段施工真源改为 [15-optimization-recommendations.md](15-optimization-recommendations.md)（基线 `b099484`，对照补齐 Codex / Claude Code）。
+>
 > 评审对象：当前毛胚实现（分支 `cursor/ops-agent-design-3c44`，HEAD `764756c`）。
 > 对照产品：OpenCode、Kilo Code，次要参照 Cline / Roo Code。
 > 方法：主代理只做拆分调度；五名子代理并行审架构、UI、体验、基础功能、竞品差距。分项原文见 [reviews/](reviews/)。

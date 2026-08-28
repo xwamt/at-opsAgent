@@ -75,7 +75,7 @@ npm run package      # compile 后经 npx @vscode/vsce 生成本地 .vsix
 
 - **阶段 0–3 已落地骨架**：Cline 式单 Chat 侧栏 + 设置 Webview、pi 会话 + Hub 工具调用 + 模型配置、审批安全闸与 Database 兼容、Playbook 状态机 + 子代理编排 + SuperOps 技能包。
 - **阶段 4–5 进行中**：运维看板 UI 打磨、Models 全页、第三方 MCP、性能合批、中英 i18n 与发布收尾。
-- **已知阻断（已在落地分支修复）**：发布产物曾把 ESM-only 的 pi SDK 打进 CJS 导致 `import.meta.url` 丢失、聊天永远回落「未配置模型」。对照清单与落地项见 [docs/11-redesign-recommendations.md](docs/11-redesign-recommendations.md)。
+- **会话体验及格线已过**（docs/11 的 P0 已落地）。下一阶段是值班闭环与信任基础设施，见 [docs/15-optimization-recommendations.md](docs/15-optimization-recommendations.md)。
 
 ## 设计文档
 
@@ -88,7 +88,8 @@ npm run package      # compile 后经 npx @vscode/vsce 生成本地 .vsix
 | [docs/02-capability-hub.md](docs/02-capability-hub.md) | **核心设计 1**：嵌入 Hub + 能力插件热注册 |
 | [docs/04-ops-orchestration.md](docs/04-ops-orchestration.md) | **核心设计 2**：运维链路 / 子代理 / CoT / 提示词 |
 | [docs/05-ui-system.md](docs/05-ui-system.md) | 运维专属前端 |
-| [docs/11-redesign-recommendations.md](docs/11-redesign-recommendations.md) | 对照 OpenCode / Kilo 的整改建议（下一阶段输入） |
+| [docs/11-redesign-recommendations.md](docs/11-redesign-recommendations.md) | 历史基线：对照 OpenCode / Kilo / Cline（P0 已落地） |
+| [docs/15-optimization-recommendations.md](docs/15-optimization-recommendations.md) | **下一阶段输入**：对照 OpenCode / Kilo / Codex / Claude Code |
 
 调研原文（六份子代理交叉验证）在 [docs/research/](docs/research/README.md)。
 

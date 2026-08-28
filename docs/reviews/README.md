@@ -1,6 +1,10 @@
 # 分项评审原文
 
-五名子代理并行产出，未经主代理改写。综合结论与落地顺序以 [../11-redesign-recommendations.md](../11-redesign-recommendations.md) 为准；细节、文件级引用与未合并的次要条目以本目录为准。
+**首轮**五名子代理并行产出（基线 `764756c`）。综合结论当时以 [../11-redesign-recommendations.md](../11-redesign-recommendations.md) 为准，该文件现为历史基线。
+
+下一阶段施工真源：[../15-optimization-recommendations.md](../15-optimization-recommendations.md)；第二轮分项见 [round2/](round2/README.md)。
+
+本目录仅保留首轮原文，供对照「当时缺什么、后来修了什么」。
 
 | 文件 | 范围 |
 |------|------|
