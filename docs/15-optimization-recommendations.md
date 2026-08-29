@@ -1,5 +1,7 @@
 # 15 · 优化整改建议（对照 OpenCode / Kilo / Codex / Claude Code）
 
+> **落地施工请走 [plans/2026-08-29-duty-loop/00-index.md](plans/2026-08-29-duty-loop/00-index.md)。** 本文是审查结论与优先级，不再当逐文件施工清单。
+>
 > 评审对象：`origin/main` HEAD `b099484`（P0–P2 会话体验已落地之后）。
 > 对照产品：OpenCode V2、Kilo Code（OpenCode server 重建版）、OpenAI Codex CLI/IDE、Claude Code（用户所称 cloudecode）。
 > 方法：主代理只做拆分调度；七名子代理并行审编排、UI、MCP Hub、记忆、运行时、体验/基础功能、竞品与其它方向。分项原文见 [reviews/round2/](reviews/round2/)。
@@ -246,6 +248,8 @@ Capabilities 页远低于 docs/02 §8（无工具列表、无 risk 徽章、无 
 ---
 
 ## 4. 建议落地顺序（技术依赖）
+
+**施工拆分与文件级任务**见 [plans/2026-08-29-duty-loop/00-index.md](plans/2026-08-29-duty-loop/00-index.md)。下面只保留依赖图。
 
 ```text
 P0-A Hub TTL+clear ──┬── P0-B 状态机收尾     ── 一次完整巡检能闭环

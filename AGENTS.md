@@ -15,4 +15,6 @@
 
 ## 建议实现顺序
 
-见 [docs/10-implementation-plan.md](docs/10-implementation-plan.md)。
+会话 UX 骨架见 [docs/10-implementation-plan.md](docs/10-implementation-plan.md)（阶段 0–3 已落地）。
+
+**下一阶段值班闭环**按 [docs/plans/2026-08-29-duty-loop/00-index.md](docs/plans/2026-08-29-duty-loop/00-index.md) 领取整份 plan，不要从 [docs/15](docs/15-optimization-recommendations.md) 或 [docs/11](docs/11-redesign-recommendations.md) 直接开写。

@@ -1,6 +1,6 @@
 # 第二轮分项评审原文
 
-七名子代理并行产出，未经主代理改写。综合结论与落地顺序以 [../../15-optimization-recommendations.md](../../15-optimization-recommendations.md) 为准；细节、文件级引用与未合并的次要条目以本目录为准。
+七名子代理并行产出，未经主代理改写。综合结论以 [../../15-optimization-recommendations.md](../../15-optimization-recommendations.md) 为准；**写代码请按** [../../plans/2026-08-29-duty-loop/00-index.md](../../plans/2026-08-29-duty-loop/00-index.md)。细节、文件级引用与未合并的次要条目以本目录为准。
 
 审计基线：`origin/main` `b099484`。对照：OpenCode V2、Kilo Code、OpenAI Codex、Claude Code。
 

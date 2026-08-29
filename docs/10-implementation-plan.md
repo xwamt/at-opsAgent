@@ -2,7 +2,9 @@
 
 设计已冻结。实现按阶段交付，每阶段有可演示的 vsix。
 
-> **整改落地**：P0（CJS 产物、配置向导、会话续接、挂起式审批、Markdown/codicon）与大部分 P1/P2 已在实现分支落地，见 [11-redesign-recommendations.md](11-redesign-recommendations.md)。不要在未跑 `test/bundle-smoke.test.ts` 的情况下改 esbuild 配置。
+> **会话 UX 及格线已过**（docs/11 的 P0 与大部分 P1/P2）。不要在未跑 `test/bundle-smoke.test.ts` 的情况下改 esbuild 配置。
+>
+> **下一阶段（值班闭环）**以 [15-optimization-recommendations.md](15-optimization-recommendations.md) 为审查结论，以 [plans/2026-08-29-duty-loop/00-index.md](plans/2026-08-29-duty-loop/00-index.md) 为可执行任务单。不要把本文阶段 0–5 当作未完成待办。
 
 ## 阶段 0 — 骨架（可安装但不会「干活」）
 
