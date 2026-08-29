@@ -320,6 +320,87 @@ describe('mcp_call_tool', () => {
   });
 });
 
+describe('directTools allowlist', () => {
+  const config = {
+    servers: {
+      alpha: {
+        command: 'npx',
+        args: ['-y', 'alpha-mcp'],
+        directTools: ['allowed_tool']
+      }
+    }
+  };
+  const alphaTools: ExternalMcpToolInfo[] = [
+    { name: 'allowed_tool', description: 'On the allowlist' },
+    { name: 'secret_tool', description: 'Must not appear in search or be callable' }
+  ];
+
+  it('search only returns names in the nonempty directTools list', async () => {
+    const dir = await writeConfig(config);
+    const fake = fakeConnector({ alpha: { tools: alphaTools, callResult: 'ok' } });
+    const tools = await createExternalMcpProxyTools({ agentDir: dir, connectors: fake.connector });
+    const out = JSON.parse(
+      await toolByName(tools, 'mcp_search_tools').execute({ query: '', server: 'alpha' })
+    );
+    expect(out.tools).toEqual([
+      { server: 'alpha', name: 'allowed_tool', description: 'On the allowlist' }
+    ]);
+    expect(out.total).toBe(1);
+  });
+
+  it('call of a name outside directTools returns TOOL_NOT_IN_DIRECT_TOOLS and never connects', async () => {
+    const dir = await writeConfig(config);
+    const fake = fakeConnector({ alpha: { tools: alphaTools, callResult: 'should-not-run' } });
+    const tools = await createExternalMcpProxyTools({ agentDir: dir, connectors: fake.connector });
+    const out = JSON.parse(
+      await toolByName(tools, 'mcp_call_tool').execute({
+        server: 'alpha',
+        name: 'secret_tool',
+        arguments: { x: 1 }
+      })
+    );
+    expect(out).toEqual({ error: 'TOOL_NOT_IN_DIRECT_TOOLS', name: 'secret_tool' });
+    expect(fake.calls).toEqual([]);
+    expect(fake.connects).toEqual([]);
+  });
+
+  it('call of an allowlisted name still reaches the connector', async () => {
+    const dir = await writeConfig(config);
+    const fake = fakeConnector({ alpha: { tools: alphaTools, callResult: { ok: true } } });
+    const tools = await createExternalMcpProxyTools({ agentDir: dir, connectors: fake.connector });
+    const out = JSON.parse(
+      await toolByName(tools, 'mcp_call_tool').execute({ server: 'alpha', name: 'allowed_tool' })
+    );
+    expect(out).toEqual({ server: 'alpha', tool: 'allowed_tool', result: { ok: true } });
+    expect(fake.calls).toEqual([{ server: 'alpha', name: 'allowed_tool', args: {} }]);
+  });
+
+  it('empty directTools does not filter search or call', async () => {
+    const dir = await writeConfig({
+      servers: { alpha: { command: 'npx', directTools: [] } }
+    });
+    const fake = fakeConnector({
+      alpha: {
+        tools: [
+          { name: 'a', description: 'A' },
+          { name: 'b', description: 'B' }
+        ],
+        callResult: 'ran'
+      }
+    });
+    const tools = await createExternalMcpProxyTools({ agentDir: dir, connectors: fake.connector });
+    const search = JSON.parse(
+      await toolByName(tools, 'mcp_search_tools').execute({ query: '', server: 'alpha' })
+    );
+    expect(search.total).toBe(2);
+    const call = JSON.parse(
+      await toolByName(tools, 'mcp_call_tool').execute({ server: 'alpha', name: 'b' })
+    );
+    expect(call.result).toBe('ran');
+    expect(fake.calls).toHaveLength(1);
+  });
+});
+
 describe('idle disconnect', () => {
   it('closes an unused connection after idleTimeoutMs and reconnects on demand', async () => {
     const dir = await writeConfig({ servers: { alpha: { command: 'npx' } } });

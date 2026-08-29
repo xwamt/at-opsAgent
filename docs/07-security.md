@@ -21,6 +21,8 @@
 
 `at.database` 的 write 在插件无弹窗前，① 对 Database write **强制简报**，即使全局策略被用户调成 `exec-only`。
 
+`atOpsAgent.policy.floor`（默认 `write-exec`，取值与 `approval.sessionRequiredFor` 相同）是组织下限：有效范围 = 下限与用户设置中更严的一档（松→严：`never` < `exec-only` < `write-exec`）。用户无法把闸门调到比 floor 更松。
+
 `allowBackgroundAccess === false` 不是安全漏洞：工具会 `UNAVAILABLE`。不要在 Agent 里绕过该开关。
 
 审批 waiter 超时（`atOpsAgent.approval.timeoutMs`，默认 15 分钟，0 禁用）以及软停 / 硬停，一律按 **拒绝** 落定，不得当成批准。超时后令牌不得留在 `currentApprovals`。
@@ -32,6 +34,7 @@
 | 插件密码 / SA token | 各插件 SecretStorage | 不读、不请求、不进 prompt |
 | Bridge token | registry 文件 0600 | 仅 Hub 客户端使用，禁止日志 |
 | LLM key | Agent SecretStorage | ModelRuntime.getApiKey |
+| IM webhook HMAC 密钥 | Agent SecretStorage（`atOpsAgent.im.webhookSecret`） | 出站 `X-At-Ops-Signature`；不进 settings / 日志 / LLM |
 | approvalToken | 内存 + 会话 custom entry | 不进 LLM |
 
 ## 4. 提示注入

@@ -4,7 +4,16 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('vscode', () => ({
+  workspace: {
+    getConfiguration: () => ({
+      get: (_key: string, defaultValue?: unknown) => defaultValue
+    })
+  },
+  commands: { executeCommand: () => Promise.resolve() }
+}));
 import {
   MEM_LAYER_MAX_LINES,
   buildDutyDigest,

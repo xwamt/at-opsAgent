@@ -1,0 +1,18 @@
+{
+  "_comment": "Example only. Copy into ~/.at-series/agent/models.json — do not merge into the default template. Replace baseUrl with your OpenAI-compatible gateway when air-gapped. API key stays in VS Code SecretStorage; never put a real key in this file.",
+  "providers": {
+    "zhipu": {
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "api": "openai-completions",
+      "apiKey": "${secret:atOpsAgent.apiKey.zhipu}",
+      "headers": {},
+      "compat": {
+        "thinkingFormat": "zai"
+      },
+      "models": [
+        { "id": "glm-4.5", "name": "GLM-4.5", "reasoning": true },
+        { "id": "glm-4-plus", "name": "GLM-4 Plus", "reasoning": false }
+      ]
+    }
+  }
+}

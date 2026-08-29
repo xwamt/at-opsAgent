@@ -42,7 +42,11 @@ vi.mock('vscode', () => ({
     clipboard: { writeText: vscodeMocks.clipboardWriteText },
     language: 'zh-cn'
   },
-  commands: { executeCommand: vi.fn().mockResolvedValue(undefined) }
+  commands: { executeCommand: vi.fn().mockResolvedValue(undefined) },
+  l10n: {
+    t: (message: string, ...args: Array<string | number | boolean>) =>
+      message.replace(/\{(\d+)\}/g, (_, i) => String(args[Number(i)] ?? ''))
+  }
 }));
 
 import { SessionStore } from '../src/host/sessionStore';
@@ -142,6 +146,9 @@ describe('WorkbenchService.exportReport', () => {
     expect(String(contents)).toContain('# 值班报告');
     expect(vscodeMocks.openTextDocument).toHaveBeenCalledTimes(1);
     expect(vscodeMocks.showTextDocument).toHaveBeenCalledTimes(1);
+    expect(vscodeMocks.showSaveDialog).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '导出值班报告' })
+    );
   });
 
   it('exportReport(sessionId) 导非活动会话：含该会话 user 文本、不含活动会话独有文本', async () => {
@@ -194,6 +201,13 @@ describe('HostController 路由 clipboard/write 与 chat/export', () => {
     expect(src).toContain('sessionId');
   });
 
+  it('runNoticeAction：request 直接 post（导出/gm-*）；无 request 才走 notice/action（handoff）', () => {
+    const src = readFileSync(path.join(process.cwd(), 'src/webview-chat/store.ts'), 'utf8');
+    expect(src).toContain('if (action.request)');
+    expect(src).toContain('this.post(action.request, {})');
+    expect(src).toContain("this.post('notice/action', { id: action.id })");
+  });
+
   it('handleRequest clipboard/write 调用 env.clipboard.writeText', async () => {
     const { store, dir } = tempStore();
     const controller = new HostController({
@@ -220,5 +234,70 @@ describe('HostController 路由 clipboard/write 与 chat/export', () => {
     } finally {
       controller.dispose();
     }
+  });
+
+  it('chat/export 无 payload 仍走活动会话（不要求额外字段）', async () => {
+    const { store, dir } = tempStore();
+    store.appendItem({ kind: 'user', id: 'u1', text: 'active-session-export' });
+    const controller = new HostController({
+      hub: {
+        onDidChangeTools: () => ({ dispose() {} }),
+        getProviders: () => ({ hostApp: 'code', providers: [] }),
+        listAllTools: () => [],
+        hostApp: 'code'
+      } as never,
+      store,
+      secrets: new OpsSecrets({
+        get: async () => undefined,
+        store: async () => undefined,
+        delete: async () => undefined,
+        onDidChange: () => ({ dispose() {} })
+      } as never),
+      output: { appendLine() {} } as never,
+      extensionPath: dir
+    });
+    try {
+      vscodeMocks.showSaveDialog.mockResolvedValue(undefined);
+      const result = await controller.handleRequest('chat/export', undefined);
+      expect(result).toEqual({ ok: false });
+      expect(vscodeMocks.showSaveDialog).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+});
+
+describe('host l10n bundles（Plan 11 T4b）', () => {
+  it('package.json 顶层 l10n 指向 ./l10n', () => {
+    const pkg = JSON.parse(readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as {
+      l10n?: string;
+    };
+    expect(pkg.l10n).toBe('./l10n');
+  });
+
+  it('bundle.l10n.json 源语言为中文，en 包有导出对话框与状态栏译文', () => {
+    const zh = JSON.parse(
+      readFileSync(path.join(process.cwd(), 'l10n', 'bundle.l10n.json'), 'utf8')
+    ) as Record<string, string>;
+    const en = JSON.parse(
+      readFileSync(path.join(process.cwd(), 'l10n', 'bundle.l10n.en.json'), 'utf8')
+    ) as Record<string, string>;
+    expect(zh['导出值班报告']).toBe('导出值班报告');
+    expect(zh['选择要附加到对话的素材（证据 / 工作区文件）']).toContain('选择要附加');
+    expect(zh['$(warning) AT Ops 未配置']).toContain('未配置');
+    expect(en['导出值班报告']).toBe('Export duty report');
+    expect(en['$(warning) AT Ops 未配置']).toContain('not configured');
+    expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort());
+  });
+
+  it('workbenchService / activate 高频中文走 vscode.l10n.t', () => {
+    const workbench = readFileSync(
+      path.join(process.cwd(), 'src/host/services/workbenchService.ts'),
+      'utf8'
+    );
+    const activate = readFileSync(path.join(process.cwd(), 'src/host/activate.ts'), 'utf8');
+    expect(workbench).toContain("vscode.l10n.t('选择要附加到对话的素材（证据 / 工作区文件）')");
+    expect(workbench).toContain("vscode.l10n.t('导出值班报告')");
+    expect(activate).toContain("vscode.l10n.t('$(warning) AT Ops 未配置')");
   });
 });

@@ -7,3 +7,5 @@
 | [003](003-webview-not-copilot.md) | 自建 WebviewView 主 UI，不用 Copilot Chat Participant | Accepted |
 | [004](004-no-extension-exports-registration.md) | 能力插件注册只用 Bridge registry，不用 extension exports | Accepted |
 | [005](005-ops-playbooks.md) | 运维 Playbook + 四类子代理，不用 handoff/swarm | Accepted |
+| [006](006-no-headless-inspection-cron.md) | 巡检由用户点 Playbook，不做 headless cron | Accepted |
+| [007](007-single-window-runtime.md) | 单窗口运行时，不做多窗口选主 / instance.lock | Accepted |

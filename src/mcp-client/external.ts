@@ -14,8 +14,9 @@
  * proxy tools (`mcp_list_servers` / `mcp_search_tools` / `mcp_call_tool`),
  * mirroring the pi-mcp search+call pattern. This is deliberately a separate
  * mechanism from the Hub's `ops_*` progressive discovery. `directTools` from
- * the config is parsed and surfaced but direct (first-class) registration is a
- * later phase — the proxy always returns exactly these three tools.
+ * the config is an allowlist for search/call when nonempty; first-class
+ * registration remains a later phase — the proxy always returns exactly these
+ * three tools.
  *
  * Connections are lazy (first search/call), keyed by server name, and closed
  * after {@link DEFAULT_IDLE_TIMEOUT_MS} of inactivity. The
@@ -45,9 +46,10 @@ export interface McpServerEntry extends McpServerLike {
   headers?: Record<string, string>;
   bearerToken?: string;
   /**
-   * Optional allowlist of tools to expose directly (first-class) instead of
-   * via the search/call proxy. Parsed and surfaced only; direct registration
-   * is a later phase (docs/02 §5: proxy and directTools stay two mechanisms).
+   * Optional allowlist: when nonempty, `mcp_search_tools` / `mcp_call_tool`
+   * only see these names (out-of-list call returns TOOL_NOT_IN_DIRECT_TOOLS
+   * and never connects). First-class `mcp__server__tool` registration is a
+   * later phase (docs/02 §5: proxy and directTools stay two mechanisms).
    */
   directTools?: string[];
 }
@@ -399,6 +401,15 @@ function clampLimit(raw: unknown): number {
   return Math.min(Math.max(n, 1), MAX_SEARCH_LIMIT);
 }
 
+/** Nonempty `directTools` is an allowlist; empty/missing means no extra filter. */
+function directToolsAllowlist(entry: McpServerEntry): string[] | undefined {
+  return entry.directTools && entry.directTools.length > 0 ? entry.directTools : undefined;
+}
+
+function outsideDirectToolsError(name: string): string {
+  return JSON.stringify({ error: 'TOOL_NOT_IN_DIRECT_TOOLS', name });
+}
+
 /** Config summary safe to show the model: env/header values never leak. */
 function describeEntry(entry: McpServerEntry): Record<string, unknown> {
   return {
@@ -570,7 +581,12 @@ export async function createExternalMcpProxyTools(
       const notConnected: Array<{ server: string; error: string }> = [];
       for (const entry of targets) {
         try {
-          const tools = await manager.listTools(entry);
+          let tools = await manager.listTools(entry);
+          const allow = directToolsAllowlist(entry);
+          if (allow) {
+            const allowSet = new Set(allow);
+            tools = tools.filter((tool) => allowSet.has(tool.name));
+          }
           for (const tool of tools) {
             const description = tool.description ?? '';
             if (
@@ -650,6 +666,10 @@ export async function createExternalMcpProxyTools(
           error: 'UNKNOWN_SERVER',
           message: `未知服务器 "${server}"。${knownServersText()}`
         });
+      }
+      const allow = directToolsAllowlist(entry);
+      if (allow && !allow.includes(name)) {
+        return outsideDirectToolsError(name);
       }
       const toolArgs = isPlainObject(args.arguments) ? args.arguments : {};
       try {

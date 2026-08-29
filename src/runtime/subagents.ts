@@ -3,18 +3,23 @@
  * 并行调度（investigator ≤4、exec 并行度 =1）、Abort 级联与输出契约解析。
  *
  * 本文件不依赖 pi SDK（也不 import vscode）：真正跑 LLM 的 runner 由
- * src/runtime/index.ts 注入，因此可以在 vitest 中用假 runner 单测调度语义。
- * 仅主会话注册 ops_dispatch_subagent；子会话不注册（禁止递归派发，docs/03 §2）。
+ * src/runtime/session-factory.ts 注入，因此可以在 vitest 中用假 runner 单测调度语义。
+ * 仅主会话注册 ops_dispatch_subagent / ops_check_subagent；子会话不注册
+ * （禁止递归派发与收割，docs/03 §2）。
  */
 import { randomUUID } from 'node:crypto';
 
 import { mergeEvidence, type EvidenceNote, type RiskLevel, type SubagentRole, type TaskSpec } from '../orchestrator';
 import type { AgentToolDescriptor } from '../protocol';
 import { isBusinessToolName } from './discovery-tools';
+import type { OpsCustomToolSpec } from './resource-loader';
 
 // ── 常量 ─────────────────────────────────────────────────────────────────
 
 export const DISPATCH_TOOL_NAME = 'ops_dispatch_subagent';
+
+/** 只读收割子代理终态；仅主会话注册（与 dispatch 一样禁止递归）。 */
+export const CHECK_SUBAGENT_TOOL_NAME = 'ops_check_subagent';
 
 /** 子代理摘要截断上限（≈800 token，按字符近似；docs/04 §3.3）。 */
 export const SUBAGENT_SUMMARY_CHAR_LIMIT = 3200;
@@ -68,6 +73,12 @@ export interface SubagentDispatchInput {
   sessionId?: string;
   playbookId?: string;
   stage?: string;
+  /**
+   * 可选。最多等待该任务这么多毫秒；到期返回 `{status:'running', taskId}`，
+   * runner 继续在 manager 内跑。缺省不传 = 阻塞到终态。
+   * 不写入 TaskSpec（dispatch schema 有，buildTaskSpec 忽略）。
+   */
+  waitMs?: number;
 }
 
 function normalizeInputs(raw: unknown): TaskSpec['inputs'] | undefined {
@@ -701,12 +712,12 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
 
 // ── ops_dispatch_subagent：阻塞式工具调用（P1-6）──────────────────────────
 
-/** 单个 tasks[] 元素 / 单任务调用的终态结果（工具结果 JSON 的单元）。 */
+/** 单个 tasks[] 元素 / 单任务调用的结果（工具结果 JSON 的单元）。 */
 export interface DispatchToolTaskResult {
   taskId: string;
   role?: SubagentRole;
-  /** rejected = spec 校验失败，任务未派发。 */
-  status: SubagentTerminalStatus | 'rejected';
+  /** rejected = spec 校验失败；running = waitMs 到期且任务仍在 manager 内跑。 */
+  status: SubagentTerminalStatus | 'rejected' | 'running';
   summary?: string;
   error?: string;
   evidenceNote?: EvidenceNote;
@@ -726,10 +737,39 @@ function finalToTaskResult(final: SubagentFinalResult): DispatchToolTaskResult {
   };
 }
 
+/** waitMs ≥ 0 才生效；负数 / NaN / 非数字 = 缺省阻塞。 */
+function parseWaitMs(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return undefined;
+  return Math.floor(raw);
+}
+
+/**
+ * waitMs 到期返回 `'running'`（runner 继续）；否则返回 waitFor 终态。
+ * 已终态的微任务优先于 setTimeout，不会把刚完成的任务误报 running。
+ */
+async function waitForOrRunning(
+  manager: Pick<SubagentManager, 'waitFor'>,
+  taskId: string,
+  waitMs: number
+): Promise<SubagentFinalResult | { status: 'running' }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), waitMs);
+  });
+  try {
+    const winner = await Promise.race([manager.waitFor(taskId), timeout]);
+    if (winner === 'timeout') return { status: 'running' };
+    return winner;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function runOneDispatchTask(
   raw: unknown,
   manager: Pick<SubagentManager, 'dispatch' | 'waitFor'>,
-  inheritedInputs?: TaskSpec['inputs']
+  inheritedInputs?: TaskSpec['inputs'],
+  inheritedWaitMs?: number
 ): Promise<DispatchToolTaskResult> {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     return {
@@ -753,8 +793,16 @@ async function runOneDispatchTask(
     };
   }
   manager.dispatch(built.spec);
+  const waitMs = parseWaitMs(normalized.waitMs) ?? inheritedWaitMs;
   try {
-    return finalToTaskResult(await manager.waitFor(built.spec.taskId));
+    if (waitMs === undefined) {
+      return finalToTaskResult(await manager.waitFor(built.spec.taskId));
+    }
+    const raced = await waitForOrRunning(manager, built.spec.taskId, waitMs);
+    if (raced.status === 'running') {
+      return { taskId: built.spec.taskId, role: built.spec.role, status: 'running' };
+    }
+    return finalToTaskResult(raced);
   } catch (error) {
     return {
       taskId: built.spec.taskId,
@@ -780,9 +828,11 @@ function applyMergedEvidence(tasks: DispatchToolTaskResult[]): DispatchToolTaskR
 }
 
 /**
- * ops_dispatch_subagent 的 execute 主体（P1-6 阻塞式）：
+ * ops_dispatch_subagent 的 execute 主体（P1-6 缺省阻塞式）：
  * - 单任务（顶层 role/goal/riskCeiling）→ 阻塞到终态，返回单个结果 JSON；
- * - tasks[]（并行数组）→ 全部派发后等全部终态，返回 { tasks: [...] } JSON；
+ * - tasks[]（并行数组）→ 全部派发后等全部返回，返回 { tasks: [...] } JSON；
+ * - 可选 waitMs：到期该任务返回 `{status:'running', taskId}`，runner 继续；
+ *   缺省不传 = 今日 Promise.all 阻塞语义。收割用 ops_check_subagent。
  * - spec 校验失败的任务标 status='rejected'，不影响其余任务；
  * - 结果绝不 throw：拒绝/失败都是结构化 JSON（模型自行处理）。
  * - Promise.all 之后 mergeEvidence：同窗冲突写回各任务 evidenceNote.conflicts。
@@ -793,6 +843,7 @@ export async function runDispatchToolCall(
   manager: Pick<SubagentManager, 'dispatch' | 'waitFor'>
 ): Promise<string> {
   const inheritedInputs = normalizeInputs(args.inputs);
+  const inheritedWaitMs = parseWaitMs(args.waitMs);
   const rawTasks = args.tasks;
   if (rawTasks !== undefined) {
     if (!Array.isArray(rawTasks) || rawTasks.length === 0) {
@@ -808,12 +859,67 @@ export async function runDispatchToolCall(
       });
     }
     const tasks = await Promise.all(
-      rawTasks.map((raw) => runOneDispatchTask(raw, manager, inheritedInputs))
+      rawTasks.map((raw) => runOneDispatchTask(raw, manager, inheritedInputs, inheritedWaitMs))
     );
     return JSON.stringify({ tasks: applyMergedEvidence(tasks) });
   }
   const [one] = applyMergedEvidence([await runOneDispatchTask(args, manager)]);
   return JSON.stringify(one);
+}
+
+/**
+ * ops_check_subagent 的 execute 主体：只读收割终态。
+ * 未知 taskId 用 statusOf 判空后返回结构化 JSON（不 throw）；
+ * 已知任务走 waitFor，阻塞到终态，返回与 dispatch 同款摘要。
+ */
+export async function runCheckSubagentToolCall(
+  args: Record<string, unknown>,
+  manager: Pick<SubagentManager, 'waitFor' | 'statusOf'>
+): Promise<string> {
+  const taskId = typeof args.taskId === 'string' ? args.taskId.trim() : '';
+  if (taskId.length === 0) {
+    return JSON.stringify({ ok: false, error: 'taskId 不能为空' });
+  }
+  if (manager.statusOf(taskId) === undefined) {
+    return JSON.stringify({ ok: false, taskId, error: `未知子代理任务 ${taskId}` });
+  }
+  try {
+    return JSON.stringify(finalToTaskResult(await manager.waitFor(taskId)));
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      taskId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+/** 仅主会话注册的只读收割工具（子会话不注册，禁止递归）。 */
+export function createCheckSubagentTool(
+  manager: Pick<SubagentManager, 'waitFor' | 'statusOf'>
+): OpsCustomToolSpec {
+  return {
+    name: CHECK_SUBAGENT_TOOL_NAME,
+    label: 'Ops：收割子代理',
+    description:
+      '查询并收割 ops_dispatch_subagent 派发的子代理终态（只读）。' +
+      '参数 {taskId}：dispatch 返回的任务 id（含 waitMs 早返的 running 任务）。' +
+      '工具结果与 dispatch 同款摘要 JSON（status: ok|degraded|failed|aborted + summary）。' +
+      '未知 taskId 返回结构化错误，不抛错。仅主会话可用，子代理禁止调用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: {
+          type: 'string',
+          description: 'ops_dispatch_subagent 返回的 taskId'
+        }
+      },
+      required: ['taskId'],
+      additionalProperties: false
+    },
+    risk: 'read',
+    execute: (args) => runCheckSubagentToolCall(args, manager)
+  };
 }
 
 // ── ops_dispatch_subagent 工具 spec（execute 由 runtime 注入 manager 后包装） ──
@@ -908,6 +1014,13 @@ const DISPATCH_TASK_PROPERTIES: Record<string, unknown> = {
       },
       contextNotes: { type: 'array', items: { type: 'string' } }
     }
+  },
+  waitMs: {
+    type: 'number',
+    description:
+      '可选。最多等待该任务这么多毫秒；到期返回 {status:running, taskId}，' +
+      '子代理继续在调度器内跑。缺省不传 = 阻塞到终态。' +
+      '收割终态用 ops_check_subagent {taskId}。不要把 payloadCaps 放进参数。'
   }
 };
 
@@ -915,8 +1028,10 @@ export const dispatchToolSpec = {
   name: DISPATCH_TOOL_NAME,
   label: 'Ops：派发子代理',
   description:
-    '派发子代理（investigator/executor/writer/verifier）并阻塞到终态：' +
+    '派发子代理（investigator/executor/writer/verifier）并默认阻塞到终态：' +
     '工具结果即终态摘要 JSON（status: ok|degraded|failed|aborted|rejected + summary）。' +
+    '可选 waitMs（毫秒）：到期该任务先返回 {status:running, taskId}，runner 继续；' +
+    '随后用 ops_check_subagent {taskId} 收割终态。缺省不传 waitMs = 阻塞到底。' +
     '单任务给顶层 role/goal/riskCeiling；并行取证给 tasks[]（一次最多 ' +
     `${MAX_DISPATCH_TASKS} 个，全部结束后一并返回）。` +
     '仅多主机/多插件并行取证才用 tasks[]；单台已连接主机的巡检不要用 tasks[]' +
@@ -926,7 +1041,7 @@ export const dispatchToolSpec = {
     '（hostname/uptime/df/free/ps/systemctl status 等）按 read 推断放行。' +
     'Investigator 只读（riskCeiling 必须 read）；Executor 必须携带 approvalToken.briefId' +
     '（commandSetSha256 由 host 绑定，不要自行计算）；Writer 无业务工具。' +
-    '仅主会话可用，子代理禁止递归派发。',
+    '仅主会话可用，子代理禁止递归派发。payloadCaps 不在本工具参数里（由 playbook yaml defaults 注入）。',
   parameters: {
     type: 'object',
     properties: {

@@ -60,18 +60,24 @@ export const L2_TOOL_DISCOVERY = `# L2 工具发现
   pb.incident→playbooks/incident-response/、pb.db→playbooks/db-slow-and-capacity/、
   pb.release→playbooks/release-rollback/、pb.host-emergency→playbooks/host-emergency/。
   如 pb.inspection 的 SKILL.md 在 playbooks/daily-inspection/SKILL.md。
+- ops_recall {query}：对 memory/incidents/index.md 与 environment.json 子串检索（≤8 行）。
+  不要把工具结果写入记忆；环境别名只能由用户编辑。
 - ops_list_playbooks：列出运维链路与适用场景提示。简单问答、闲聊不要启动链路。
 - ops_start_playbook {playbookId}：仅当你判断当前问题需要结构化排查/变更/巡检时启动。
   host 不会因「故障」「超时」等关键词自动启动；是否开链路由你决定。
 - ops_advance_stage {stage?}：当前阶段 DoD 达成后由你显式推进（host 不按消息数自动推进）。
 - ops_close_playbook：产出物完成或用户要求终止时收尾链路（进入 closed）。
 - ops_dispatch_subagent：仅当单会话不够（需并行取证、独立验证或写文档）时派发。
-  调用会阻塞到子代理终态，工具结果即终态摘要 JSON；并行取证用 tasks[]（≤4 个）。
+  调用默认阻塞到子代理终态，工具结果即终态摘要 JSON；并行取证用 tasks[]（≤4 个）。
+  可选 waitMs（毫秒）：到期该任务先返回 {status:running, taskId}，runner 继续；
+  随后用 ops_check_subagent {taskId} 收割终态。缺省不传 waitMs = 阻塞到底。
   并行 tasks[] 必须给同一 timeWindow。
   若 list_ssh_servers 只有 1 台 connected 目标：禁止 tasks[] 并行 investigator，
   由主会话直接 run_remote_command 完成巡检。多主机或多插件面才派发。
   yaml parallelGroup 只是候选建议，不是必须执行的清单；不要派发与当前问题无关的子代理。
-- 易错：nacos_list_instances ≠ 服务主机（主机在 nacos_list_service_instances）。`;
+- ops_check_subagent {taskId}：只读收割子代理终态（与 dispatch 同款摘要 JSON）。
+- 易错：nacos_list_instances ≠ 服务主机（主机在 nacos_list_service_instances）。
+- 工具返回含 UNAVAILABLE 的引导原文必须原样交给用户，不要改写，禁止发明 instanceId。`;
 
 /** L3 输出格式（主代理） */
 export const L3_OUTPUT_FORMAT = `# L3 输出格式

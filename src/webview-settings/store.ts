@@ -21,6 +21,7 @@ import {
   buildModelsFetchReq,
   buildModelsSavePayload,
   buildModelsTestReq,
+  clampConfigToPolicyFloor,
   emptyModelsForm,
   modelsKeyMissing,
   normalizeConfig,
@@ -91,6 +92,8 @@ export const useSettingsStore = defineStore('ops-settings', {
     draft: { ...CONFIG_DEFAULTS } as OpsConfig,
     /** settings/patchConfig 在途请求数（全部 ok 后才提交 config=draft）。 */
     pendingConfigSaves: 0,
+    /** 本次保存因组织下限收紧了 sessionRequiredFor。 */
+    pendingFloorClampNotice: false,
     models: emptyModelsForm() as ModelsForm,
     /** 收到过 models/state（evt 或合法 res）⇒ host 支持 models/* 家族。 */
     modelsChannel: false,
@@ -231,6 +234,7 @@ export const useSettingsStore = defineStore('ops-settings', {
           const outcome = outcomeOf(payload);
           if (!outcome.ok) {
             this.pendingConfigSaves = 0;
+            this.pendingFloorClampNotice = false;
             this.setStatus('general', false, outcome.message || t('saveFailed'));
             break;
           }
@@ -238,7 +242,11 @@ export const useSettingsStore = defineStore('ops-settings', {
             this.pendingConfigSaves -= 1;
             if (this.pendingConfigSaves === 0) {
               this.config = { ...this.draft };
-              this.setStatus('general', true, t('saved'));
+              const notice = this.pendingFloorClampNotice
+                ? t('policyFloorClamped')
+                : t('saved');
+              this.pendingFloorClampNotice = false;
+              this.setStatus('general', true, notice);
             }
           }
           break;
@@ -450,12 +458,15 @@ export const useSettingsStore = defineStore('ops-settings', {
 
     // ── 常规 ──
     saveGeneral(): void {
+      const { config: clampedDraft, clamped } = clampConfigToPolicyFloor(this.draft);
+      this.draft = clampedDraft;
       const requests = buildConfigPatchRequests(this.config, this.draft);
       if (requests.length === 0) {
-        this.setStatus('general', true, t('noChanges'));
+        this.setStatus('general', true, clamped ? t('policyFloorClamped') : t('noChanges'));
         return;
       }
       this.pendingConfigSaves = requests.length;
+      this.pendingFloorClampNotice = clamped;
       for (const req of requests) {
         this.post('settings/patchConfig', req);
       }

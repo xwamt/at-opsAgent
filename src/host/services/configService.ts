@@ -8,6 +8,10 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { resolveToolRisk } from '../../mcp-client/riskLookup';
+import {
+  effectiveSessionRequiredFor,
+  parseSessionRequiredFor
+} from '../../policy';
 import type { SessionSummary, SettingsOpenJsonReq, SettingsPatchConfigReq } from '../../protocol';
 import { listProviders, type DiscoveryHub } from '../../runtime/discovery-tools';
 import { diagnoseHub } from '../diagnose';
@@ -19,6 +23,7 @@ const KNOWN_CONFIG_KEYS: readonly string[] = [
   'discovery.mode',
   'discovery.threshold',
   'plugins.autoEnableNew',
+  'policy.floor',
   'approval.sessionRequiredFor',
   'approval.dedupePluginModal',
   'approval.sessionReadAllowlist',
@@ -30,7 +35,10 @@ const KNOWN_CONFIG_KEYS: readonly string[] = [
   'sessions.maxParallel',
   'streaming.batchMs',
   'inspection.intervalMinutes',
-  'im.webhookUrl'
+  'im.webhookUrl',
+  'ui.showThinking',
+  'otel.endpoint',
+  'otel.protocol'
 ];
 
 /** mcp/get 脱敏占位；mcp/save 时同值从现有文件回填，不会抹掉真实凭证。 */
@@ -89,11 +97,41 @@ export interface SettingsSnapshot {
   pendingApprovals: number;
 }
 
+/**
+ * Catalog 名差 vs 当前 Hub selection：removed ∩ selected → 断桥；
+ * added ∩ 曾选 → 恢复。供 handleToolCatalogChange 与单测共用。
+ */
+export function diffCatalogSelectionNotices(input: {
+  previousNames: ReadonlySet<string>;
+  currentNames: readonly string[];
+  selected: readonly string[];
+  previouslySelected: ReadonlySet<string>;
+}): {
+  disconnected: string[];
+  restored: string[];
+  nextPreviouslySelected: Set<string>;
+} {
+  const currentSet = new Set(input.currentNames);
+  const removed = [...input.previousNames].filter((name) => !currentSet.has(name));
+  const added = input.currentNames.filter((name) => !input.previousNames.has(name));
+  const selectedSet = new Set(input.selected);
+  const nextPreviouslySelected = new Set(input.previouslySelected);
+  const disconnected = removed.filter((name) => selectedSet.has(name));
+  for (const name of disconnected) nextPreviouslySelected.add(name);
+  const restored = added.filter((name) => nextPreviouslySelected.has(name));
+  for (const name of restored) nextPreviouslySelected.delete(name);
+  return { disconnected, restored, nextPreviouslySelected };
+}
+
 export class ConfigService {
   /** 技能清单缓存：refresh 命令 / 设置页刷新时失效重扫。 */
   private skillsCache: SkillInfo[] | undefined;
   /** 已知插件基线（plugins.autoEnableNew=false 时用于识别「新上线」插件）。 */
   private knownPluginIds: Set<string> | undefined;
+  /** 上一拍 live catalog 工具名（断桥 notice 用；首拍只建基线）。 */
+  private knownToolNames: Set<string> | undefined;
+  /** 断桥时仍在 selected 里的工具名，恢复时对偶 notice。 */
+  private previouslySelectedOffline = new Set<string>();
 
   constructor(private readonly ctx: HostContext) {}
 
@@ -113,20 +151,55 @@ export class ConfigService {
    * 工具目录变化：plugins.autoEnableNew=false 时，新上线插件不自动纳入
    * 已选工具面（只记日志）；默认 true 保持现行为（hub 策略决定暴露）。
    * 首个事件（启动扫描）作为基线，不算「新插件」。
+   * Plan 02 T5：removed ∩ 当前 selected → 断桥 notice；added ∩ 曾选 → 恢复。
    */
   handleToolCatalogChange(): void {
     const ctx = this.ctx;
-    let currentIds: Set<string>;
+    let tools: ReadonlyArray<{ name: string; pluginId: string }>;
     try {
-      currentIds = new Set(ctx.hub.listAllTools().map((t) => t.pluginId));
+      tools = ctx.hub.listAllTools();
     } catch {
       return;
     }
-    const known = this.knownPluginIds;
+    const currentIds = new Set(tools.map((t) => t.pluginId));
+    const currentNames = tools.map((t) => t.name);
+
+    const knownPlugins = this.knownPluginIds;
     this.knownPluginIds = currentIds;
-    if (!known) return;
+    if (knownPlugins) {
+      this.applyAutoEnableNew(knownPlugins, currentIds);
+    }
+
+    const previousNames = this.knownToolNames;
+    this.knownToolNames = new Set(currentNames);
+    if (!previousNames) return;
+
+    let selected: readonly string[] = [];
+    try {
+      selected = ctx.hub.selection.state().selected;
+    } catch {
+      return;
+    }
+    const { disconnected, restored, nextPreviouslySelected } = diffCatalogSelectionNotices({
+      previousNames,
+      currentNames,
+      selected,
+      previouslySelected: this.previouslySelectedOffline
+    });
+    this.previouslySelectedOffline = nextPreviouslySelected;
+    if (disconnected.length > 0) {
+      ctx.emitAssistantNotice(`能力插件桥断开，${disconnected.length} 个工具暂不可用`);
+    }
+    if (restored.length > 0) {
+      ctx.emitAssistantNotice(`能力插件桥已恢复，${restored.length} 个工具重新可用`);
+    }
+  }
+
+  /** autoEnableNew=false：新 pluginId 不并入已有选择（发现模式只记日志）。 */
+  private applyAutoEnableNew(known: Set<string>, currentIds: Set<string>): void {
     const fresh = [...currentIds].filter((id) => !known.has(id));
     if (fresh.length === 0) return;
+    const ctx = this.ctx;
     const autoEnable = vscode.workspace
       .getConfiguration('atOpsAgent')
       .get<boolean>('plugins.autoEnableNew', true);
@@ -239,10 +312,23 @@ export class ConfigService {
     if (!KNOWN_CONFIG_KEYS.includes(key)) {
       return { ok: false, error: `未知配置键 "${key}"（只允许 atOpsAgent.* 已知键）` };
     }
+    let value = req.value;
+    if (key === 'approval.sessionRequiredFor') {
+      const floor = parseSessionRequiredFor(
+        vscode.workspace.getConfiguration('atOpsAgent').get('policy.floor'),
+        'write-exec'
+      );
+      const user = parseSessionRequiredFor(req.value, 'write-exec');
+      const effective = effectiveSessionRequiredFor(floor, user);
+      if (effective !== user) {
+        value = effective;
+        void vscode.window.showInformationMessage('已按组织下限收紧');
+      }
+    }
     try {
       await vscode.workspace
         .getConfiguration('atOpsAgent')
-        .update(key, req.value, vscode.ConfigurationTarget.Global);
+        .update(key, value, vscode.ConfigurationTarget.Global);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: describeError(err) };

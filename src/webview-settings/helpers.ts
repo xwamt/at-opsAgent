@@ -5,6 +5,12 @@
  * 约束：不引 DOM / vue / vscode（root tsconfig 无 DOM lib，node 单测直接 import；
  * host 侧 settingsView 也可以复用 restoreRedactedSecrets 等纯函数）。
  */
+import {
+  SESSION_REQUIRED_FOR_VALUES,
+  effectiveSessionRequiredFor,
+  parseSessionRequiredFor,
+  type SessionRequiredFor
+} from '../policy/sessionRequiredFor';
 
 // ── 页签（Roo Code 式左侧竖排导航；宽度 <420px 折为顶部横排） ──────────────
 
@@ -43,7 +49,7 @@ export function normalizeTabId(raw: unknown): SettingsTabId {
 // ── 常规配置（package.json contributes.configuration atOpsAgent.*） ────────
 
 export type DiscoveryMode = 'auto' | 'always' | 'off';
-export type SessionApprovalScope = 'write-exec' | 'exec-only' | 'never';
+export type SessionApprovalScope = SessionRequiredFor;
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
@@ -60,6 +66,7 @@ export interface OpsConfig {
   'discovery.mode': DiscoveryMode;
   'discovery.threshold': number;
   'plugins.autoEnableNew': boolean;
+  'policy.floor': SessionApprovalScope;
   'approval.sessionRequiredFor': SessionApprovalScope;
   'approval.dedupePluginModal': boolean;
   /** P1-9：会话内免审的只读工具名（批准只读工具时勾「本会话不再问」也会写入）。 */
@@ -71,12 +78,14 @@ export interface OpsConfig {
   'workspaceShell.enabled': boolean;
   'subagent.maxParallel': number;
   'streaming.batchMs': number;
+  'ui.showThinking': boolean;
 }
 
 export const CONFIG_DEFAULTS: OpsConfig = {
   'discovery.mode': 'auto',
   'discovery.threshold': 20,
   'plugins.autoEnableNew': true,
+  'policy.floor': 'write-exec',
   'approval.sessionRequiredFor': 'write-exec',
   'approval.dedupePluginModal': false,
   'approval.sessionReadAllowlist': [],
@@ -85,7 +94,8 @@ export const CONFIG_DEFAULTS: OpsConfig = {
   'models.toolCallPromptFallback': true,
   'workspaceShell.enabled': false,
   'subagent.maxParallel': 3,
-  'streaming.batchMs': 40
+  'streaming.batchMs': 40,
+  'ui.showThinking': true
 };
 
 export type ConfigKey = keyof OpsConfig;
@@ -96,6 +106,8 @@ export interface ConfigFieldMeta {
   options?: readonly string[];
   min?: number;
   max?: number;
+  /** 只展示、不随「保存」回写（企业下发的组织下限）。 */
+  readonly?: boolean;
   labelKey: string;
   descKey: string;
 }
@@ -123,9 +135,17 @@ export const CONFIG_FIELDS: readonly ConfigFieldMeta[] = [
     descKey: 'cfgAutoEnableNewDesc'
   },
   {
+    key: 'policy.floor',
+    kind: 'enum',
+    options: SESSION_REQUIRED_FOR_VALUES,
+    readonly: true,
+    labelKey: 'cfgPolicyFloor',
+    descKey: 'cfgPolicyFloorDesc'
+  },
+  {
     key: 'approval.sessionRequiredFor',
     kind: 'enum',
-    options: ['write-exec', 'exec-only', 'never'],
+    options: SESSION_REQUIRED_FOR_VALUES,
     labelKey: 'cfgSessionRequiredFor',
     descKey: 'cfgSessionRequiredForDesc'
   },
@@ -181,6 +201,12 @@ export const CONFIG_FIELDS: readonly ConfigFieldMeta[] = [
     min: 0,
     labelKey: 'cfgStreamingBatchMs',
     descKey: 'cfgStreamingBatchMsDesc'
+  },
+  {
+    key: 'ui.showThinking',
+    kind: 'boolean',
+    labelKey: 'cfgShowThinking',
+    descKey: 'cfgShowThinkingDesc'
   }
 ] as const;
 
@@ -253,9 +279,9 @@ export function normalizeConfig(raw: unknown): OpsConfig {
     'discovery.mode': toEnum(get('discovery.mode'), ['auto', 'always', 'off'], 'auto'),
     'discovery.threshold': toNum(get('discovery.threshold'), CONFIG_DEFAULTS['discovery.threshold'], 1),
     'plugins.autoEnableNew': toBool(get('plugins.autoEnableNew'), true),
-    'approval.sessionRequiredFor': toEnum(
+    'policy.floor': parseSessionRequiredFor(get('policy.floor'), 'write-exec'),
+    'approval.sessionRequiredFor': parseSessionRequiredFor(
       get('approval.sessionRequiredFor'),
-      ['write-exec', 'exec-only', 'never'],
       'write-exec'
     ),
     'approval.dedupePluginModal': toBool(get('approval.dedupePluginModal'), false),
@@ -265,7 +291,8 @@ export function normalizeConfig(raw: unknown): OpsConfig {
     'models.toolCallPromptFallback': toBool(get('models.toolCallPromptFallback'), true),
     'workspaceShell.enabled': toBool(get('workspaceShell.enabled'), false),
     'subagent.maxParallel': toNum(get('subagent.maxParallel'), CONFIG_DEFAULTS['subagent.maxParallel'], 1, 4),
-    'streaming.batchMs': toNum(get('streaming.batchMs'), CONFIG_DEFAULTS['streaming.batchMs'], 0)
+    'streaming.batchMs': toNum(get('streaming.batchMs'), CONFIG_DEFAULTS['streaming.batchMs'], 0),
+    'ui.showThinking': toBool(get('ui.showThinking'), true)
   };
 }
 
@@ -283,11 +310,41 @@ function configValueEquals(a: unknown, b: unknown): boolean {
 export function buildConfigPatch(saved: OpsConfig, edited: OpsConfig): Partial<OpsConfig> | null {
   const patch: AnyRecord = {};
   for (const field of CONFIG_FIELDS) {
+    if (field.readonly) {
+      continue;
+    }
     if (!configValueEquals(saved[field.key], edited[field.key])) {
       patch[field.key] = edited[field.key];
     }
   }
   return Object.keys(patch).length > 0 ? (patch as Partial<OpsConfig>) : null;
+}
+
+/**
+ * 用户选的 sessionRequiredFor 若比组织下限更松，收紧到 floor。
+ * 返回是否发生了 clamp（调用方据此 notice「已按组织下限收紧」）。
+ */
+export function clampSessionRequiredForToFloor(
+  user: SessionApprovalScope,
+  floor: SessionApprovalScope
+): { value: SessionApprovalScope; clamped: boolean } {
+  const value = effectiveSessionRequiredFor(floor, user);
+  return { value, clamped: value !== user };
+}
+
+/** 保存前：按 `policy.floor` 收紧 `approval.sessionRequiredFor`。 */
+export function clampConfigToPolicyFloor(config: OpsConfig): { config: OpsConfig; clamped: boolean } {
+  const { value, clamped } = clampSessionRequiredForToFloor(
+    config['approval.sessionRequiredFor'],
+    config['policy.floor']
+  );
+  if (!clamped) {
+    return { config, clamped: false };
+  }
+  return {
+    config: { ...config, 'approval.sessionRequiredFor': value },
+    clamped: true
+  };
 }
 
 /**

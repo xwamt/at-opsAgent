@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import type { NoticeAction } from '../../protocol/host-protocol';
 import { t, tf } from '../i18n';
 import { useOpsStore } from '../store';
-import { assistantDisplay, visibleUntrustedQuotes, type TimelineStripEntry } from '../store-helpers';
+import { assistantDisplay, visibleUntrustedQuotes, thinkingMetaVisible, formatThinkingDurationMs, type TimelineStripEntry } from '../store-helpers';
 import { getVsCodeApi } from '../vscode-api';
 import EvidenceNote from './EvidenceNote.vue';
 import MarkdownBlock from './MarkdownBlock.vue';
@@ -179,6 +179,11 @@ function approvalOutcomeText(item: { decision?: string; ts?: number }): string {
   }
   return label;
 }
+
+function thinkingLabel(item: { durationMs?: number }): string {
+  const duration = formatThinkingDurationMs(item.durationMs);
+  return duration ? tf('thinkingDuration', { duration }) : t('thinkingInProgress');
+}
 </script>
 
 <template>
@@ -276,9 +281,25 @@ function approvalOutcomeText(item: { decision?: string; ts?: number }): string {
           </div>
         </template>
 
-        <!-- thinking：CoT 永不渲染（对齐 pi hideThinkingBlock，恒为隐藏）；
-             仅 untrustedQuotes 警示块可见。item 仍占虚拟化索引，只是不产出 DOM。 -->
+        <!-- thinking：CoT 正文永不渲染（对齐 pi hideThinkingBlock，无 expander）；
+             showThinking 时只出时长行；untrustedQuotes 警示块始终可出。 -->
         <template v-else-if="entry.item.kind === 'thinking'">
+          <div
+            v-if="thinkingMetaVisible(store.showThinking, store.conclusionMode)"
+            class="transcript__thinking ops-muted"
+            role="status"
+          >
+            <span
+              class="codicon"
+              :class="
+                entry.item.durationMs == null
+                  ? 'codicon-loading codicon-modifier-spin'
+                  : 'codicon-light-bulb'
+              "
+              aria-hidden="true"
+            ></span>
+            <span>{{ thinkingLabel(entry.item) }}</span>
+          </div>
           <UntrustedQuotes
             v-if="visibleUntrustedQuotes(entry.item).length > 0"
             :quotes="visibleUntrustedQuotes(entry.item)"
@@ -352,7 +373,7 @@ function approvalOutcomeText(item: { decision?: string; ts?: number }): string {
   align-items: baseline;
   gap: var(--ops-space-1);
   flex-wrap: wrap;
-  padding: var(--ops-space-1) var(--ops-space-3);
+  padding: var(--ops-space-1) var(--ops-space-2);
   border-bottom: 1px solid var(--ops-border);
   font-size: var(--ops-font-xs);
 }
@@ -402,10 +423,11 @@ function approvalOutcomeText(item: { decision?: string; ts?: number }): string {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--ops-space-3);
+  /* Plan 12 T11：收敛到 4/8（--ops-space-1 / --ops-space-2），不用 12px space-3 */
+  padding: var(--ops-space-1) var(--ops-space-2);
   display: flex;
   flex-direction: column;
-  gap: var(--ops-space-3);
+  gap: var(--ops-space-2);
 }
 
 .transcript__pad {
@@ -489,6 +511,13 @@ function approvalOutcomeText(item: { decision?: string; ts?: number }): string {
 
 /* 空 assistant 流式占位：单行低调「正在巡检…」 */
 .transcript__inspecting {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  font-size: var(--ops-font-sm);
+}
+
+.transcript__thinking {
   display: flex;
   align-items: center;
   gap: var(--ops-space-2);

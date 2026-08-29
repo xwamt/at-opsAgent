@@ -31,6 +31,11 @@ export interface EnvSnapshotInput {
   providers: EnvSnapshotProvider[];
   /** 发现层 listProviders 的顶层行动指引（有则原样带给模型）。 */
   hint?: string;
+  /**
+   * 用户确认的环境别名（memory/environment.json）。有键时追加 `aliases:`
+   * 最多 15 行；缺席/空对象不提。
+   */
+  aliases?: Record<string, string>;
 }
 
 /** 快照行数软顶（docs/13：控制在 ~40 行内）。 */
@@ -38,6 +43,9 @@ export const ENV_SNAPSHOT_MAX_LINES = 40;
 
 /** 每个插件展示的声明工具名上限（超过只列前 N 个并标注总数）。 */
 export const DECLARED_NAMES_SHOWN = 8;
+
+/** L-env 尾部 aliases 块行数上限（含 `aliases:` 标题）。 */
+export const ENV_ALIAS_MAX_LINES = 15;
 
 /** 合成 L-env 现场层文本。 */
 export function formatEnvSnapshot(input: EnvSnapshotInput): string {
@@ -77,6 +85,23 @@ export function formatEnvSnapshot(input: EnvSnapshotInput): string {
         '禁止 ops_get_tool / ops_search_tools 空转；select 后 exposed 仍空则告知用户桥未就绪' +
         '（healthy=false ≠ 没有这个插件）。'
     );
+  }
+  const aliases = input.aliases;
+  if (aliases !== undefined && Object.keys(aliases).length > 0) {
+    const block = formatEnvAliasesBlock(aliases);
+    if (block.length > 0) lines.push(block);
+  }
+  return lines.join('\n');
+}
+
+/** `aliases:` 块；无键返回空串。最多 ENV_ALIAS_MAX_LINES 行。 */
+export function formatEnvAliasesBlock(aliases: Record<string, string>): string {
+  const keys = Object.keys(aliases);
+  if (keys.length === 0) return '';
+  const lines = ['aliases:'];
+  for (const key of keys) {
+    if (lines.length >= ENV_ALIAS_MAX_LINES) break;
+    lines.push(`- ${key}: ${aliases[key]}`);
   }
   return lines.join('\n');
 }

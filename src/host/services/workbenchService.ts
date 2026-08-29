@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AssetPickRes, TranscriptItem } from '../../protocol';
 import { buildOpsReportMarkdown, exportReportFileName } from '../exportReport';
+import { AUDIT_WINDOW_CHOICES, copyAuditWindow } from './auditChain';
 import { describeError, type HostContext } from './context';
 
 export class WorkbenchService {
@@ -61,7 +62,7 @@ export class WorkbenchService {
 
     if (items.length === 0) return { items: [] };
     const picked = await vscode.window.showQuickPick(items, {
-      placeHolder: '选择要附加到对话的素材（证据 / 工作区文件）',
+      placeHolder: vscode.l10n.t('选择要附加到对话的素材（证据 / 工作区文件）'),
       matchOnDescription: true
     });
     return { items: picked ? [picked.asset] : [] };
@@ -93,7 +94,7 @@ export class WorkbenchService {
       target = await vscode.window.showSaveDialog({
         defaultUri: vscode.Uri.file(path.join(os.homedir(), fileName)),
         filters: { Markdown: ['md'] },
-        title: '导出值班报告'
+        title: vscode.l10n.t('导出值班报告')
       });
     } catch {
       target = undefined;
@@ -106,9 +107,70 @@ export class WorkbenchService {
       const doc = await vscode.workspace.openTextDocument(target);
       await vscode.window.showTextDocument(doc, { preview: false });
       this.ctx.log(`[export] 值班报告已导出：${target.fsPath}`);
+      this.ctx.emitDuty?.('export', sid, {
+        path: target.fsPath,
+        format: 'markdown',
+        sessionId: sid
+      });
       return { ok: true, path: target.fsPath };
     } catch (err) {
       this.ctx.log(`[export] 导出失败: ${describeError(err)}`);
+      return { ok: false, error: describeError(err) };
+    }
+  }
+
+  /**
+   * atOpsAgent.exportAudit：QuickPick 时间窗，把日切 JSONL 原样拼接写出
+   * （链哈希不重算）。取消 QuickPick / SaveDialog 时零 IO。
+   */
+  async exportAudit(): Promise<{ ok: boolean; path?: string; error?: string }> {
+    const picked = await vscode.window.showQuickPick(
+      AUDIT_WINDOW_CHOICES.map((choice) => ({
+        label: choice.label,
+        description: choice.description,
+        days: choice.days
+      })),
+      { placeHolder: vscode.l10n.t('选择审计导出时间窗') }
+    );
+    if (!picked) return { ok: false };
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const now = new Date();
+    const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}`;
+    let target: vscode.Uri | undefined;
+    try {
+      target = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), `at-ops-audit-${stamp}.jsonl`)),
+        filters: { JSONL: ['jsonl'] },
+        title: vscode.l10n.t('导出审计 JSONL')
+      });
+    } catch {
+      target = undefined;
+    }
+    if (!target) return { ok: false };
+    try {
+      const copied = await copyAuditWindow({
+        agentDir: this.ctx.agentDir,
+        destPath: target.fsPath,
+        days: picked.days,
+        now
+      });
+      if (!copied.ok) {
+        const error = copied.error ?? '导出失败';
+        void vscode.window.showWarningMessage(error);
+        return { ok: false, error };
+      }
+      const doc = await vscode.workspace.openTextDocument(target);
+      await vscode.window.showTextDocument(doc, { preview: false });
+      this.ctx.log(`[audit] 已导出 ${copied.lines} 行（${copied.files.join(', ')}）→ ${target.fsPath}`);
+      this.ctx.emitDuty?.('export', this.ctx.store.activeSessionId, {
+        path: target.fsPath,
+        format: 'audit-jsonl',
+        days: picked.days,
+        lines: copied.lines
+      });
+      return { ok: true, path: target.fsPath };
+    } catch (err) {
+      this.ctx.log(`[audit] 导出失败: ${describeError(err)}`);
       return { ok: false, error: describeError(err) };
     }
   }

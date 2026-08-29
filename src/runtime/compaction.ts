@@ -2,7 +2,7 @@
  * Compaction 第 2–3 层（docs/03 §5）。
  *
  * 第 1 层（工具结果 8KB 截断 + 完整 JSON 落盘 tool-results/）在
- * src/runtime/index.ts 的 executeBusinessTool 里，保持不变。
+ * src/runtime/tool-gate.ts 的 executeBusinessTool 里，保持不变。
  *
  * 本模块处理 prompt 期的上下文溢出（prompt too long / context overflow）：
  * - 第 2 层：AgentSession 支持 .compact() 时强制压缩一次；
@@ -10,7 +10,7 @@
  *   compact、compact 本身失败）则抛中文错误请用户开新会话。
  * 严格「compact 一次 + retry 一次」，绝不无限重试。
  *
- * 挂接点：src/runtime/index.ts 的 prompt() catch 路径。非溢出错误原样
+ * 挂接点：src/runtime/fallback.ts 的 runPromptWithRecovery。非溢出错误原样
  * 上抛（保留原始错误信息），不触发 compact。
  */
 

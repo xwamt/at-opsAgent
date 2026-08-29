@@ -97,6 +97,10 @@ describe('RuntimeEventRouter：thinking / assistant 分 id（P0-id）', () => {
 
     const patchIds = broadcasts
       .filter((b) => b.type === 'transcript/patch')
+      .filter((b) => {
+        const patch = (b.payload as { patch?: { appendText?: string } }).patch;
+        return typeof patch?.appendText === 'string';
+      })
       .map((b) => (b.payload as { itemId: string }).itemId);
     expect(patchIds).toEqual(['msg1:assistant', 'msg1:assistant']);
     const thinkingIds = broadcasts
@@ -116,6 +120,30 @@ describe('RuntimeEventRouter：thinking / assistant 分 id（P0-id）', () => {
     expect(assistant?.kind === 'assistant' && assistant.text).toBe('结论');
     expect(store.findItem('msg1:thinking', sid)?.kind).toBe('thinking');
     expect(idled).toEqual([sid]);
+  });
+
+  it('thinking 结束时写入 durationMs（text_delta 一次；idle 不重复）', () => {
+    const { router, store, sid, broadcasts } = fakeRouter();
+    router.route(sid, { type: 'thinking_delta', id: 'msg1', text: 'hidden reasoning' });
+    router.route(sid, { type: 'text_delta', id: 'msg1', text: '结论' });
+
+    const thinking = store.findItem('msg1:thinking', sid);
+    expect(thinking?.kind).toBe('thinking');
+    if (thinking?.kind !== 'thinking') return;
+    expect(typeof thinking.durationMs).toBe('number');
+    expect(thinking.durationMs).toBeGreaterThanOrEqual(0);
+
+    const durationPatches = broadcasts.filter((b) => {
+      if (b.type !== 'transcript/patch') return false;
+      const payload = b.payload as { itemId?: string; patch?: { durationMs?: number } };
+      return payload.itemId === 'msg1:thinking' && typeof payload.patch?.durationMs === 'number';
+    });
+    expect(durationPatches).toHaveLength(1);
+
+    const firstDuration = thinking.durationMs;
+    router.route(sid, { type: 'idle' });
+    const afterIdle = store.findItem('msg1:thinking', sid);
+    expect(afterIdle?.kind === 'thinking' && afterIdle.durationMs).toBe(firstDuration);
   });
 
   it('防御性幂等：事件 id 已带后缀时不二次拼接', () => {

@@ -11,6 +11,7 @@
  * 时跳过重复 setSystemPrompt。
  */
 import { formatEnvSnapshot } from '../../prompts/env-snapshot';
+import { loadEnvironmentAliases, resolveMemoryDir } from '../../runtime/ops-recall';
 import { listProviders } from '../../runtime/discovery-tools';
 import type { PlaybookMeta, RuntimeLike } from '../hostTypes';
 import { PlaybookLayerSource } from '../playbookLayer';
@@ -31,11 +32,18 @@ interface LayerState {
  */
 export function buildEnvLayer(ctx: HostContext): string {
   const annotated = listProviders(ctx.hub);
+  let aliases: Record<string, string> | undefined;
+  try {
+    aliases = loadEnvironmentAliases(memoryDirOf(ctx));
+  } catch {
+    aliases = undefined;
+  }
   return formatEnvSnapshot({
     hostApp: annotated.hostApp,
     catalogLiveToolCount: annotated.catalogLiveToolCount ?? ctx.hub.listAllTools().length,
     exposed: ctx.hub.listExposedTools().map((t) => t.name),
     ...(annotated.hint !== undefined ? { hint: annotated.hint } : {}),
+    ...(aliases !== undefined ? { aliases } : {}),
     providers: annotated.providers.map((p) => ({
       pluginId: p.pluginId,
       displayName: p.displayName,
@@ -46,6 +54,14 @@ export function buildEnvLayer(ctx: HostContext): string {
       liveToolCount: p.liveToolCount ?? 0
     }))
   });
+}
+
+/** workspace/memory 优先；测试可在 ctx.memoryDir 注入。 */
+export function memoryDirOf(ctx: HostContext): string {
+  const injected = (ctx as HostContext & { memoryDir?: string | (() => string) }).memoryDir;
+  if (typeof injected === 'function') return injected();
+  if (typeof injected === 'string' && injected.length > 0) return injected;
+  return resolveMemoryDir(ctx.workspaceFolder);
 }
 
 export class StageLayerInjector {

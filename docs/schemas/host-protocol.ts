@@ -44,7 +44,15 @@ export type SettingsOpenJsonReq = { kind: 'models' | 'mcp' | 'auth' | 'vscode' }
 export type TranscriptItem =
   | { kind: 'user'; id: string; text: string; ts?: number }
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean; ts?: number }
-  | { kind: 'thinking'; id: string; steps: string[]; untrustedQuotes?: string[]; ts?: number }
+  | {
+      kind: 'thinking';
+      id: string;
+      steps: string[];
+      untrustedQuotes?: string[];
+      /** Thinking wall-clock duration (host writes when thinking ends). */
+      durationMs?: number;
+      ts?: number;
+    }
   | { kind: 'tool'; id: string; call: ToolCallView; ts?: number }
   | { kind: 'subagents'; id: string; agents: SubagentCard[]; ts?: number }
   | { kind: 'evidence'; id: string; note: EvidenceNoteView; ts?: number }

@@ -22,6 +22,7 @@
 | 13 | [13-ops-agent-loop.md](13-ops-agent-loop.md) | **Agent loop**：L-env 现场注入、声明工具直接 select、禁止 get_tool 空转（pi + Claude/Codex/DeepSeek） |
 | 14 | [14-inspection-report-ux.md](14-inspection-report-ux.md) | 巡检结论必须上屏：thinking/正文分 id、过程旁白、close 前合成报告 |
 | 15 | [15-optimization-recommendations.md](15-optimization-recommendations.md) | **下一阶段审查结论**（对照四家）。施工不要直接从本文开写，请按 [plans/2026-08-29-duty-loop](plans/2026-08-29-duty-loop/00-index.md) |
+| 16 | [16-airgap.md](16-airgap.md) | 气隙/离线：models.json、Hub 不访公网、OTLP 默认关、GLM/Kimi preset |
 
 配套：
 

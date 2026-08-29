@@ -1,0 +1,17 @@
+{
+  "选择要附加到对话的素材（证据 / 工作区文件）": "选择要附加到对话的素材（证据 / 工作区文件）",
+  "导出值班报告": "导出值班报告",
+  "选择审计导出时间窗": "选择审计导出时间窗",
+  "导出审计 JSONL": "导出审计 JSONL",
+  "$(warning) AT Ops 未配置": "$(warning) AT Ops 未配置",
+  "AT Ops Agent：尚未配置模型 API Key。发现设置将在重载窗口后生效。": "AT Ops Agent：尚未配置模型 API Key。发现设置将在重载窗口后生效。",
+  "AT Ops Agent：尚未配置模型 API Key（点击打开 Models 设置）": "AT Ops Agent：尚未配置模型 API Key（点击打开 Models 设置）",
+  "$(warning) AT Ops 需重载": "$(warning) AT Ops 需重载",
+  "AT Ops Agent：发现设置将在重载窗口后生效（点击重载窗口）": "AT Ops Agent：发现设置将在重载窗口后生效（点击重载窗口）",
+  "$(shield) AT Ops {0}": "$(shield) AT Ops {0}",
+  "$(shield) AT Ops": "$(shield) AT Ops",
+  "AT Ops Agent：{0} 条待审批简报（点击打开对话处理）": "AT Ops Agent：{0} 条待审批简报（点击打开对话处理）",
+  "AT Ops Agent：点击打开对话": "AT Ops Agent：点击打开对话",
+  "AT Ops Agent：发现设置将在重载窗口后生效": "AT Ops Agent：发现设置将在重载窗口后生效",
+  "重载窗口": "重载窗口"
+}

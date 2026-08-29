@@ -13,9 +13,10 @@
 import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import { Emitter, envelope, type Envelope, type Event, type HubHost } from '../../protocol';
 import { createOpsCore, type OpsCore } from '../../core';
+import { resolveMemoryDir } from '../../runtime/ops-recall';
 import type { OpsSecrets } from '../secrets';
 import type { SessionStore } from '../sessionStore';
 import type { ApprovalService } from './approvalService';
@@ -24,6 +25,7 @@ import type { ConfigService } from './configService';
 import type { ModelService } from './modelService';
 import type { PlaybookService } from './playbookService';
 import type { WorkbenchService } from './workbenchService';
+import { DutyEventBus, type DutyEventType } from './dutyEvents';
 
 export interface HostContextOptions {
   hub: HubHost;
@@ -67,6 +69,9 @@ export class HostContext {
   /** 状态位变化（hasApiKey 等）；activate 的状态栏订阅。 */
   readonly onDidChangeStatus: Event<void> = this.statusEmitter.event;
 
+  /** 审计 JSONL 与内网 OTLP 共用的值班事件总线（订阅方失败不得挡主会话）。 */
+  readonly duty = new DutyEventBus((message) => this.log(message));
+
   private services: HostServices | undefined;
 
   constructor(options: HostContextOptions) {
@@ -78,6 +83,16 @@ export class HostContext {
     this.agentDir = path.join(os.homedir(), '.at-series', 'agent');
     this.modelsPath = path.join(this.agentDir, 'models.json');
     this.playbooksDir = path.join(this.extensionPath, 'skills', 'playbooks');
+  }
+
+  /** 工作区根（无文件夹时 undefined → 记忆层回落到 ~/.at-series/agent/memory）。 */
+  get workspaceFolder(): string | undefined {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  }
+
+  /** 长期记忆目录：workspace/memory 优先，否则 ~/.at-series/agent/memory。 */
+  memoryDir(): string {
+    return resolveMemoryDir(this.workspaceFolder);
   }
 
   /** HostController 构造完全部服务后调用一次。 */
@@ -111,6 +126,18 @@ export class HostContext {
 
   log(message: string): void {
     this.output.appendLine(message);
+  }
+
+  /**
+   * 向审计 / OTLP 订阅方投递一条值班事件。永不抛给调用方
+   * （void catch log）。payload 刮密在审计写入侧完成。
+   */
+  emitDuty(type: DutyEventType, sessionId: string, payload: Record<string, unknown>): void {
+    try {
+      this.duty.emit({ type, sessionId, payload });
+    } catch (err) {
+      this.log(`[duty] emit 失败: ${describeError(err)}`);
+    }
   }
 
   get outputChannel(): vscode.OutputChannel {

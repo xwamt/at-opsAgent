@@ -8,10 +8,12 @@
  * - orchestrator 事件 → host-protocol 事件；
  * - P2 会话并行：run / selectCount / L4 注入状态全部按 sessionId 分席。
  */
+import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { Playbook } from '../../core';
 import { clearHubSelection } from '../../hub-host';
 import { isIllegalStageTransitionError } from '../../orchestrator';
+import type { NoticeAction } from '../../protocol';
 import type {
   OrchestratorEventLike,
   OrchestratorLike,
@@ -22,6 +24,14 @@ import { describeError, type HostContext } from './context';
 import { GuidedManualFlow } from './guidedManualFlow';
 import { ensureVisibleInspectionReport } from './inspectionSummary';
 import { StageLayerInjector } from './stageLayers';
+import { emitPlaybookCloseMemoryNotices } from './longTermMemory';
+
+/** close 成功后的导出入口：request 走已有 `chat/export`（活动会话即可，无需 payload）。 */
+export const CLOSE_EXPORT_NOTICE_ACTION: NoticeAction = {
+  id: 'export-report',
+  label: '导出值班报告',
+  request: 'chat/export'
+};
 
 export type PlaybookAdvanceResult = {
   ok: boolean;
@@ -121,6 +131,18 @@ export class PlaybookService {
 
   runOf(sessionId: string): PlaybookRunLike | undefined {
     return this.runs.get(sessionId);
+  }
+
+  /**
+   * 当前会话 playbook yaml `defaults.payloadCaps`（Plan 12 T3）。
+   * 无进行中的 run 或 yaml 未声明时返回 undefined。
+   */
+  payloadCapsOf(sessionId: string): Record<string, unknown> | undefined {
+    const run = this.runs.get(sessionId);
+    if (!run) return undefined;
+    const playbook = this.playbookCache?.find((pb) => pb.id === run.playbookId);
+    const caps = playbook?.defaults?.payloadCaps;
+    return caps !== undefined ? { ...caps } : undefined;
   }
 
   selectCount(sessionId: string): number {
@@ -261,6 +283,21 @@ export class PlaybookService {
     this.selectCounts.set(sid, 0);
     // Plan 01 T4: clear Hub selection only on the successful closed path.
     await clearHubSelection(this.ctx.hub, (m) => this.ctx.log(m), 'playbook-closed');
+    const playbookId = this.ctx.store.playbookOf(sid)?.id ?? run.playbookId;
+    const item = {
+      kind: 'notice' as const,
+      id: randomUUID(),
+      variant: 'info' as const,
+      text: '巡检已关闭。可导出值班报告。',
+      actions: [CLOSE_EXPORT_NOTICE_ACTION]
+    };
+    this.ctx.store.appendItem(item, sid);
+    this.ctx.broadcastToSession(sid, 'transcript/append', { item });
+    try {
+      emitPlaybookCloseMemoryNotices(this.ctx, sid, playbookId);
+    } catch (err) {
+      this.ctx.log(`[memory] close 记忆 notice 失败: ${describeError(err)}`);
+    }
     return { ok: true, stage };
   }
 
@@ -410,6 +447,12 @@ export class PlaybookService {
           },
           sid
         );
+        ctx.emitDuty?.('playbook_stage', sid, {
+          playbookId: e.playbookId,
+          stage: e.stage,
+          runId: e.runId,
+          ...(e.from !== undefined ? { from: e.from } : {})
+        });
         this.handleStageEntered(sid, e.runId, e.playbookId, e.stage);
         break;
       }

@@ -40,6 +40,9 @@ import {
   buildWelcomeSuggestions,
   canFollowUpFrom,
   collectSubagentCards,
+  filterTranscriptForView,
+  formatThinkingDurationMs,
+  isConclusionItem,
   modelsConfigured,
   normalizeChatModels,
   normalizeSessions,
@@ -47,12 +50,14 @@ import {
   normalizeUsage,
   resolveInspectedSubagent,
   subagentTitle,
+  thinkingMetaVisible,
   toolCallHeadline,
   usagePercent,
   visibleUntrustedQuotes,
   type ChatTimelineEvent,
   type SessionMeta
 } from '../src/webview-chat/store-helpers';
+import { annotateCommandKeywords, isBlankApprovalValue } from '../src/webview-chat/lib/approval-brief';
 
 // root tsconfig 无 DOM lib：jsdom 的 document 通过 globalThis 收窄访问
 function setHtmlLang(lang: string): void {
@@ -820,5 +825,199 @@ describe('ChatTranscript 流式 Markdown + 审批留痕（Plan 10）', () => {
     expect(transcript).toContain('toLocaleTimeString');
     expect(transcript).toContain("t('approvalTimeout')");
     expect(transcript).not.toMatch(/v-else>\{\{\s*t\('approvalHandled'\)\s*\}\}<\/span>/);
+  });
+});
+
+describe('T11 helpers smoke（结论模式 / 思考时长 / 审批空要素）', () => {
+  it('filterTranscriptForView 结论模式只留 assistant/evidence/notice', () => {
+    const items = [
+      { kind: 'assistant', id: 'a', text: 'ok' },
+      { kind: 'thinking', id: 't', steps: ['cot'] },
+      { kind: 'notice', id: 'n', variant: 'info' as const, text: 'hi' }
+    ] as TranscriptItem[];
+    expect(filterTranscriptForView(items, { conclusionMode: false })).toHaveLength(3);
+    expect(filterTranscriptForView(items, { conclusionMode: true }).map((i) => i.kind)).toEqual([
+      'assistant',
+      'notice'
+    ]);
+    expect(isConclusionItem(items[0])).toBe(true);
+  });
+
+  it('thinkingMetaVisible 与 formatThinkingDurationMs', () => {
+    expect(thinkingMetaVisible(true, false)).toBe(true);
+    expect(thinkingMetaVisible(true, true)).toBe(false);
+    expect(formatThinkingDurationMs(850)).toBe('850ms');
+    expect(formatThinkingDurationMs(undefined)).toBeNull();
+  });
+
+  it('ApprovalBar 空值折叠 + 命令关键词', () => {
+    expect(isBlankApprovalValue('')).toBe(true);
+    expect(isBlankApprovalValue('rm -rf /')).toBe(false);
+    const segs = annotateCommandKeywords('rm -rf /tmp && kubectl apply -f x');
+    expect(segs.some((s) => s.keyword && s.text === 'rm')).toBe(true);
+    expect(segs.some((s) => s.keyword && s.text === 'kubectl apply')).toBe(true);
+  });
+});
+
+describe('结论模式 filter（Plan 12 T11）', () => {
+  const items: TranscriptItem[] = [
+    { kind: 'user', id: 'u1', text: '查一下' },
+    { kind: 'thinking', id: 'th1', steps: ['hidden'], durationMs: 1200 },
+    { kind: 'tool', id: 't1', call: { name: 'df', risk: 'read', status: 'ok' } },
+    { kind: 'assistant', id: 'a1', text: '磁盘 93%', streaming: false },
+    {
+      kind: 'evidence',
+      id: 'ev1',
+      note: { taskId: 't1', confidence: 'confirmed', summary: 'df -h', refs: [] }
+    },
+    { kind: 'notice', id: 'n1', variant: 'info', text: '已写入 OPS.md' },
+    { kind: 'system', id: 'sys1', text: '上下文已压缩' }
+  ];
+
+  it('isConclusionItem 只认 assistant / evidence / notice', () => {
+    expect(items.filter(isConclusionItem).map((item) => item.kind)).toEqual([
+      'assistant',
+      'evidence',
+      'notice'
+    ]);
+  });
+
+  it('conclusionMode 隐藏 tool/thinking/user/system，保留结论三件套', () => {
+    const filtered = filterTranscriptForView(items, { conclusionMode: true });
+    expect(filtered.map((item) => item.kind)).toEqual(['assistant', 'evidence', 'notice']);
+    expect(filterTranscriptForView(items, { conclusionMode: false })).toBe(items);
+  });
+
+  it('结论模式下列表走 filter 后再聚合，工具组不会漏出来', () => {
+    const out = buildRenderList(filterTranscriptForView(items, { conclusionMode: true }));
+    expect(out.every((entry) => entry.kind === 'item')).toBe(true);
+    expect(out.map((entry) => (entry.kind === 'item' ? entry.item.kind : entry.kind))).toEqual([
+      'assistant',
+      'evidence',
+      'notice'
+    ]);
+  });
+
+  it('Composer 旁有结论模式 toggle；store 不持久化该 flag', () => {
+    const composer = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/Composer.vue'),
+      'utf8'
+    );
+    const store = readFileSync(path.join(process.cwd(), 'src/webview-chat/store.ts'), 'utf8');
+    expect(composer).toContain('toggleConclusionMode');
+    expect(composer).toContain('conclusionModeAria');
+    expect(store).toContain('conclusionMode: false');
+    expect(store).toContain('toggleConclusionMode');
+    expect(store).not.toMatch(/setState\(\{[^}]*conclusionMode/);
+  });
+});
+
+describe('ApprovalBar 空要素折叠 + 命令关键词 span（Plan 12 T11）', () => {
+  it('isBlankApprovalValue：空串 / 破折号 / 空数组 / null 视为空', () => {
+    expect(isBlankApprovalValue(undefined)).toBe(true);
+    expect(isBlankApprovalValue(null)).toBe(true);
+    expect(isBlankApprovalValue('')).toBe(true);
+    expect(isBlankApprovalValue('  ')).toBe(true);
+    expect(isBlankApprovalValue('—')).toBe(true);
+    expect(isBlankApprovalValue([])).toBe(true);
+    expect(isBlankApprovalValue(['', '  '])).toBe(true);
+    expect(isBlankApprovalValue({})).toBe(true);
+    expect(isBlankApprovalValue('回滚 api-gateway')).toBe(false);
+    expect(isBlankApprovalValue(['kubectl apply -f x.yaml'])).toBe(false);
+  });
+
+  it('annotateCommandKeywords：只给 rm / kubectl apply / delete 套 span，不是整行', () => {
+    const segs = annotateCommandKeywords('rm -rf /tmp && kubectl apply -f n.yaml && kubectl delete pod x');
+    const keywords = segs.filter((seg) => seg.keyword).map((seg) => seg.text);
+    expect(keywords).toEqual(['rm', 'kubectl apply', 'delete']);
+    expect(segs.map((seg) => seg.text).join('')).toBe(
+      'rm -rf /tmp && kubectl apply -f n.yaml && kubectl delete pod x'
+    );
+    expect(annotateCommandKeywords('echo hello').every((seg) => !seg.keyword)).toBe(true);
+  });
+
+  it('ApprovalBar 模板：关键词 class 在 span；复制钮仍在；空行不再写死破折号', () => {
+    const approval = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ApprovalBar.vue'),
+      'utf8'
+    );
+    expect(approval).toContain('annotateCommandKeywords');
+    expect(approval).toContain('isBlankApprovalValue');
+    expect(approval).toContain('approval__kw');
+    expect(approval).toContain('codicon-copy');
+    expect(approval).toContain('@click.stop="copyCommands(row)"');
+    expect(approval).not.toContain("? '—'");
+  });
+});
+
+describe('board leftover emoji → codicon（Plan 12 T11）', () => {
+  it('IncidentTimeline 严重级用 codicon，不再用 ○△✗', () => {
+    const src = readFileSync(
+      path.join(process.cwd(), 'src/webview-board/components/IncidentTimeline.vue'),
+      'utf8'
+    );
+    expect(src).toContain('codicon-circle-outline');
+    expect(src).toContain('codicon-warning');
+    expect(src).toContain('codicon-error');
+    expect(src).not.toContain("'○'");
+    expect(src).not.toContain("'△'");
+    expect(src).not.toContain("'✗'");
+  });
+});
+
+describe('思考时长 + Focus/showThinking（Plan 12 T11）', () => {
+  it('协议 thinking 变体可带可选 durationMs', () => {
+    const item: TranscriptItem = {
+      kind: 'thinking',
+      id: 'th1',
+      steps: ['hidden cot'],
+      durationMs: 1840
+    };
+    expect(item.durationMs).toBe(1840);
+    const bare: TranscriptItem = { kind: 'thinking', id: 'th2', steps: [] };
+    expect(bare.kind === 'thinking' && bare.durationMs).toBeUndefined();
+  });
+
+  it('formatThinkingDurationMs：毫秒 / 秒；非法值 null', () => {
+    expect(formatThinkingDurationMs(850)).toBe('850ms');
+    expect(formatThinkingDurationMs(0)).toBe('0ms');
+    expect(formatThinkingDurationMs(1200)).toBe('1.2s');
+    expect(formatThinkingDurationMs(11_000)).toBe('11s');
+    expect(formatThinkingDurationMs(undefined)).toBeNull();
+    expect(formatThinkingDurationMs(-1)).toBeNull();
+  });
+
+  it('thinkingMetaVisible：默认 true；结论/Focus 强制 false', () => {
+    expect(thinkingMetaVisible(true, false)).toBe(true);
+    expect(thinkingMetaVisible(false, false)).toBe(false);
+    expect(thinkingMetaVisible(true, true)).toBe(false);
+    expect(thinkingMetaVisible(false, true)).toBe(false);
+  });
+
+  it('ChatTranscript：时长行可见但 CoT steps 永不展开；保留 Plan 10 Markdown 与 Plan 11 存档 hover', () => {
+    const transcript = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ChatTranscript.vue'),
+      'utf8'
+    );
+    expect(transcript).toContain('thinkingLabel(entry.item)');
+    expect(transcript).toContain('thinkingMetaVisible(store.showThinking, store.conclusionMode)');
+    expect(transcript).not.toContain('entry.item.steps');
+    expect(transcript).not.toMatch(/thinking-expander|showThinkingBlock/);
+    expect(transcript).toContain(
+      '<MarkdownBlock :source="entry.item.text" :streaming="!!entry.item.streaming" />'
+    );
+    expect(transcript).toContain('store.saveOpsDoc(entry.item.id)');
+    expect(transcript).toContain('transcript__save-doc');
+    expect(transcript).toContain('padding: var(--ops-space-1) var(--ops-space-2)');
+  });
+
+  it('思考时长 i18n zh/en 齐备', () => {
+    expect(t('thinkingInProgress')).toBe('思考中…');
+    expect(tf('thinkingDuration', { duration: '1.2s' })).toBe('思考 1.2s');
+    expect(t('conclusionMode')).toBe('结论模式');
+    setLocale('en');
+    expect(t('thinkingInProgress')).toBe('Thinking…');
+    expect(tf('thinkingDuration', { duration: '1.2s' })).toBe('Thought 1.2s');
+    expect(t('conclusionModeAria')).toContain('Conclusion');
   });
 });

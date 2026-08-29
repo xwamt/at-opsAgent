@@ -11,6 +11,7 @@ import { showBoardPanel } from './boardView';
 import type { ChatViewProvider } from './chatView';
 import { diagnoseHub } from './diagnose';
 import type { HostController } from './hostController';
+import { IM_WEBHOOK_SECRET_KEY } from './secrets';
 import { showSettingsPanel } from './settingsView';
 
 export interface CommandDeps {
@@ -110,6 +111,37 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     }
   });
 
+  const exportAudit = vscode.commands.registerCommand('atOpsAgent.exportAudit', async () => {
+    const result = await controller.exportAudit();
+    if (!result.ok && result.error !== undefined) {
+      void vscode.window.showErrorMessage(`导出审计失败：${result.error}`);
+    }
+  });
+
+  const setImWebhookSecret = vscode.commands.registerCommand(
+    'atOpsAgent.setImWebhookSecret',
+    async () => {
+      const value = await vscode.window.showInputBox({
+        title: 'AT Ops Agent: IM webhook 加签密钥',
+        prompt:
+          '写入 VS Code SecretStorage（不会进 settings）。留空则清除密钥：webhook 仍会 POST，但不加签。',
+        password: true,
+        ignoreFocusOut: true
+      });
+      if (value === undefined) return;
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        await controller.secrets.delete(IM_WEBHOOK_SECRET_KEY);
+        void vscode.window.showInformationMessage(
+          '已清除 IM webhook 加签密钥（后续通知未加签）。'
+        );
+        return;
+      }
+      await controller.secrets.set(IM_WEBHOOK_SECRET_KEY, trimmed);
+      void vscode.window.showInformationMessage('IM webhook 加签密钥已写入 SecretStorage。');
+    }
+  );
+
   // 用户主动「存为运维文档」：跳过审批，QuickPick 类型后写入 ops-docs/。
   const saveOpsDoc = vscode.commands.registerCommand(
     'atOpsAgent.saveOpsDoc',
@@ -156,6 +188,12 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     }
   );
 
+  // 用户确认的环境别名：打开 memory/environment.json；保存时 schema + 刮密。
+  const editEnvironment = vscode.commands.registerCommand(
+    'atOpsAgent.memory.editEnvironment',
+    () => controller.editEnvironment()
+  );
+
   return [
     newSession,
     toggleHistory,
@@ -169,7 +207,10 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     reject,
     abort,
     exportReport,
+    exportAudit,
     saveOpsDoc,
+    setImWebhookSecret,
+    editEnvironment,
     escalateSelect,
     openArtifact
   ];

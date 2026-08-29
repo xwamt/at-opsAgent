@@ -25,6 +25,7 @@ const NOISE_TOOL_PATTERNS: readonly RegExp[] = [
   /^ops_search_tools$/,
   /^ops_select/,
   /^ops_read_skill$/,
+  /^ops_recall$/,
   /^ops_start_playbook$/,
   /^ops_advance_stage$/,
   /^ops_close_playbook$/

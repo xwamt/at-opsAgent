@@ -18,6 +18,7 @@ import {
   buildPromptPayload,
   buildRenderList,
   buildTimelineStrip,
+  filterTranscriptForView,
   canFollowUpFrom,
   collectSubagentCards,
   modelsConfigured,
@@ -89,6 +90,8 @@ interface HydratePayload {
   sessions?: unknown;
   /** 顶层模型清单（models.json 解析结果；空数组 = 未配置，覆盖 providers 快照）。 */
   models?: unknown;
+  /** atOpsAgent.ui.showThinking（缺省 true；旧 host 不下发则保持当前值）。 */
+  showThinking?: unknown;
   /** 顶层当前模型 id / provider（优先于 providers 快照内的同名字段）。 */
   model?: unknown;
   modelProvider?: unknown;
@@ -154,7 +157,11 @@ export const useOpsStore = defineStore('ops-chat', {
     timeline: [] as ChatTimelineEvent[],
     sessions: [] as SessionMeta[],
     historyOpen: false,
-    mock: false
+    mock: false,
+    /** 结论模式（Focus）：只渲染 assistant + evidence + notice；不持久化。 */
+    conclusionMode: false,
+    /** atOpsAgent.ui.showThinking，默认 true；结论模式另关 thinking。 */
+    showThinking: true
   }),
 
   getters: {
@@ -170,7 +177,9 @@ export const useOpsStore = defineStore('ops-chat', {
 
     /** transcript 渲染列表：连续 ≥3 个已结束只读工具聚合为一组。 */
     renderItems(state): TranscriptRenderEntry[] {
-      return buildRenderList(state.items);
+      return buildRenderList(
+        filterTranscriptForView(state.items, { conclusionMode: state.conclusionMode })
+      );
     },
 
     /** 紧凑事件脉络条：timeline 事件 + 证据便签（host 不发 timeline 也能渲染）。 */
@@ -363,6 +372,10 @@ export const useOpsStore = defineStore('ops-chat', {
 
     saveOpsDoc(itemId?: string): void {
       this.post('opsDoc/save', itemId ? { itemId } : {});
+    },
+
+    toggleConclusionMode(): void {
+      this.conclusionMode = !this.conclusionMode;
     },
 
     abortSubagent(taskId: string): void {
@@ -576,6 +589,9 @@ export const useOpsStore = defineStore('ops-chat', {
       this.hasApiKey = meta.hasApiKey;
       this.usage = meta.usage;
       this.pendingApproval = snapshot.pendingApproval ?? null;
+      if (typeof snapshot.showThinking === 'boolean') {
+        this.showThinking = snapshot.showThinking;
+      }
       // timeline 是可选字段：只有下发数组时才整体重放，否则保留已收到的 upsert
       if (Array.isArray(snapshot.timeline)) {
         this.timeline = [];

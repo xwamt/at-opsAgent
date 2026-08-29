@@ -14,6 +14,7 @@ import {
 } from '../src/hub-host';
 import { shouldSkipAtSeriesMcpServer } from '../src/mcp-client/atSeriesDedup';
 import type { HubHost, ToolChangeEvent } from '../src/protocol';
+import { L2_TOOL_DISCOVERY } from '../src/prompts/layers';
 
 const HOST_APP = 'vscode';
 const TOKEN = 'test-bridge-token-0123456789abcdef0123456789abcdef';
@@ -46,8 +47,19 @@ const BRIDGE_TOOLS: ToolCatalogEntry[] = [
     description: 'Non-database tool whose business payload happens to carry ok:false.',
     risk: 'read',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'grafana_background_denied',
+    title: 'Background access denied',
+    description: 'Bridge replies UNAVAILABLE with allowBackgroundAccess guidance.',
+    risk: 'read',
+    inputSchema: { type: 'object', properties: {} }
   }
 ];
+
+/** Bridge UNAVAILABLE guidance — must appear verbatim in HubHost.invoke results. */
+const BACKGROUND_ACCESS_MESSAGE =
+  'UNAVAILABLE: 请在插件 UI 打开 Allow Agent background access';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -114,6 +126,15 @@ function fakeBridgeHandler(req: IncomingMessage, res: ServerResponse): void {
           ok: true,
           name: body.name,
           result: { ok: false, status: 'degraded' }
+        });
+        return;
+      }
+      if (body.name === 'grafana_background_denied') {
+        sendJson(res, 503, {
+          error: {
+            code: 'UNAVAILABLE',
+            message: BACKGROUND_ACCESS_MESSAGE
+          }
         });
         return;
       }
@@ -197,6 +218,7 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
     const all = host.listAllTools();
     expect(all.map((t) => t.name).sort()).toEqual([
       'db_execute_query',
+      'grafana_background_denied',
       'grafana_cancelled_call',
       'grafana_list_instances',
       'grafana_ok_flag_payload'
@@ -219,6 +241,7 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
     const exposed = host.listExposedTools();
     expect(exposed.map((t) => t.name).sort()).toEqual([
       'db_execute_query',
+      'grafana_background_denied',
       'grafana_cancelled_call',
       'grafana_list_instances',
       'grafana_ok_flag_payload'
@@ -255,6 +278,17 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
     expect(res.ok).toBe(true);
     expect(res.result).toEqual({ ok: false, status: 'degraded' });
     expect(res.error).toBeUndefined();
+  });
+
+  it('passes Bridge UNAVAILABLE guidance through verbatim (allowBackgroundAccess lock)', async () => {
+    const res = await host.invoke({ name: 'grafana_background_denied', arguments: {} });
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe('UNAVAILABLE');
+    expect(res.error?.message).toBe(BACKGROUND_ACCESS_MESSAGE);
+    expect(res.error?.message).toContain('UNAVAILABLE');
+    expect(L2_TOOL_DISCOVERY).toContain('UNAVAILABLE');
+    expect(L2_TOOL_DISCOVERY).toMatch(/原样交给用户/);
+    expect(L2_TOOL_DISCOVERY).toMatch(/不要改写/);
   });
 
   it('returns NOT_FOUND for unknown tools', async () => {

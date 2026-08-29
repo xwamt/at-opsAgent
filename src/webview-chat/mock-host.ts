@@ -29,6 +29,7 @@ const HYDRATE_ITEMS: TranscriptItem[] = [
     kind: 'thinking',
     id: 'th1',
     steps: ['确认症状与时间窗：09:05 起 5xx 比例 0.2%→14%', '优先 grafana 窄窗验证，再放大面', '并行派发 metrics / logs / changes 调查'],
+    durationMs: 1840,
     untrustedQuotes: ['upstream timed out (110: Connection timed out) while reading response header']
   },
   {
@@ -217,6 +218,7 @@ function hydrateSnapshot(sessionId: string): Record<string, unknown> {
       pendingApproval: demoBrief(),
       sessions: MOCK_SESSIONS,
       hasApiKey: true,
+      showThinking: true,
       usage: { inputTokens: 18_432, outputTokens: 2_105, contextUsed: 41_000, contextWindow: 128_000 }
     };
   }
@@ -227,7 +229,8 @@ function hydrateSnapshot(sessionId: string): Record<string, unknown> {
     providers: providersSnapshot(),
     pendingApproval: null,
     sessions: MOCK_SESSIONS,
-    hasApiKey: true
+    hasApiKey: true,
+    showThinking: true
   };
 }
 

@@ -148,6 +148,7 @@ function createPlaybookServiceHarness(): {
   sid: string;
   clears: string[];
   stages: string[];
+  store: SessionStore;
 } {
   const dir = mkdtempSync(join(os.tmpdir(), 'at-ops-pb-close-'));
   tempDirs.push(dir);
@@ -177,14 +178,15 @@ function createPlaybookServiceHarness(): {
       }
     },
     emitAssistantNotice: () => {},
-    approvals: { registerBrief: () => {}, handleResolvedEvent: () => {} }
+    approvals: { registerBrief: () => {}, handleResolvedEvent: () => {} },
+    memoryDir: join(dir, 'memory')
   } as unknown as HostContext;
-  return { svc: new PlaybookService(ctx), sid: store.activeSessionId, clears, stages };
+  return { svc: new PlaybookService(ctx), sid: store.activeSessionId, clears, stages, store };
 }
 
 describe('playbook eval · PlaybookService.closePlaybook（closeRun 单真源）', () => {
   it('pb.inspection：start + 首条 prompt 驱动后一次 close → closed，并 clear selection', async () => {
-    const { svc, sid, clears, stages } = createPlaybookServiceHarness();
+    const { svc, sid, clears, stages, store } = createPlaybookServiceHarness();
     const started = await svc.startPlaybook('pb.inspection', undefined, sid);
     expect(started.ok).toBe(true);
     await svc.advancePlaybookForPrompt(sid);
@@ -199,14 +201,46 @@ describe('playbook eval · PlaybookService.closePlaybook（closeRun 单真源）
     expect(stages).toEqual(expect.arrayContaining(['synthesizing', 'reporting', 'closed']));
     const fromInvestigating = stages.slice(stages.lastIndexOf('investigating') + 1);
     expect(fromInvestigating).toEqual(['synthesizing', 'reporting', 'closed']);
+
+    const notices = store.itemsOf(sid).filter((item) => item.kind === 'notice');
+    const exportNotice = notices.find(
+      (item) =>
+        item.kind === 'notice' && item.actions?.some((action) => action.request === 'chat/export')
+    );
+    expect(exportNotice).toMatchObject({
+      kind: 'notice',
+      text: '巡检已关闭。可导出值班报告。'
+    });
+    expect(exportNotice?.kind === 'notice' ? exportNotice.actions : undefined).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'export-report',
+          label: '导出值班报告',
+          request: 'chat/export'
+        })
+      ])
+    );
+    const incidentNotice = notices.find(
+      (item) => item.kind === 'notice' && item.text.includes('incidents/index.md')
+    );
+    expect(incidentNotice?.kind === 'notice' ? incidentNotice.text : undefined).toContain(
+      '是否把本结论追加到 incidents/index.md？'
+    );
+    expect(incidentNotice?.kind === 'notice' ? incidentNotice.actions : undefined).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'incidents-append-yes', label: '是' }),
+        expect.objectContaining({ id: 'incidents-append-no', label: '否' })
+      ])
+    );
   });
 
   it('无 run → ok=false 且不 clear selection', async () => {
-    const { svc, sid, clears } = createPlaybookServiceHarness();
+    const { svc, sid, clears, store } = createPlaybookServiceHarness();
     const result = await svc.closePlaybook(sid);
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/没有进行中/);
     expect(clears).toEqual([]);
+    expect(store.itemsOf(sid).filter((item) => item.kind === 'notice')).toEqual([]);
   });
 
   it('investigating 缺省 advance → synthesizing；显式 closed → allowedNext 含 synthesizing', async () => {

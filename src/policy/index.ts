@@ -7,6 +7,17 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import { OPS_ERROR } from '../protocol';
+import type { SessionRequiredFor } from './sessionRequiredFor';
+
+export type { SessionRequiredFor } from './sessionRequiredFor';
+export {
+  SESSION_REQUIRED_FOR_RANK,
+  SESSION_REQUIRED_FOR_VALUES,
+  effectiveSessionRequiredFor,
+  isSessionRequiredFor,
+  parseSessionRequiredFor,
+  sessionRequiredForIsLooser
+} from './sessionRequiredFor';
 
 export type RiskLevel = 'read' | 'write' | 'exec';
 
@@ -28,7 +39,7 @@ export type PolicyContext = {
   role?: SubagentRole;
   riskCeiling?: RiskLevel;
   approval?: ApprovalRef | null;
-  sessionRequiredFor: 'write-exec' | 'exec-only' | 'never';
+  sessionRequiredFor: SessionRequiredFor;
   /** 本任务内 at_select / ops_select 已发生的次数 */
   selectCountThisTask: number;
   /**

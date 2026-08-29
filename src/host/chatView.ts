@@ -76,6 +76,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.batcher?.dispose();
         this.batcher = undefined;
         this.view = undefined;
+      }),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('atOpsAgent.ui.showThinking')) {
+          this.postHydrate();
+        }
       })
     );
 

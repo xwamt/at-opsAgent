@@ -2,7 +2,7 @@
  * ops_* 发现工具的纯函数实现。
  *
  * 本文件不依赖 pi SDK（也不 import vscode），只依赖 protocol 契约，
- * 因此可以在 vitest 中用假 hub 直接单测。src/runtime/index.ts 负责把
+ * 因此可以在 vitest 中用假 hub 直接单测。src/runtime/tool-gate.ts 负责把
  * 这些 spec 包装成 pi 的 defineTool。
  *
  * 注意：selection ≠ 授权。「调查中禁止 clear / 二次 replace」等策略

@@ -15,7 +15,10 @@
   "cmd.rejectChange": "拒绝",
   "cmd.abort": "AT Ops Agent: 停止",
   "cmd.exportReport": "AT Ops Agent: 导出会话报告",
+  "cmd.exportAudit": "AT Ops Agent: 导出审计 JSONL",
   "cmd.saveOpsDoc": "AT Ops Agent: 存为运维文档",
+  "cmd.setImWebhookSecret": "AT Ops Agent: 设置 IM Webhook 加签密钥",
+  "cmd.editEnvironment": "AT Ops Agent: 编辑环境别名（environment.json）",
   "walkthrough.title": "开始使用 AT Ops Agent",
   "walkthrough.description": "配置模型、安装能力插件并运行你的第一个 Playbook。",
   "walkthrough.step.configureModel.title": "配置模型",
@@ -27,6 +30,7 @@
   "config.discovery.mode": "何时启用工具发现（先搜索再加载）而不是把全部工具暴露给模型：'auto' 在工具数超过阈值时自动开启，'always' 强制开启，'off' 关闭。",
   "config.discovery.threshold": "当 'atOpsAgent.discovery.mode' 为 'auto' 时，工具数超过该阈值即启用发现模式。",
   "config.plugins.autoEnableNew": "自动启用新发现的能力插件，无需询问。",
+  "config.policy.floor": "企业下发的会话审批下限（取值与 approval.sessionRequiredFor 相同）。有效范围取下限与用户设置中更严的一档。默认 write-exec。",
   "config.approval.sessionRequiredFor": "哪些风险级别的工具执行前需要会话内审批：写入和执行操作、仅执行操作，或从不（插件侧审批仍然生效）。",
   "config.approval.dedupePluginModal": "当会话审批已覆盖相同命令集时，跳过能力插件自身的确认弹窗（基于 HMAC 审批令牌）。",
   "config.approval.sessionReadAllowlist": "本机视为只读的工具名前缀；匹配的工具跳过会话审批。示例：[\"kb.\", \"metrics.query\"]。",
@@ -38,5 +42,8 @@
   "config.sessions.maxParallel": "可同时运行 Agent 循环的会话数量上限。1 表示同一时间只有一个活动运行；2 允许在第一个会话忙碌时在另一个会话发起提问。",
   "config.streaming.batchMs": "流式增量推送到对话视图前的批处理毫秒数（0 表示不批处理）。",
   "config.inspection.intervalMinutes": "大于 0 时，每 N 分钟提醒执行巡检 Playbook（pb.inspection）。0 表示关闭提醒。",
-  "config.im.webhookUrl": "可选的 IM Webhook 地址（如企业微信/钉钉/Slack incoming webhook）。配置后，待审批请求会向该地址 POST JSON 摘要。不会发送任何密钥。"
+  "config.im.webhookUrl": "可选的 IM Webhook 地址（如企业微信/钉钉/Slack incoming webhook）。配置后，待审批请求会向该地址 POST JSON 摘要（含 vscode:// 深链，提示回 IDE 批准）。加签密钥只存 SecretStorage（命令：设置 IM Webhook 加签密钥），不进 settings 明文；密钥为空仍会 POST 但标记未加签。单向出站，没有 IM 上批准的回调。",
+  "config.ui.showThinking": "在对话中显示折叠的思考时长指示（思考正文始终不展开）。值班默认开启；结论/Focus 模式会隐藏。",
+  "config.otel.endpoint": "OTLP HTTP collector 地址。留空则关闭（默认零网络）。仅允许 http(s) 且主机名为 RFC1918 或 localhost；公网 SaaS 一律拒绝。",
+  "config.otel.protocol": "OTLP 传输协议。当前仅列出 http/protobuf；宿主以 OTLP HTTP JSON logs 向 collector POST。"
 }

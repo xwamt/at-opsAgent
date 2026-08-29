@@ -10,7 +10,7 @@
   --ops-read: var(--ops-healthy);
   --ops-write: var(--ops-warn);
   --ops-exec: var(--ops-crit);
-  --ops-density: 6px; /* 间距基数：Cline/Continue 级留白，信息密度靠布局而非挤压 */
+  --ops-density: 6px; /* 全局控件派生仍用；ChatTranscript 间距走 --ops-space-1/2（4/8） */
   --ops-mono: var(--vscode-editor-font-family, ui-monospace, 'SF Mono', Menlo, Consolas, monospace);
 
   --ops-muted: var(--vscode-descriptionForeground);

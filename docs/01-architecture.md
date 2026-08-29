@@ -77,6 +77,16 @@
 
 类型化边界：`docs/schemas/host-protocol.ts` 的 envelope。webview ↔ host、host ↔ runtime 共用同一套事件名。将来若抽 core 进程，只换 transport。
 
+> **TBD · 第二客户端 HTTP/SSE（Plan 12 T14 · SKIP，零代码）**
+>
+> OpsCore facade（`src/core`）保持为进程内单一 API 面。真实第二宿主（CLI 值班脚本 / Web 值班台）出现之前：
+>
+> - **不**把 loop 抽成独立进程
+> - **不**引入 `pi serve` / `kilo serve` / 自建 HTTP+SSE 值班口
+> - **不**为「加个 HTTP 就能量化」改 ADR-001 进程模型
+>
+> 热注册 200ms 依赖 Hub 与 Agent 同进程。需要第二客户端时再给 facade 套 transport，而不是现在预建。
+
 ## 4. 仓库布局（目标态）
 
 ```text

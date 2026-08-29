@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { dualConfirmText, t, type OpsMessageKey } from '../i18n';
+import { annotateCommandKeywords, isBlankApprovalValue } from '../lib/approval-brief';
 import { useCopiedFlag } from '../lib/clipboard';
 import { useOpsStore } from '../store';
 
@@ -87,19 +88,22 @@ const rows = computed<ElementRow[]>(() => {
     const value = elements[key];
     const label = t(labelKey);
     if (key === 'commands' && Array.isArray(value)) {
-      return { key, label, text: '', commands: value.map(commandLine) };
+      const commands = value.map(commandLine).filter((line) => line.trim().length > 0);
+      if (commands.length === 0) {
+        return null;
+      }
+      return { key, label, text: '', commands };
     }
-    const text =
-      value === undefined || value === null
-        ? '—'
-        : typeof value === 'string'
-          ? value
-          : JSON.stringify(value);
+    if (isBlankApprovalValue(value)) {
+      return null;
+    }
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
     return { key, label, text, commands: null };
-  });
+  }).filter((row): row is ElementRow => row !== null);
   const extras = Object.keys(elements)
     .filter((key) => key !== 'guidedManual')
     .filter((key) => !ELEMENT_LABELS.some((entry) => entry.key === key))
+    .filter((key) => !isBlankApprovalValue(elements[key]))
     .map((key) => ({
       key,
       label: key,
@@ -165,7 +169,7 @@ async function copyCommands(row: ElementRow): Promise<void> {
         <dt class="approval__dt ops-muted">{{ row.label }}</dt>
         <dd class="approval__dd">
           <div v-if="row.commands" class="approval__commands-wrap">
-            <pre class="ops-codeblock approval__commands">{{ row.commands.join('\n') }}</pre>
+            <pre class="ops-codeblock approval__commands"><template v-for="(line, i) in row.commands" :key="i"><span v-if="i > 0">{{ '\n' }}</span><span v-for="(seg, j) in annotateCommandKeywords(line)" :key="j" :class="{ approval__kw: seg.keyword }">{{ seg.text }}</span></template></pre>
             <button
               type="button"
               class="ops-copy-btn approval__copy"
@@ -304,5 +308,10 @@ async function copyCommands(row: ElementRow): Promise<void> {
 
 .approval__copy.ops-copy-btn--copied {
   width: auto;
+}
+
+.approval__kw {
+  color: var(--ops-crit);
+  font-weight: 600;
 }
 </style>

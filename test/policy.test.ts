@@ -5,10 +5,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertApproval,
+  effectiveSessionRequiredFor,
   evaluatePolicy,
   hashCommandSet,
   inferEffectiveRisk,
   issueApprovalToken,
+  parseSessionRequiredFor,
   PolicyError,
   previewRemoteCommandPolicy,
   verifyApprovalToken,
@@ -463,6 +465,17 @@ describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () 
 });
 
 describe('policy · 会话审批', () => {
+  it('effectiveSessionRequiredFor：max(floor, user) 取更严；never < exec-only < write-exec', () => {
+    expect(effectiveSessionRequiredFor('write-exec', 'never')).toBe('write-exec');
+    expect(effectiveSessionRequiredFor('write-exec', 'write-exec')).toBe('write-exec');
+    expect(effectiveSessionRequiredFor('exec-only', 'never')).toBe('exec-only');
+    expect(effectiveSessionRequiredFor('exec-only', 'write-exec')).toBe('write-exec');
+    expect(effectiveSessionRequiredFor('never', 'exec-only')).toBe('exec-only');
+    expect(effectiveSessionRequiredFor('never', 'never')).toBe('never');
+    expect(parseSessionRequiredFor('garbage')).toBe('write-exec');
+    expect(parseSessionRequiredFor('exec-only')).toBe('exec-only');
+  });
+
   it('at.database write 即使 sessionRequiredFor=exec-only 也强制会话审批', async () => {
     const decision = await evaluatePolicy(
       ctx({

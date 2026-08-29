@@ -1,0 +1,17 @@
+{
+  "选择要附加到对话的素材（证据 / 工作区文件）": "Choose an attachment for the conversation (evidence / workspace file)",
+  "导出值班报告": "Export duty report",
+  "选择审计导出时间窗": "Choose an audit export window",
+  "导出审计 JSONL": "Export audit JSONL",
+  "$(warning) AT Ops 未配置": "$(warning) AT Ops not configured",
+  "AT Ops Agent：尚未配置模型 API Key。发现设置将在重载窗口后生效。": "AT Ops Agent: model API key is not configured. Discovery settings apply after reloading the window.",
+  "AT Ops Agent：尚未配置模型 API Key（点击打开 Models 设置）": "AT Ops Agent: model API key is not configured (click to open Models settings)",
+  "$(warning) AT Ops 需重载": "$(warning) AT Ops reload needed",
+  "AT Ops Agent：发现设置将在重载窗口后生效（点击重载窗口）": "AT Ops Agent: discovery settings apply after reloading the window (click to reload)",
+  "$(shield) AT Ops {0}": "$(shield) AT Ops {0}",
+  "$(shield) AT Ops": "$(shield) AT Ops",
+  "AT Ops Agent：{0} 条待审批简报（点击打开对话处理）": "AT Ops Agent: {0} pending approval brief(s) (click to handle in chat)",
+  "AT Ops Agent：点击打开对话": "AT Ops Agent: click to open chat",
+  "AT Ops Agent：发现设置将在重载窗口后生效": "AT Ops Agent: discovery settings apply after reloading the window",
+  "重载窗口": "Reload Window"
+}

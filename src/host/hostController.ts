@@ -14,7 +14,7 @@
  * （handleRequest）、对 activate/commands/chatView 保持既有公共 API。
  */
 import { randomUUID } from 'node:crypto';
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import {
   envelope,
   type ApprovalRespondReq,
@@ -35,13 +35,17 @@ import type { OpsSecrets } from './secrets';
 import type { SessionStore } from './sessionStore';
 import type { PlaybookMeta } from './hostTypes';
 import { ApprovalService } from './services/approvalService';
+import { AuditWriter } from './services/auditChain';
 import { ChatService } from './services/chatService';
 import { ConfigService, type SettingsSnapshot } from './services/configService';
-import { HostContext } from './services/context';
+import { describeError, HostContext } from './services/context';
 import { ModelService } from './services/modelService';
+import { createOtelExporter } from './services/otel';
 import { PlaybookService } from './services/playbookService';
 import { WorkbenchService } from './services/workbenchService';
 import { saveOpsDocFromTranscript } from './services/opsDocService';
+import { editEnvironmentFile } from './services/longTermMemory';
+import { memoryDirOf } from './services/stageLayers';
 
 export type { SettingsSnapshot } from './services/configService';
 
@@ -78,6 +82,7 @@ export class HostController {
 
   private readonly hubSub: { dispose(): void };
   private readonly timelineSub: { dispose(): void };
+  private readonly dutyUnsub: () => void;
 
   constructor(options: HostControllerOptions) {
     this.ctx = new HostContext(options);
@@ -104,6 +109,29 @@ export class HostController {
       models: this.models,
       config: this.config,
       workbench: this.workbench
+    });
+
+    const auditWriter = new AuditWriter({
+      agentDir: this.ctx.agentDir,
+      log: (message) => this.ctx.log(message)
+    });
+    const otel = createOtelExporter({
+      log: (message) => this.ctx.log(message),
+      readConfig: () => {
+        const config = vscode.workspace.getConfiguration('atOpsAgent');
+        return {
+          endpoint: config.get<string>('otel.endpoint', '') ?? '',
+          protocol: config.get<string>('otel.protocol', 'http/protobuf') ?? 'http/protobuf'
+        };
+      }
+    });
+    this.dutyUnsub = this.ctx.duty.subscribe((event) => {
+      void auditWriter.append(event).catch((err) =>
+        this.ctx.log(`[audit] 写入失败: ${describeError(err)}`)
+      );
+      void otel.export(event).catch((err) =>
+        this.ctx.log(`[otel] 导出失败: ${describeError(err)}`)
+      );
     });
 
     void this.models.bootstrapModelCatalog();
@@ -304,6 +332,18 @@ export class HostController {
     return this.workbench.exportReport(sessionId);
   }
 
+  async exportAudit(): Promise<{ ok: boolean; path?: string; error?: string }> {
+    return this.workbench.exportAudit();
+  }
+
+  async editEnvironment(): Promise<{ ok: boolean; error?: string }> {
+    return editEnvironmentFile(this.ctx);
+  }
+
+  memoryDir(): string {
+    return memoryDirOf(this.ctx);
+  }
+
   async settingsSnapshot(): Promise<SettingsSnapshot> {
     return this.config.settingsSnapshot();
   }
@@ -321,6 +361,7 @@ export class HostController {
   }
 
   dispose(): void {
+    this.dutyUnsub();
     this.approvals.dispose();
     this.hubSub.dispose();
     this.timelineSub.dispose();

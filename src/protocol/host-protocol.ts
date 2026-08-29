@@ -118,7 +118,15 @@ export type SettingsOpenJsonReq = { kind: 'models' | 'mcp' | 'auth' | 'vscode' }
 export type TranscriptItem =
   | { kind: 'user'; id: string; text: string; ts?: number }
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean; error?: boolean; retryable?: boolean; ts?: number }
-  | { kind: 'thinking'; id: string; steps: string[]; untrustedQuotes?: string[]; ts?: number }
+  | {
+      kind: 'thinking';
+      id: string;
+      steps: string[];
+      untrustedQuotes?: string[];
+      /** 思考段墙钟时长（host 在 thinking 结束时写入；缺省 = 仍在思考）。 */
+      durationMs?: number;
+      ts?: number;
+    }
   | { kind: 'tool'; id: string; call: ToolCallView; ts?: number }
   | { kind: 'subagents'; id: string; agents: SubagentCard[]; ts?: number }
   | { kind: 'evidence'; id: string; note: EvidenceNoteView; ts?: number }
@@ -203,6 +211,11 @@ export type HydrateEvt = {
   locale?: string;
   usage?: UsageView;
   onboarded?: boolean;
+  /**
+   * atOpsAgent.ui.showThinking：默认 true（值班需要思考时长指示）。
+   * Focus/结论模式在 webview 侧另关 thinking，不改此配置。
+   */
+  showThinking?: boolean;
 };
 
 export type HostRequestType =

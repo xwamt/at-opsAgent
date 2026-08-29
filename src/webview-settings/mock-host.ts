@@ -63,6 +63,7 @@ function snapshot(): Record<string, unknown> {
       'discovery.mode': 'auto',
       'discovery.threshold': 20,
       'plugins.autoEnableNew': true,
+      'policy.floor': 'write-exec',
       'approval.sessionRequiredFor': 'write-exec',
       'approval.dedupePluginModal': false,
       'approval.timeoutMs': 900000,
@@ -70,7 +71,8 @@ function snapshot(): Record<string, unknown> {
       'models.toolCallPromptFallback': true,
       'workspaceShell.enabled': false,
       'subagent.maxParallel': 3,
-      'streaming.batchMs': 40
+      'streaming.batchMs': 40,
+      'ui.showThinking': true
     },
     models: MOCK_MODELS_STATE,
     providers: [

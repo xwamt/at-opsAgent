@@ -42,7 +42,12 @@ function onListChange(key: ConfigKey, event: Event): void {
 
         <template v-else-if="field.kind === 'enum'">
           <label class="set-label" :for="`cfg-${field.key}`">{{ tk(field.labelKey) }}</label>
-          <select :id="`cfg-${field.key}`" class="set-select" v-model="store.draft[field.key]">
+          <select
+            :id="`cfg-${field.key}`"
+            class="set-select"
+            v-model="store.draft[field.key]"
+            :disabled="field.readonly === true"
+          >
             <option v-for="opt in field.options" :key="opt" :value="opt">{{ opt }}</option>
           </select>
           <span class="set-desc">{{ tk(field.descKey) }}</span>

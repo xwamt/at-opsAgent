@@ -97,6 +97,16 @@ describe('formatEnvSnapshot（docs/13 §4.2）', () => {
     expect(snapshot).toContain('共 11 个');
     expect(snapshot).not.toContain('send_terminal_input');
   });
+
+  it('有 environment 别名时追加 aliases: 块；无键不提', () => {
+    const withKeys = formatEnvSnapshot({
+      ...unhealthyTerminalInput(),
+      aliases: { 'prod-a': '集群说明' }
+    });
+    expect(withKeys).toContain('aliases:');
+    expect(withKeys).toContain('- prod-a: 集群说明');
+    expect(formatEnvSnapshot(unhealthyTerminalInput())).not.toContain('aliases:');
+  });
 });
 
 describe('composeSystemPrompt · envLayer（docs/13 §4.2）', () => {

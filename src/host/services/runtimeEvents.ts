@@ -17,6 +17,9 @@ export interface RuntimeEventHooks {
 }
 
 export class RuntimeEventRouter {
+  /** thinking 项首次 delta 的墙钟起点（itemId → Date.now()）。 */
+  private readonly thinkingStartedAt = new Map<string, number>();
+
   constructor(
     private readonly ctx: HostContext,
     private readonly hooks: RuntimeEventHooks
@@ -31,6 +34,7 @@ export class RuntimeEventRouter {
         // 先到的 thinking 会把该 id 占成 kind:thinking（ChatTranscript 永不
         // 渲染），随后的正文被 appendAssistantText 静默丢弃。这里按 kind
         // 拆 id（`:assistant` / `:thinking` 后缀），正文永不写入 thinking 项。
+        this.finalizeThinking(sid, thinkingItemId(e.id));
         const id = assistantItemId(e.id);
         if (!ctx.store.findItem(id, sid)) {
           const item = { kind: 'assistant' as const, id, text: '', streaming: true };
@@ -50,6 +54,9 @@ export class RuntimeEventRouter {
           const item = { kind: 'thinking' as const, id, steps: [] as string[] };
           ctx.store.appendItem(item, sid);
           ctx.broadcastToSession(sid, 'transcript/append', { item });
+        }
+        if (!this.thinkingStartedAt.has(id)) {
+          this.thinkingStartedAt.set(id, Date.now());
         }
         ctx.store.appendThinkingText(id, e.text, sid);
         const untrustedQuotes = this.collectUntrustedQuotes(sid, id);
@@ -89,6 +96,7 @@ export class RuntimeEventRouter {
         const { type: _type, ...usage } = e;
         this.hooks.setUsage(sid, usage);
         ctx.broadcastToSession(sid, 'usage', usage);
+        ctx.emitDuty?.('token_usage', sid, { ...usage });
         break;
       }
       case 'compaction': {
@@ -122,6 +130,9 @@ export class RuntimeEventRouter {
               itemId: item.id,
               patch: { streaming: false }
             });
+          }
+          if (item.kind === 'thinking') {
+            this.finalizeThinking(sid, item.id);
           }
         }
         ctx.broadcastToSession(sid, 'turn/end', {});
@@ -163,6 +174,25 @@ export class RuntimeEventRouter {
     const merged = [...new Set([...(item.untrustedQuotes ?? []), ...quotes.reverse()])].slice(0, 5);
     item.untrustedQuotes = merged;
     return merged;
+  }
+
+  /** thinking 结束：写 durationMs 一次（text_delta 或 idle）。CoT 正文仍不外泄。 */
+  private finalizeThinking(sessionId: string, thinkingId: string): void {
+    const started = this.thinkingStartedAt.get(thinkingId);
+    this.thinkingStartedAt.delete(thinkingId);
+    if (started === undefined) {
+      return;
+    }
+    const item = this.ctx.store.findItem(thinkingId, sessionId);
+    if (item?.kind !== 'thinking' || item.durationMs !== undefined) {
+      return;
+    }
+    const durationMs = Math.max(0, Date.now() - started);
+    item.durationMs = durationMs;
+    this.ctx.broadcastToSession(sessionId, 'transcript/patch', {
+      itemId: thinkingId,
+      patch: { durationMs }
+    });
   }
 }
 

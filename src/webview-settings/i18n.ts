@@ -21,6 +21,7 @@ const zhCN = {
   saved: '已保存',
   saveFailed: '保存失败',
   noChanges: '暂无改动',
+  policyFloorClamped: '已按组织下限收紧',
   loading: '等待 host 数据…',
   mockBadge: 'mock',
 
@@ -33,6 +34,9 @@ const zhCN = {
   cfgDiscoveryThresholdDesc: '工具总数超过该值时启用渐进披露（模式为 auto 时生效）。',
   cfgAutoEnableNew: '自动启用新插件',
   cfgAutoEnableNewDesc: '新发现的 AT 系列能力插件自动接入，无需手动确认。',
+  cfgPolicyFloor: '组织策略下限',
+  cfgPolicyFloorDesc:
+    '企业下发的会话审批下限。用户只能选得更严，不能更松；保存时若更松会按下限收紧。',
   cfgSessionRequiredFor: '会话内审批范围',
   cfgSessionRequiredForDesc: '哪些风险等级需要会话内审批简报：写+执行 / 仅执行 / 从不。',
   cfgDedupePluginModal: '合并插件确认弹窗',
@@ -52,6 +56,8 @@ const zhCN = {
   cfgSubagentMaxParallelDesc: '同时运行的子代理数量上限（1–4）。',
   cfgStreamingBatchMs: '流式合批间隔（毫秒）',
   cfgStreamingBatchMsDesc: '事件流合批下发的毫秒间隔。',
+  cfgShowThinking: '显示思考时长',
+  cfgShowThinkingDesc: '在对话中显示折叠的思考时长（思考正文始终不展开）。值班默认开启。结论/Focus 模式会隐藏思考项。',
   cfgListPlaceholder: '用逗号分隔，例如 db_query, log_search',
 
   modelsTitle: '模型',
@@ -169,6 +175,7 @@ const en: Record<SettingsMessageKey, string> = {
   saved: 'Saved',
   saveFailed: 'Save failed',
   noChanges: 'No changes',
+  policyFloorClamped: 'Tightened to the organization floor',
   loading: 'Waiting for host data…',
   mockBadge: 'mock',
 
@@ -183,6 +190,9 @@ const en: Record<SettingsMessageKey, string> = {
     'Progressive discovery kicks in when the tool count exceeds this value (mode auto).',
   cfgAutoEnableNew: 'Auto-enable new plugins',
   cfgAutoEnableNewDesc: 'Newly discovered AT Series capability plugins connect without confirmation.',
+  cfgPolicyFloor: 'Organization policy floor',
+  cfgPolicyFloorDesc:
+    'Organization-managed lower bound for in-session approval. Users may only tighten, never loosen; a looser pick is clamped on save.',
   cfgSessionRequiredFor: 'In-session approval scope',
   cfgSessionRequiredForDesc:
     'Which risk levels require an in-session approval brief: write+exec / exec only / never.',
@@ -206,6 +216,9 @@ const en: Record<SettingsMessageKey, string> = {
   cfgSubagentMaxParallelDesc: 'Upper bound of concurrently running subagents (1–4).',
   cfgStreamingBatchMs: 'Streaming batch interval (ms)',
   cfgStreamingBatchMsDesc: 'Milliseconds between batched event flushes to the webview.',
+  cfgShowThinking: 'Show thinking duration',
+  cfgShowThinkingDesc:
+    'Show a collapsed thinking-duration indicator in chat (chain-of-thought body stays hidden). On by default for duty. Conclusion/Focus mode hides thinking items.',
   cfgListPlaceholder: 'Comma-separated, e.g. db_query, log_search',
 
   modelsTitle: 'Models',

@@ -33,6 +33,7 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -112,9 +113,22 @@
         "icon": "$(export)"
       },
       {
+        "command": "atOpsAgent.exportAudit",
+        "title": "%cmd.exportAudit%",
+        "icon": "$(archive)"
+      },
+      {
         "command": "atOpsAgent.saveOpsDoc",
         "title": "%cmd.saveOpsDoc%",
         "icon": "$(save)"
+      },
+      {
+        "command": "atOpsAgent.setImWebhookSecret",
+        "title": "%cmd.setImWebhookSecret%"
+      },
+      {
+        "command": "atOpsAgent.memory.editEnvironment",
+        "title": "%cmd.editEnvironment%"
       }
     ],
     "menus": {
@@ -229,6 +243,16 @@
           "default": true,
           "description": "%config.plugins.autoEnableNew%"
         },
+        "atOpsAgent.policy.floor": {
+          "type": "string",
+          "enum": [
+            "write-exec",
+            "exec-only",
+            "never"
+          ],
+          "default": "write-exec",
+          "description": "%config.policy.floor%"
+        },
         "atOpsAgent.approval.sessionRequiredFor": {
           "type": "string",
           "enum": [
@@ -312,6 +336,24 @@
           "type": "string",
           "default": "",
           "description": "%config.im.webhookUrl%"
+        },
+        "atOpsAgent.otel.endpoint": {
+          "type": "string",
+          "default": "",
+          "description": "%config.otel.endpoint%"
+        },
+        "atOpsAgent.otel.protocol": {
+          "type": "string",
+          "enum": [
+            "http/protobuf"
+          ],
+          "default": "http/protobuf",
+          "description": "%config.otel.protocol%"
+        },
+        "atOpsAgent.ui.showThinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.ui.showThinking%"
         }
       }
     }

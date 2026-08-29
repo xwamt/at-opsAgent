@@ -50,6 +50,8 @@ import {
   buildModelsFetchReq,
   buildModelsSavePayload,
   buildModelsTestReq,
+  clampConfigToPolicyFloor,
+  clampSessionRequiredForToFloor,
   emptyModelsForm,
   modelsKeyMissing,
   normalizeConfig,
@@ -150,6 +152,7 @@ describe('常规配置：绑定键覆盖、归一化与 patch 载荷', () => {
         'discovery.mode',
         'discovery.threshold',
         'plugins.autoEnableNew',
+        'policy.floor',
         'approval.sessionRequiredFor',
         'approval.dedupePluginModal',
         'approval.sessionReadAllowlist',
@@ -158,7 +161,8 @@ describe('常规配置：绑定键覆盖、归一化与 patch 载荷', () => {
         'models.toolCallPromptFallback',
         'workspaceShell.enabled',
         'subagent.maxParallel',
-        'streaming.batchMs'
+        'streaming.batchMs',
+        'ui.showThinking'
       ].sort()
     );
   });
@@ -188,14 +192,17 @@ describe('常规配置：绑定键覆盖、归一化与 patch 载荷', () => {
 
   it('normalizeConfig：空载荷回默认值；坏枚举回退；maxParallel 钳到 1–4', () => {
     expect(normalizeConfig({})).toEqual(CONFIG_DEFAULTS);
+    expect(CONFIG_DEFAULTS['ui.showThinking']).toBe(true);
     const config = normalizeConfig({
       'discovery.mode': 'nonsense',
       'subagent.maxParallel': 9,
-      'streaming.batchMs': '80'
+      'streaming.batchMs': '80',
+      'ui.showThinking': false
     });
     expect(config['discovery.mode']).toBe('auto');
     expect(config['subagent.maxParallel']).toBe(4);
     expect(config['streaming.batchMs']).toBe(80);
+    expect(config['ui.showThinking']).toBe(false);
   });
 
   it('normalizeConfig：接受 atOpsAgent. 前缀键与嵌套形状', () => {
@@ -204,12 +211,14 @@ describe('常规配置：绑定键覆盖、归一化与 patch 载荷', () => {
     );
     const nested = normalizeConfig({
       discovery: { mode: 'off', threshold: 30 },
-      approval: { sessionRequiredFor: 'never', sessionReadAllowlist: ['db_query'] }
+      approval: { sessionRequiredFor: 'never', sessionReadAllowlist: ['db_query'] },
+      policy: { floor: 'exec-only' }
     });
     expect(nested['discovery.mode']).toBe('off');
     expect(nested['discovery.threshold']).toBe(30);
     expect(nested['approval.sessionRequiredFor']).toBe('never');
     expect(nested['approval.sessionReadAllowlist']).toEqual(['db_query']);
+    expect(nested['policy.floor']).toBe('exec-only');
   });
 
   it('sessionReadAllowlist：数组按元素收、字符串按逗号切、脏值丢弃', () => {
@@ -258,6 +267,38 @@ describe('常规配置：绑定键覆盖、归一化与 patch 载荷', () => {
       key: 'approval.sessionReadAllowlist',
       value: ['db_query', 'log_search']
     });
+  });
+
+  it('policy.floor 只读：不进 patch；保存时按下限收紧 sessionRequiredFor', () => {
+    expect(CONFIG_FIELDS.find((field) => field.key === 'policy.floor')?.readonly).toBe(true);
+    const saved = { ...CONFIG_DEFAULTS };
+    expect(
+      buildConfigPatch(saved, { ...saved, 'policy.floor': 'never' })
+    ).toBeNull();
+
+    expect(clampSessionRequiredForToFloor('never', 'write-exec')).toEqual({
+      value: 'write-exec',
+      clamped: true
+    });
+    expect(clampSessionRequiredForToFloor('write-exec', 'write-exec')).toEqual({
+      value: 'write-exec',
+      clamped: false
+    });
+    expect(clampSessionRequiredForToFloor('never', 'exec-only')).toEqual({
+      value: 'exec-only',
+      clamped: true
+    });
+    expect(clampSessionRequiredForToFloor('write-exec', 'exec-only')).toEqual({
+      value: 'write-exec',
+      clamped: false
+    });
+
+    const loosened = { ...CONFIG_DEFAULTS, 'approval.sessionRequiredFor': 'never' as const };
+    expect(clampConfigToPolicyFloor(loosened)).toEqual({
+      config: { ...loosened, 'approval.sessionRequiredFor': 'write-exec' },
+      clamped: true
+    });
+    expect(t('policyFloorClamped')).toBe('已按组织下限收紧');
   });
 });
 
@@ -946,6 +987,11 @@ describe('settings i18n（本地包，独立于 chat i18n）', () => {
       'mcpAdvanced',
       'cfgSessionReadAllowlist',
       'cfgSessionReadAllowlistDesc',
+      'cfgPolicyFloor',
+      'cfgPolicyFloorDesc',
+      'policyFloorClamped',
+      'cfgShowThinking',
+      'cfgShowThinkingDesc',
       'capEmptyInstall',
       'capDiagnoseRun',
       'capLive',

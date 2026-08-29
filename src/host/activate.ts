@@ -20,8 +20,11 @@ import { createOpsCore } from '../core';
 import { CHAT_VIEW_ID, ChatViewProvider } from './chatView';
 import { registerCommands } from './commands';
 import { HostController } from './hostController';
+import { handleChatDeeplink } from './services/approvalNotify';
 import { OpsSecrets } from './secrets';
 import { pruneToolResults } from './retention';
+import { inspectLatestAuditChain } from './services/auditChain';
+import { registerEnvironmentSaveGuard } from './services/longTermMemory';
 import { SessionStore } from './sessionStore';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -98,23 +101,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const pending = store.pendingBriefs.length;
     if (!controller.hasModelApiKey) {
       // P1-11：未配置 API key → 黄色警示，点击直达 Models 设置页。
-      statusBar.text = '$(warning) AT Ops 未配置';
+      statusBar.text = vscode.l10n.t('$(warning) AT Ops 未配置');
       statusBar.tooltip = discoveryReloadNeeded
-        ? 'AT Ops Agent：尚未配置模型 API Key。发现设置将在重载窗口后生效。'
-        : 'AT Ops Agent：尚未配置模型 API Key（点击打开 Models 设置）';
+        ? vscode.l10n.t('AT Ops Agent：尚未配置模型 API Key。发现设置将在重载窗口后生效。')
+        : vscode.l10n.t('AT Ops Agent：尚未配置模型 API Key（点击打开 Models 设置）');
       statusBar.command = 'atOpsAgent.openModels';
       statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else if (discoveryReloadNeeded) {
-      statusBar.text = '$(warning) AT Ops 需重载';
-      statusBar.tooltip = 'AT Ops Agent：发现设置将在重载窗口后生效（点击重载窗口）';
+      statusBar.text = vscode.l10n.t('$(warning) AT Ops 需重载');
+      statusBar.tooltip = vscode.l10n.t('AT Ops Agent：发现设置将在重载窗口后生效（点击重载窗口）');
       statusBar.command = 'workbench.action.reloadWindow';
       statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
-      statusBar.text = pending > 0 ? `$(shield) AT Ops ${pending}` : '$(shield) AT Ops';
+      statusBar.text =
+        pending > 0
+          ? vscode.l10n.t('$(shield) AT Ops {0}', pending)
+          : vscode.l10n.t('$(shield) AT Ops');
       statusBar.tooltip =
         pending > 0
-          ? `AT Ops Agent：${pending} 条待审批简报（点击打开对话处理）`
-          : 'AT Ops Agent：点击打开对话';
+          ? vscode.l10n.t('AT Ops Agent：{0} 条待审批简报（点击打开对话处理）', pending)
+          : vscode.l10n.t('AT Ops Agent：点击打开对话');
       // 视图贡献自动生成的 focus 命令：聚焦活动栏 chat 视图。
       statusBar.command = `${CHAT_VIEW_ID}.focus`;
       statusBar.backgroundColor = undefined;
@@ -133,9 +139,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log('[hub] discovery.mode/threshold 已更改，将在重载窗口后生效（HubHost 无 setDiscovery）');
       updateStatusBar();
       void vscode.window
-        .showInformationMessage('AT Ops Agent：发现设置将在重载窗口后生效', '重载窗口')
+        .showInformationMessage(
+          vscode.l10n.t('AT Ops Agent：发现设置将在重载窗口后生效'),
+          vscode.l10n.t('重载窗口')
+        )
         .then((choice) => {
-          if (choice === '重载窗口') {
+          if (choice === vscode.l10n.t('重载窗口')) {
             void vscode.commands.executeCommand('workbench.action.reloadWindow');
           }
         });
@@ -155,6 +164,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       output,
       refresh,
       extensionUri: context.extensionUri
+    }),
+    registerEnvironmentSaveGuard(() => controller.memoryDir())
+  );
+
+  // vscode://at-series.at-ops-agent/chat?sessionId= — 只切会话，不是批准 API。
+  context.subscriptions.push(
+    vscode.window.registerUriHandler({
+      handleUri(uri: vscode.Uri): void {
+        void handleChatDeeplink(uri, {
+          switchSession: (id) => controller.switchSession(id),
+          focusChat: () => vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`),
+          log
+        }).then((outcome) => {
+          if (outcome === 'missing') {
+            void vscode.window.showWarningMessage(`AT Ops Agent：深链会话不存在（${uri.query}）`);
+          }
+        });
+      }
     })
   );
 
@@ -167,6 +194,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   void pruneToolResults(agentDir).catch((err) =>
     log(`[retention] prune 失败: ${err instanceof Error ? err.message : String(err)}`)
   );
+  // 最新审计日文件链断只警告，不重写历史。
+  void inspectLatestAuditChain(agentDir)
+    .then((result) => {
+      if (!result.ok) {
+        log(
+          `[audit] 最新审计文件链校验失败（不重写历史）${
+            result.file !== undefined ? ` file=${result.file}` : ''
+          }: ${result.reason ?? 'broken'}`
+        );
+      }
+    })
+    .catch((err) =>
+      log(`[audit] 链校验异常: ${err instanceof Error ? err.message : String(err)}`)
+    );
 }
 
 /**

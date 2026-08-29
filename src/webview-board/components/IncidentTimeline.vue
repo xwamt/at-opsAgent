@@ -10,9 +10,9 @@ import { useBoardStore, type TimelineEventView } from '../store';
 const store = useBoardStore();
 
 const SEVERITY_META: Record<TimelineEventView['severity'], { icon: string; label: string; cls: string }> = {
-  info: { icon: '○', label: 'info', cls: 'tl__sev--info' },
-  warn: { icon: '△', label: 'warn', cls: 'tl__sev--warn' },
-  crit: { icon: '✗', label: 'crit', cls: 'tl__sev--crit' }
+  info: { icon: 'codicon-circle-outline', label: 'info', cls: 'tl__sev--info' },
+  warn: { icon: 'codicon-warning', label: 'warn', cls: 'tl__sev--warn' },
+  crit: { icon: 'codicon-error', label: 'crit', cls: 'tl__sev--crit' }
 };
 
 /** 相对时间的「现在」：30s 一跳，避免时间列停在挂载瞬间。 */
@@ -52,7 +52,11 @@ onBeforeUnmount(() => {
               :title="formatAbsolute(event.ts)"
             >{{ formatTimeCell(event.ts, now) }}</time>
             <span class="tl__sev" :class="SEVERITY_META[event.severity].cls">
-              <span aria-hidden="true">{{ SEVERITY_META[event.severity].icon }}</span>
+              <span
+                class="codicon"
+                :class="SEVERITY_META[event.severity].icon"
+                aria-hidden="true"
+              ></span>
               {{ SEVERITY_META[event.severity].label }}
             </span>
             <div class="tl__main">

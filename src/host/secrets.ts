@@ -12,6 +12,9 @@ import type * as vscode from 'vscode';
 
 export const LLM_API_KEY_SECRET = 'atOpsAgent.llmApiKey';
 
+/** IM webhook HMAC 密钥；只进 SecretStorage，禁止写入 settings 明文。 */
+export const IM_WEBHOOK_SECRET_KEY = 'atOpsAgent.im.webhookSecret';
+
 /** 按 provider 隔离的 SecretStorage 键前缀。 */
 export const PROVIDER_API_KEY_PREFIX = 'atOpsAgent.apiKey.';
 

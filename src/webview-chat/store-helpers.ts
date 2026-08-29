@@ -63,16 +63,52 @@ export function buildPromptPayload(
 }
 
 /**
- * CoT 隐藏（对齐 pi-coding-agent hideThinkingBlock，且恒为隐藏、无开关）：
+ * CoT 隐藏（对齐 pi-coding-agent hideThinkingBlock，且恒为折叠、无 expander）：
  * thinking 项的推理步骤永不进入可见渲染；唯一可见的是 security-triage 等
  * 链路附带的 untrustedQuotes 警示块（只含外部引用原文，不含任何思考步骤）。
- * 返回空数组 ⇒ 该 thinking 项完全不渲染。
+ * 返回空数组 ⇒ 该 thinking 项没有引用块可渲染。
  */
 export function visibleUntrustedQuotes(item: TranscriptItem): string[] {
   if (item.kind !== 'thinking' || !Array.isArray(item.untrustedQuotes)) {
     return [];
   }
   return item.untrustedQuotes.filter((quote) => typeof quote === 'string' && quote !== '');
+}
+
+/** 结论模式（Focus）只留 assistant + evidence + notice，隐藏 tool/thinking 等。 */
+export function isConclusionItem(item: TranscriptItem): boolean {
+  return item.kind === 'assistant' || item.kind === 'evidence' || item.kind === 'notice';
+}
+
+export function filterTranscriptForView(
+  items: readonly TranscriptItem[],
+  opts: { conclusionMode: boolean }
+): readonly TranscriptItem[] {
+  if (!opts.conclusionMode) {
+    return items;
+  }
+  return items.filter(isConclusionItem);
+}
+
+/**
+ * 思考时长指示是否可见：配置 ui.showThinking 默认 true；
+ * 结论模式（Focus）强制 false。CoT 正文始终折叠。
+ */
+export function thinkingMetaVisible(showThinking: boolean, conclusionMode: boolean): boolean {
+  return showThinking === true && conclusionMode !== true;
+}
+
+/** durationMs → `850ms` / `1.2s`；非法或缺省返回 null（UI 走「思考中」）。 */
+export function formatThinkingDurationMs(durationMs: number | undefined): string | null {
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0) {
+    return null;
+  }
+  if (durationMs < 1000) {
+    return `${Math.round(durationMs)}ms`;
+  }
+  const seconds = durationMs / 1000;
+  const rounded = seconds >= 10 ? seconds.toFixed(0) : seconds.toFixed(1);
+  return `${rounded}s`;
 }
 
 export interface ChatTimelineEvent {

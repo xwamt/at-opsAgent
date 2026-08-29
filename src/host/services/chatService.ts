@@ -36,6 +36,13 @@ import { StageLayerInjector } from './stageLayers';
 import { appendEvidenceNote, patchSubagentCard, type SubagentCardPatch } from './subagentCards';
 import { writeOpsDoc as writeOpsDocOnHost } from './opsDocService';
 import type { WriteOpsDocRequest } from '../../runtime/workspace-write';
+import {
+  confirmAppendIncident,
+  INCIDENT_APPEND_NO_ID,
+  INCIDENT_APPEND_YES_ID,
+  skipAppendIncident
+} from './longTermMemory';
+import { memoryDirOf } from './stageLayers';
 
 /** 溢出兜底：携带本会话证据/阶段开新会话（须用户点击，禁止自动开）。 */
 export const HANDOFF_NEW_SESSION_ACTION: NoticeAction = {
@@ -100,10 +107,11 @@ export class ChatService {
     const providers = ctx.config.safeProviders();
     const playbooks = ctx.playbooks.cachedPlaybooks();
     const modelsPayload = ctx.models.chatModelsExtra();
+    const uiFlags = this.uiHydrateFlags();
     if (!playbooks) {
       // 不阻塞快照：后台预热缓存，下一次 hydrate 自然带上。
       void ctx.playbooks.getPlaybooks().catch(() => {});
-      return ctx.store.snapshot(providers, modelsPayload);
+      return ctx.store.snapshot(providers, { ...modelsPayload, ...uiFlags });
     }
     // webview 的 absorbCapabilities 从 providers 记录里取 playbooks；
     // 顶层字段同时下发，供后续消费方直接读取。
@@ -111,7 +119,7 @@ export class ChatService {
       typeof providers === 'object' && providers !== null && !Array.isArray(providers)
         ? { ...(providers as Record<string, unknown>), playbooks }
         : providers;
-    return ctx.store.snapshot(providersWithPlaybooks, { playbooks, ...modelsPayload });
+    return ctx.store.snapshot(providersWithPlaybooks, { playbooks, ...modelsPayload, ...uiFlags });
   }
 
   chatCapabilitiesPayload(): Record<string, unknown> {
@@ -254,6 +262,13 @@ export class ChatService {
     if (id === HANDOFF_NEW_SESSION_ACTION.id) {
       return this.startHandoffSession(fromSessionId ?? this.ctx.store.activeSessionId);
     }
+    if (id === INCIDENT_APPEND_YES_ID) {
+      const result = confirmAppendIncident(this.ctx, fromSessionId);
+      return { ok: result.ok };
+    }
+    if (id === INCIDENT_APPEND_NO_ID) {
+      return skipAppendIncident(this.ctx, fromSessionId);
+    }
     return { ok: true };
   }
 
@@ -332,6 +347,15 @@ export class ChatService {
       title: s.title,
       createdAt: s.createdAt
     }));
+  }
+
+  /** chat hydrate 的 UI 开关：ui.showThinking 默认 true。 */
+  private uiHydrateFlags(): Pick<HydrateEvt, 'showThinking'> {
+    return {
+      showThinking: vscode.workspace
+        .getConfiguration('atOpsAgent')
+        .get<boolean>('ui.showThinking', true)
+    };
   }
 
   private updateRunningContext(): void {
@@ -429,6 +453,18 @@ export class ChatService {
           visibleTools: e.visibleTools
         });
         if (e.evidenceNote) appendEvidenceNote(ctx, sessionId, e.evidenceNote);
+        const terminal = new Set(['ok', 'degraded', 'failed', 'aborted']);
+        const eventKind = terminal.has(e.status) ? 'end' : 'spawn';
+        ctx.emitDuty?.('tool_decision', sessionId, {
+          toolName: 'ops_dispatch_subagent',
+          block: false,
+          subagent: {
+            taskId: e.taskId,
+            status: e.status,
+            event: eventKind,
+            ...(e.role !== undefined ? { role: e.role } : {})
+          }
+        });
       },
       // pi 会话无法追加新 ToolDefinition：目录需要重建时等该席 idle 释放，
       // 下一次 prompt 以最新工具目录 + resumeSessionFile 续接重建。
@@ -443,6 +479,9 @@ export class ChatService {
         },
         advance: (stage?: string) => ctx.playbooks.advancePlaybook(stage, sessionId),
         close: () => ctx.playbooks.closePlaybook(sessionId)
+      },
+      get payloadCaps() {
+        return ctx.playbooks.payloadCapsOf(sessionId);
       }
     } as OpsRuntimeHandlers;
     (
@@ -450,6 +489,7 @@ export class ChatService {
         writeOpsDoc: (req: WriteOpsDocRequest) => ReturnType<typeof writeOpsDocOnHost>;
       }
     ).writeOpsDoc = (req) => writeOpsDocOnHost(ctx, req);
+    handlers.memoryDir = () => memoryDirOf(ctx);
     // per-role 模型映射（settings.json roleModels；C 提供 UI）。
     const roleModels = normalizeRoleModels((await readAgentSettings(ctx.agentDir)).roleModels);
     const resumeSessionFile = ctx.store.sessionFileOf(sessionId);

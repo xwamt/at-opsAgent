@@ -15,7 +15,10 @@
   "cmd.rejectChange": "Reject",
   "cmd.abort": "AT Ops Agent: Stop",
   "cmd.exportReport": "AT Ops Agent: Export Session Report",
+  "cmd.exportAudit": "AT Ops Agent: Export Audit JSONL",
   "cmd.saveOpsDoc": "AT Ops Agent: Save as Ops Document",
+  "cmd.setImWebhookSecret": "AT Ops Agent: Set IM Webhook Signing Secret",
+  "cmd.editEnvironment": "AT Ops Agent: Edit Environment Memory",
   "walkthrough.title": "Get Started with AT Ops Agent",
   "walkthrough.description": "Configure a model, install capability plugins, and run your first playbook.",
   "walkthrough.step.configureModel.title": "Configure a model",
@@ -27,6 +30,7 @@
   "config.discovery.mode": "When to use tool discovery (search-then-load) instead of exposing every tool to the model: 'auto' switches on when the tool count exceeds the threshold, 'always' forces it on, 'off' disables it.",
   "config.discovery.threshold": "Tool count above which discovery mode kicks in when 'atOpsAgent.discovery.mode' is 'auto'.",
   "config.plugins.autoEnableNew": "Automatically enable newly discovered capability plugins without asking.",
+  "config.policy.floor": "Organization-managed lower bound for in-session approval (same values as approval.sessionRequiredFor). The effective scope is the stricter of this floor and the user setting. Default write-exec.",
   "config.approval.sessionRequiredFor": "Which risk levels require an in-chat session approval before a tool runs: write and exec operations, exec only, or never (plugin-side approvals still apply).",
   "config.approval.dedupePluginModal": "Skip the capability plugin's own confirmation modal when the session approval already covers the same command set (uses HMAC approval tokens).",
   "config.approval.sessionReadAllowlist": "Tool name prefixes treated as read-only for this machine; matching tools bypass session approval. Example: [\"kb.\", \"metrics.query\"].",
@@ -38,5 +42,8 @@
   "config.sessions.maxParallel": "Maximum number of chat sessions that may run agent loops concurrently. 1 keeps a single active run; 2 allows starting a prompt in another session while the first is busy.",
   "config.streaming.batchMs": "Milliseconds to batch streaming deltas before pushing them to the chat view (0 disables batching).",
   "config.inspection.intervalMinutes": "If greater than 0, remind every N minutes to run the inspection playbook (pb.inspection). 0 disables the reminder.",
-  "config.im.webhookUrl": "Optional IM webhook URL (e.g. WeCom/DingTalk/Slack incoming webhook). When set, pending approval requests post a JSON summary there. No secrets are sent."
+  "config.im.webhookUrl": "Optional IM webhook URL (e.g. WeCom/DingTalk/Slack incoming webhook). When set, pending approval requests POST a signed JSON summary with a vscode:// deep link back to the IDE chat. Signing secret lives in SecretStorage (command: Set IM Webhook Signing Secret), not in settings. Empty secret still POSTs unsigned. This is outbound-only — there is no approve callback.",
+  "config.ui.showThinking": "Show a collapsed thinking-duration indicator in chat (chain-of-thought body stays hidden). Duty default is on; Conclusion/Focus mode hides it.",
+  "config.otel.endpoint": "OTLP HTTP collector URL. Empty disables export (default: no network). Only http(s) to RFC1918 or localhost is allowed; public SaaS endpoints are rejected.",
+  "config.otel.protocol": "OTLP transport. Currently only http/protobuf is listed; the host posts OTLP HTTP JSON logs to the collector."
 }

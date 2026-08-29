@@ -189,6 +189,17 @@ function onKeydown(event: KeyboardEvent): void {
           >
             <span class="codicon codicon-book" aria-hidden="true"></span>
           </button>
+          <button
+            type="button"
+            class="composer__tool"
+            :class="{ 'composer__tool--on': store.conclusionMode }"
+            :aria-pressed="store.conclusionMode"
+            :aria-label="t('conclusionModeAria')"
+            :title="t('conclusionMode')"
+            @click="store.toggleConclusionMode()"
+          >
+            <span class="codicon codicon-filter" aria-hidden="true"></span>
+          </button>
           <!-- context 水位细条（P1-4）：hover 显示 token 详情 -->
           <div
             v-if="contextPct !== null"
@@ -395,6 +406,11 @@ function onKeydown(event: KeyboardEvent): void {
 .composer__tool:focus-visible {
   outline: 1px solid var(--ops-accent);
   outline-offset: 1px;
+}
+
+.composer__tool--on {
+  color: var(--ops-accent);
+  background: var(--ops-toolbar-hover-bg);
 }
 
 /* context 水位细条：4px 高，accent 填充 */

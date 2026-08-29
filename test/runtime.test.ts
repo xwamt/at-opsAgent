@@ -46,6 +46,7 @@ import {
   CREDENTIAL_NOTICE,
   DEFAULT_SUBAGENT_BUDGET,
   DISPATCH_TOOL_NAME,
+  CHECK_SUBAGENT_TOOL_NAME,
   FALLBACK_INIT_FAILURE_PREFIX,
   FALLBACK_NOTICE,
   MAIN_ORIGIN,
@@ -69,6 +70,7 @@ import {
   createFallbackRuntime,
   createOpsRuntime,
   createReadSkillTool,
+  createCheckSubagentTool,
   createSubagentManager,
   createWorkspaceReadTool,
   defaultBundledSkillsDir,
@@ -88,6 +90,7 @@ import {
   resolveSubagentModel,
   runPromptWithRecovery,
   resolveUnderRoot,
+  runCheckSubagentToolCall,
   runDispatchToolCall,
   skillRootsFor,
   truncateForModel,
@@ -365,12 +368,14 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('ops_advance_stage');
     expect(prompt).toContain('ops_close_playbook');
     expect(prompt).toContain('ops_dispatch_subagent');
+    expect(prompt).toContain('ops_check_subagent');
     expect(prompt).toContain('自动启动');
     expect(prompt).toContain('只是候选建议');
     // P1-6：派发是阻塞式的，支持 tasks[] 并行
     expect(L2_TOOL_DISCOVERY).toContain('阻塞');
     expect(L2_TOOL_DISCOVERY).toContain('tasks[]');
     expect(L2_TOOL_DISCOVERY).toContain('并行 tasks[] 必须给同一 timeWindow');
+    expect(L2_TOOL_DISCOVERY).toContain('waitMs');
   });
 
   it('P0 §11：L3 不要求模型计算 SHA-256——哈希与 approvalToken 由 host 计算/附上', () => {
@@ -888,6 +893,40 @@ describe('executeBusinessTool', () => {
     await executeBusinessTool(handlers, bizDescriptor, {}, undefined, agentDir, undefined, subOrigin);
     expect(seenOrigins[1]).toEqual(subOrigin);
   });
+
+  it('loki 类工具缺 limit 时注入 payloadCaps.lokiLimit ≤100（闸门与 invoke 看到 capped args）', async () => {
+    const loki = descriptor({ name: 'grafana_query_loki', pluginId: 'at.grafana' });
+    const hub = makeFakeHub();
+    const seenArgs: Record<string, unknown>[] = [];
+    const handlers: OpsRuntimeHandlers = {
+      hub,
+      payloadCaps: { lokiLimit: 100, maxOutputBytes: 65536 },
+      beforeToolCall: async (ctx) => {
+        seenArgs.push(ctx.args);
+        return { block: false };
+      }
+    };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+    const original = { query: '{app="web"} |= "error"' };
+    await executeBusinessTool(handlers, loki, original, undefined, agentDir);
+    expect(original).not.toHaveProperty('limit');
+    expect(seenArgs[0]).toMatchObject({ query: '{app="web"} |= "error"', limit: 100 });
+    expect(hub.invokeCalls).toHaveLength(1);
+    const invokedLimit = hub.invokeCalls[0]?.arguments?.limit;
+    expect(invokedLimit).toBe(100);
+    expect(typeof invokedLimit === 'number' && invokedLimit <= 100).toBe(true);
+  });
+
+  it('无 payloadCaps 或缺 limit 规则时不改 args', async () => {
+    const loki = descriptor({ name: 'grafana_query_loki', pluginId: 'at.grafana' });
+    const hub = makeFakeHub();
+    const handlers: OpsRuntimeHandlers = { hub };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+    const args = { query: '{app="web"}' };
+    await executeBusinessTool(handlers, loki, args, undefined, agentDir);
+    expect(hub.invokeCalls[0]?.arguments).toEqual(args);
+    expect(hub.invokeCalls[0]?.arguments).not.toHaveProperty('limit');
+  });
 });
 
 // ── P0-D：applyToolGate（会话内审批） ────────────────────────────────────
@@ -1017,6 +1056,7 @@ describe('composeSubagentPrompt', () => {
       visibleTools: ['grafana_query_prometheus', 'loki_query_range']
     });
     expect(prompt).toContain('禁止调用 ops_dispatch_subagent');
+    expect(prompt).toContain('ops_check_subagent');
     expect(prompt).toContain('ops_start_playbook');
     expect(prompt).toContain('不做工具发现与选择');
     expect(prompt).toContain('可见工具：grafana_query_prometheus,loki_query_range');
@@ -1208,6 +1248,19 @@ describe('buildTaskSpec', () => {
 
     const params = dispatchToolSpec.parameters as { properties: Record<string, { additionalProperties?: boolean }> };
     expect(params.properties.inputs?.additionalProperties).toBe(false);
+  });
+
+  it('waitMs 不写入 TaskSpec；payloadCaps 不从 dispatch 输入进入 spec', () => {
+    const built = buildTaskSpec({
+      role: 'investigator',
+      goal: 'x',
+      riskCeiling: 'read',
+      waitMs: 50
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(JSON.stringify(built.spec)).not.toContain('waitMs');
+    expect(built.spec.toolPolicy.payloadCaps).toBeUndefined();
   });
 });
 
@@ -1849,6 +1902,89 @@ describe('runDispatchToolCall', () => {
     expect(parsed.tasks[0]?.evidenceNote?.conflicts).toContain('note-b');
     expect(parsed.tasks[1]?.evidenceNote?.conflicts).toContain('note-a');
   });
+
+  it('waitMs:50 + 慢 runner（模拟 10s）→ 工具结果 running；ops_check_subagent 等到 ok', async () => {
+    let resolveRun!: (outcome: SubagentRunOutcome) => void;
+    const manager = createSubagentManager({
+      runner: () =>
+        new Promise<SubagentRunOutcome>((resolve) => {
+          resolveRun = resolve;
+        })
+    });
+    const started = Date.now();
+    const raw = await runDispatchToolCall(
+      {
+        role: 'investigator',
+        goal: '慢查',
+        riskCeiling: 'read',
+        waitMs: 50,
+        taskId: 'slow-10s'
+      },
+      manager
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const early = JSON.parse(raw) as DispatchToolTaskResult;
+    expect(early).toMatchObject({ status: 'running', taskId: 'slow-10s' });
+    expect(manager.statusOf('slow-10s')).toBe('running');
+
+    resolveRun({
+      finalText:
+        '```json\n{"contract":"evidence-note@1","taskId":"slow-10s","confidence":"confirmed","summary":"慢查完成"}\n```'
+    });
+
+    const harvested = JSON.parse(
+      await runCheckSubagentToolCall({ taskId: 'slow-10s' }, manager)
+    ) as DispatchToolTaskResult;
+    expect(harvested.status).toBe('ok');
+    expect(harvested.taskId).toBe('slow-10s');
+    expect(harvested.summary).toContain('慢查完成');
+  });
+
+  it('省略 waitMs 仍阻塞到终态（与现网一致）', async () => {
+    const manager = createSubagentManager({
+      runner: async (spec) => {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 80);
+        });
+        return {
+          finalText:
+            '```json\n{"contract":"evidence-note@1","taskId":"' +
+            spec.taskId +
+            '","confidence":"confirmed","summary":"阻塞完成"}\n```'
+        };
+      }
+    });
+    const started = Date.now();
+    const parsed = JSON.parse(
+      await runDispatchToolCall({ role: 'investigator', goal: '阻塞', riskCeiling: 'read' }, manager)
+    ) as DispatchToolTaskResult;
+    expect(Date.now() - started).toBeGreaterThanOrEqual(70);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.summary).toContain('阻塞完成');
+  });
+
+  it('waitMs 期间已终态 → 返回 ok 而非 running', async () => {
+    const manager = makeOkManager();
+    const parsed = JSON.parse(
+      await runDispatchToolCall(
+        { role: 'investigator', goal: '快', riskCeiling: 'read', waitMs: 5_000 },
+        manager
+      )
+    ) as DispatchToolTaskResult;
+    expect(parsed.status).toBe('ok');
+    expect(parsed.summary).toContain('快');
+  });
+
+  it('ops_check_subagent 未知 taskId / 空 id → 结构化错误，不 throw', async () => {
+    const manager = makeOkManager();
+    const missing = JSON.parse(
+      await runCheckSubagentToolCall({ taskId: 'no-such' }, manager)
+    ) as { ok: boolean; error: string };
+    expect(missing.ok).toBe(false);
+    expect(missing.error).toContain('未知');
+    const empty = JSON.parse(await runCheckSubagentToolCall({}, manager)) as { ok: boolean };
+    expect(empty.ok).toBe(false);
+  });
 });
 
 // ── ops_dispatch_subagent 工具面 ─────────────────────────────────────────
@@ -1866,10 +2002,15 @@ describe('ops_dispatch_subagent 契约', () => {
     // 单任务字段与 tasks[] 二选一，因此顶层不再有 required（由 runDispatchToolCall 校验）
     expect(params.required).toBeUndefined();
     expect(Object.keys(params.properties)).toEqual(
-      expect.arrayContaining(['role', 'goal', 'riskCeiling', 'approvalToken', 'tasks', 'inputs'])
+      expect.arrayContaining(['role', 'goal', 'riskCeiling', 'approvalToken', 'tasks', 'inputs', 'waitMs'])
     );
-    const tasks = params.properties.tasks as { items: { required: string[] } };
+    expect(params.properties).not.toHaveProperty('payloadCaps');
+    const tasks = params.properties.tasks as {
+      items: { required: string[]; properties: Record<string, unknown> };
+    };
     expect(tasks.items.required).toEqual(['role', 'goal', 'riskCeiling']);
+    expect(tasks.items.properties).toHaveProperty('waitMs');
+    expect(tasks.items.properties).not.toHaveProperty('payloadCaps');
     // 阻塞式（P1-6）：描述必须说明工具结果即终态摘要
     expect(dispatchToolSpec.description).toContain('阻塞');
     // docs/12：描述必须讲清 allowTools 点名即注入、investigator 可点名
@@ -1879,6 +2020,28 @@ describe('ops_dispatch_subagent 契约', () => {
     const allowToolsProp = params.properties.allowTools as { description: string };
     expect(allowToolsProp.description).toContain('注入');
     expect(discoveryToolNames).not.toContain(DISPATCH_TOOL_NAME);
+    expect(discoveryToolNames).not.toContain(CHECK_SUBAGENT_TOOL_NAME);
+    expect(isBusinessToolName(CHECK_SUBAGENT_TOOL_NAME)).toBe(false);
+    expect(isBusinessToolName(DISPATCH_TOOL_NAME)).toBe(false);
+  });
+
+  it('ops_check_subagent 只读 schema：仅 taskId，无 payloadCaps', () => {
+    const dummy = createSubagentManager({
+      runner: async () => ({ finalText: '' })
+    });
+    const spec = createCheckSubagentTool(dummy);
+    expect(spec.name).toBe(CHECK_SUBAGENT_TOOL_NAME);
+    expect(spec.risk).toBe('read');
+    const params = spec.parameters as {
+      required?: string[];
+      properties: Record<string, unknown>;
+      additionalProperties?: boolean;
+    };
+    expect(params.required).toEqual(['taskId']);
+    expect(Object.keys(params.properties)).toEqual(['taskId']);
+    expect(params.properties).not.toHaveProperty('payloadCaps');
+    expect(params.additionalProperties).toBe(false);
+    expect(spec.description).toContain('只读');
   });
 
   it('FallbackRuntime.dispatchSubagent 不抛错，返回不可用说明', async () => {

@@ -14,8 +14,10 @@ import * as vscode from 'vscode';
 import type { ApprovalRespondReq } from '../../protocol';
 import type { PolicyContext, ToolCallOrigin } from '../../core';
 import {
+  effectiveSessionRequiredFor,
   hashCommandSet,
   issueApprovalToken,
+  parseSessionRequiredFor,
   previewRemoteCommandPolicySync,
   verifyApprovalToken,
   type ApprovalRef
@@ -119,23 +121,57 @@ export class ApprovalService {
           ? { riskCeiling: origin.riskCeiling as PolicyContext['riskCeiling'] }
           : {}),
         approval: this.approvalForOrigin(sessionId, origin),
-        sessionRequiredFor: config.get<'write-exec' | 'exec-only' | 'never'>(
-          'approval.sessionRequiredFor',
-          'write-exec'
+        sessionRequiredFor: effectiveSessionRequiredFor(
+          parseSessionRequiredFor(config.get('policy.floor'), 'write-exec'),
+          parseSessionRequiredFor(config.get('approval.sessionRequiredFor'), 'write-exec')
         ),
         selectCountThisTask: ctx.playbooks.selectCount(sessionId),
         sessionReadAllowlist: this.readToolAllowlist(sessionId)
       };
       const decision = await ctx.core.evaluatePolicy(policyCtx);
+      const subagentAttr =
+        origin?.kind === 'subagent'
+          ? {
+              subagent: {
+                taskId: origin.taskId,
+                role: origin.role,
+                event: 'tool' as const
+              }
+            }
+          : {};
       if (decision.block) {
+        const reason = `${decision.code}: ${decision.reason}`;
         ctx.log(`[policy] ${toolName} 被拒: ${decision.code} ${decision.reason}`);
-        return { block: true, reason: `${decision.code}: ${decision.reason}` };
+        ctx.emitDuty?.('policy_block', sessionId, {
+          toolName,
+          code: decision.code,
+          reason: decision.reason,
+          risk,
+          ...subagentAttr
+        });
+        ctx.emitDuty?.('tool_decision', sessionId, {
+          toolName,
+          block: true,
+          needSessionApproval: false,
+          risk,
+          reason,
+          ...subagentAttr
+        });
+        return { block: true, reason };
       }
       if (SELECT_TOOL_NAMES.has(toolName)) {
         ctx.playbooks.bumpSelectCount(sessionId);
       }
       if (decision.needSessionApproval) {
         // 会话审批闭环：runtime 在同一 execute 内 await requestApproval。
+        ctx.emitDuty?.('tool_decision', sessionId, {
+          toolName,
+          block: false,
+          needSessionApproval: true,
+          risk: risk === 'exec' ? 'exec' : 'write',
+          ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+          ...subagentAttr
+        });
         return {
           block: false,
           needSessionApproval: true,
@@ -143,11 +179,26 @@ export class ApprovalService {
           reason: decision.reason
         };
       }
+      ctx.emitDuty?.('tool_decision', sessionId, {
+        toolName,
+        block: false,
+        needSessionApproval: false,
+        risk,
+        ...subagentAttr
+      });
       return { block: false };
     } catch (err) {
       // 闸门自身出错必须 fail-closed。
       ctx.log(`[policy] evaluate 异常，fail-closed: ${describeError(err)}`);
-      return { block: true, reason: `策略闸异常，已按拒绝处理（${describeError(err)}）` };
+      const reason = `策略闸异常，已按拒绝处理（${describeError(err)}）`;
+      ctx.emitDuty?.('policy_block', sessionId, { toolName, reason, failClosed: true });
+      ctx.emitDuty?.('tool_decision', sessionId, {
+        toolName,
+        block: true,
+        needSessionApproval: false,
+        reason
+      });
+      return { block: true, reason };
     }
   }
 
@@ -324,6 +375,14 @@ export class ApprovalService {
     ctx.store.appendItem(item, sessionId);
     ctx.broadcastToSession(sessionId, 'transcript/append', { item });
     ctx.broadcastToSession(sessionId, 'approval/request', view);
+    ctx.emitDuty?.('approval_request', sessionId, {
+      briefId: brief.briefId,
+      risk: brief.risk,
+      runId: brief.runId,
+      ...(typeof brief.commandSetSha256 === 'string'
+        ? { commandSetSha256: brief.commandSetSha256 }
+        : {})
+    });
     postApprovalWebhook(ctx, view, sessionId);
     if (isOpsWriteOpsDocCommandSet(brief.commandSet)) {
       void tryPreviewOpsDocDiff(brief.commandSet, ctx);
@@ -411,6 +470,10 @@ export class ApprovalService {
       sessionId
     );
     this.patchApprovalItem(req.briefId, sessionId, req.decision);
+    ctx.emitDuty?.('approval_decision', sessionId, {
+      briefId: req.briefId,
+      decision: req.decision
+    });
 
     const hadWaiter = this.resolveApprovalWaiter(req.briefId, req.decision);
     if (!hadWaiter && req.decision === 'approved') {
@@ -480,6 +543,11 @@ export class ApprovalService {
       sessionId
     );
     this.patchApprovalItem(briefId, sessionId, decision);
+    this.ctx.emitDuty?.('approval_decision', sessionId, {
+      briefId,
+      decision,
+      reason
+    });
     if (reason === 'timeout') {
       this.ctx.log(`[approval] 审批超时 briefId=${briefId} session=${sessionId}`);
       this.ctx.emitAssistantNotice('审批已超时，已按拒绝处理', sessionId);

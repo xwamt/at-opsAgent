@@ -254,6 +254,9 @@ export interface RuntimeHandlers {
     markdown: string;
     overwritePath?: string;
   }): Promise<{ ok: true; path: string } | { ok: false; error: string }>;
+  /** 长期记忆目录（ops_recall 用 node:fs 读）。 */
+  memoryDir?: () => string;
+  recallMemory?: (query: string) => Promise<string>;
 }
 
 export interface RuntimeLike {

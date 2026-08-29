@@ -1,0 +1,15 @@
+{
+  "_comment": "Example only. Copy into ~/.at-series/agent/models.json — do not merge into the default template. Replace baseUrl with your OpenAI-compatible gateway when air-gapped. API key stays in VS Code SecretStorage; never put a real key in this file.",
+  "providers": {
+    "kimi": {
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "api": "openai-completions",
+      "apiKey": "${secret:atOpsAgent.apiKey.kimi}",
+      "headers": {},
+      "models": [
+        { "id": "kimi-k2-0711-preview", "name": "Kimi K2", "reasoning": false },
+        { "id": "moonshot-v1-auto", "name": "Moonshot Auto", "reasoning": false }
+      ]
+    }
+  }
+}
