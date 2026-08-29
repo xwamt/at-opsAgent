@@ -29,6 +29,7 @@ import { SessionStore } from '../src/host/sessionStore';
 import {
   createOrchestrator,
   loadPlaybooks,
+  STAGE_TRANSITIONS,
   type OrchestratorEvent
 } from '../src/orchestrator';
 import { listBridgeFixturePluginIds, loadBridgeFixture } from './fixtures/bridges';
@@ -226,4 +227,53 @@ describe('playbook eval · PlaybookService.closePlaybook（closeRun 单真源）
     expect(rejected.allowedNext).toContain('synthesizing');
   });
 });
+
+describe('playbook eval · 8 条链路 close 路径（无 LLM）', () => {
+  const playbooks = loadPlaybooks(PLAYBOOK_ROOT);
+
+  it('skills/playbooks 恰好覆盖 8 条 yaml', () => {
+    expect(playbooks.map((pb) => pb.id).sort()).toEqual(
+      [
+        'pb.config-change',
+        'pb.db',
+        'pb.host-emergency',
+        'pb.incident',
+        'pb.inspection',
+        'pb.metric-anomaly',
+        'pb.release',
+        'pb.security-triage'
+      ].sort()
+    );
+  });
+
+  it.each(playbooks.map((pb) => [pb.id, pb] as const))(
+    '%s：yaml 阶段均在 STAGE_TRANSITIONS；startPlaybook → closeRun → closed',
+    (id, pb) => {
+      for (const stage of pb.stages) {
+        expect(STAGE_TRANSITIONS[stage.id]).toBeDefined();
+      }
+      const orchestrator = createOrchestrator({ playbooks });
+      const run = orchestrator.startPlaybook(id, `sess-eval-${id}`);
+      expect(orchestrator.closeRun(run).stage).toBe('closed');
+      expect(orchestrator.getRun(run.id)?.stage).toBe('closed');
+    }
+  );
+
+  it('pb.security-triage 的 legalNext 不含 executing', () => {
+    const orchestrator = createOrchestrator({ playbooks });
+    const run = orchestrator.startPlaybook('pb.security-triage', 'sess-sec');
+    const walk: Array<'selecting' | 'investigating' | 'synthesizing' | 'reporting'> = [
+      'selecting',
+      'investigating',
+      'synthesizing',
+      'reporting'
+    ];
+    expect(orchestrator.legalNextStages(run)).not.toContain('executing');
+    for (const stage of walk) {
+      orchestrator.advanceTo(run, stage);
+      expect(orchestrator.legalNextStages(run)).not.toContain('executing');
+    }
+  });
+});
+
 

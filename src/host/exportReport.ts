@@ -143,22 +143,60 @@ export function buildOpsReportMarkdown(input: ExportReportInput): string {
     lines.push('');
   }
 
-  // ── 审批记录 ──────────────────────────────────────────────────────────
+  // ── 审批记录（transcript item.decision 优先于 timeline） ────────────
   lines.push('## 审批记录');
   lines.push('');
+  const approvalItems = input.items.filter(
+    (i): i is Extract<TranscriptItem, { kind: 'approval' }> => i.kind === 'approval'
+  );
   const approvalEvents = input.timeline.filter((e) => e.kind === 'approval');
   const pending = input.pendingBriefs ?? [];
-  if (approvalEvents.length === 0 && pending.length === 0) {
+
+  function decisionLabel(decision: unknown): string {
+    if (decision === 'approved') return '✅ 已批准';
+    if (decision === 'timeout') return '⏱ 已超时';
+    if (decision === 'pending') return '⏳ 未决';
+    return '⛔ 已拒绝';
+  }
+
+  type ApprovalRow = { briefId: string; decision: string; ts?: number };
+  const byBrief = new Map<string, ApprovalRow>();
+  for (const event of approvalEvents) {
+    const briefId = String(event.briefId ?? '');
+    if (!briefId) continue;
+    byBrief.set(briefId, {
+      briefId,
+      decision: String(event.decision ?? 'rejected'),
+      ts: event.ts
+    });
+  }
+  for (const item of approvalItems) {
+    if (!item.decision) continue;
+    const prev = byBrief.get(item.briefId);
+    byBrief.set(item.briefId, {
+      briefId: item.briefId,
+      decision: item.decision,
+      ts: typeof item.ts === 'number' ? item.ts : prev?.ts
+    });
+  }
+
+  const resolved = [...byBrief.values()].filter((row) => row.decision !== 'pending');
+  const pendingFromItems = [...byBrief.values()].filter((row) => row.decision === 'pending');
+  if (resolved.length === 0 && pending.length === 0 && pendingFromItems.length === 0) {
     lines.push('（本会话没有审批事件）');
   } else {
-    for (const event of approvalEvents) {
-      const decision = event.decision === 'approved' ? '✅ 已批准' : '⛔ 已拒绝';
-      lines.push(`- ${fmtTs(event.ts)} · 简报 \`${String(event.briefId ?? '')}\` · ${decision}`);
+    for (const row of resolved) {
+      const stamp = typeof row.ts === 'number' ? `${fmtTs(row.ts)} · ` : '';
+      lines.push(`- ${stamp}简报 \`${row.briefId}\` · ${decisionLabel(row.decision)}`);
     }
     for (const brief of pending) {
       lines.push(
         `- ⏳ 未决 · 简报 \`${brief.id}\` · ${riskLabel(brief.risk)} · ${truncate(brief.targetLabel, 120)}`
       );
+    }
+    for (const row of pendingFromItems) {
+      if (pending.some((b) => b.id === row.briefId)) continue;
+      lines.push(`- ⏳ 未决 · 简报 \`${row.briefId}\``);
     }
   }
   lines.push('');

@@ -8,7 +8,13 @@
  * - guidedManual/complete：人工步骤完成后按迁移表推进。
  */
 import * as vscode from 'vscode';
-import { buildGuidedManualNotice, guidedManualCommand, hasGuidedManualStep } from '../guidedManual';
+import { randomUUID } from 'node:crypto';
+import {
+  buildGuidedManualNotice,
+  GUIDED_MANUAL_NOTICE_ACTIONS,
+  guidedManualCommand,
+  hasGuidedManualStep
+} from '../guidedManual';
 import { describeError, type HostContext } from './context';
 import type { PlaybookService } from './playbookService';
 
@@ -37,7 +43,15 @@ export class GuidedManualFlow {
     const notice = buildGuidedManualNotice(playbookId, meta);
     if (!notice) return;
     this.noticedRuns.add(runId);
-    this.ctx.emitAssistantNotice(notice, sessionId);
+    const item = {
+      kind: 'notice' as const,
+      id: randomUUID(),
+      variant: 'info' as const,
+      text: notice,
+      actions: GUIDED_MANUAL_NOTICE_ACTIONS
+    };
+    this.ctx.store.appendItem(item, sessionId);
+    this.ctx.broadcastToSession(sessionId, 'transcript/append', { item });
   }
 
   /**

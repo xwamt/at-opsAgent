@@ -3,9 +3,11 @@
  * - inject()：阶段迁移时整体替换 L4，同时叠上 L-env——L4 注入绝不擦掉现场层；
  * - syncLivePrompt()：每条用户 prompt 前由 ChatService 调用，用 hub 实时快照
  *   合成 L-env；若该会话有进行中的 playbook 再叠当前阶段 L4。
- * 两者都经 core.buildSystemPrompt 与 L0–L3 合成后 setSystemPrompt——host
+ * - applyLayers()：可选 memLayer（compaction 后的 L-mem digest），叠在
+ *   L-env 之后、L4 之前；未传时沿用本席上次 mem。
+ * 三者都经 core.buildSystemPrompt 与 L0–L3 合成后 setSystemPrompt——host
  * 绝不用裸层覆盖红线层。按会话席位独立注入，每席带 seq 竞态防护
- * （只应用最后一次请求的层）；内容未变（playbook 键 + L-env 文本相同）
+ * （只应用最后一次请求的层）；内容未变（playbook 键 + L-env + mem 文本相同）
  * 时跳过重复 setSystemPrompt。
  */
 import { formatEnvSnapshot } from '../../prompts/env-snapshot';
@@ -18,6 +20,8 @@ interface LayerState {
   seq: number;
   lastKey?: string;
   lastRuntime?: RuntimeLike;
+  /** compaction / 交接回灌的 L-mem；sync/inject 未传 memLayer 时沿用。 */
+  lastMemLayer?: string;
 }
 
 /**
@@ -72,7 +76,7 @@ export class StageLayerInjector {
   async syncLivePrompt(sessionId: string): Promise<void> {
     const run = this.ctx.playbooks.runOf(sessionId);
     if (!run) {
-      await this.applyLayers(sessionId, undefined);
+      await this.applyLayers(sessionId);
       return;
     }
     const playbookId = this.ctx.store.playbookOf(sessionId)?.id ?? run.playbookId;
@@ -80,25 +84,42 @@ export class StageLayerInjector {
     await this.applyLayers(sessionId, { playbookId, stage });
   }
 
-  private async applyLayers(
+  /**
+   * 合成并注入 L-env（+ 可选 L-mem + 可选 L4）。
+   * memLayer 写入本席状态后，后续 inject/syncLivePrompt 未再传入时仍保留。
+   * runtime 尚未就绪时也先记下 mem，等第一次 sync 再生效。
+   */
+  async applyLayers(
     sessionId: string,
-    playbook: { playbookId: string; stage: string } | undefined
+    opts?: { playbookId?: string; stage?: string; memLayer?: string }
   ): Promise<void> {
     const ctx = this.ctx;
-    const runtime = ctx.chat.runtimeFor(sessionId);
-    if (!runtime?.setSystemPrompt) return;
     let state = this.states.get(sessionId);
     if (!state) {
       state = { seq: 0 };
       this.states.set(sessionId, state);
     }
+    if (opts?.memLayer !== undefined) {
+      const trimmed = opts.memLayer.trim();
+      state.lastMemLayer = trimmed.length > 0 ? trimmed : undefined;
+    }
+    const memLayer = state.lastMemLayer;
+    const playbook =
+      typeof opts?.playbookId === 'string' &&
+      opts.playbookId.length > 0 &&
+      typeof opts.stage === 'string'
+        ? { playbookId: opts.playbookId, stage: opts.stage }
+        : undefined;
+
+    const runtime = ctx.chat.runtimeFor(sessionId);
+    if (!runtime?.setSystemPrompt) return;
     const seq = ++state.seq;
     try {
       let envLayer: string | undefined;
       try {
         envLayer = buildEnvLayer(ctx);
       } catch (err) {
-        // L-env 合成失败降级为无现场层（仍注入 L4），不阻塞对话。
+        // L-env 合成失败降级为无现场层（仍注入 L4 / L-mem），不阻塞对话。
         ctx.log(`[runtime] L-env 合成失败: ${describeError(err)}`);
       }
       let playbookLayer: string | undefined;
@@ -108,21 +129,21 @@ export class StageLayerInjector {
       }
       if (seq !== state.seq || ctx.chat.runtimeFor(sessionId) !== runtime) return; // 已有更新的注入
       const playbookKey = playbook ? `${playbook.playbookId}:${playbook.stage}` : '';
-      const key = `${playbookKey}\u0000${envLayer ?? ''}`;
+      const key = `${playbookKey}\u0000${envLayer ?? ''}\u0000${memLayer ?? ''}`;
       if (state.lastKey === key && state.lastRuntime === runtime) return; // 内容未变
       runtime.setSystemPrompt(
         ctx.core.buildSystemPrompt({
           ...(playbookLayer !== undefined ? { playbookLayer } : {}),
-          ...(envLayer !== undefined ? { envLayer } : {})
+          ...(envLayer !== undefined ? { envLayer } : {}),
+          ...(memLayer !== undefined ? { memLayer } : {})
         })
       );
       state.lastKey = key;
       state.lastRuntime = runtime;
-      ctx.log(
-        playbook
-          ? `[runtime] 已注入 L-env + L4（${playbook.playbookId}/${playbook.stage}）`
-          : '[runtime] 已注入 L-env'
-      );
+      const bits = ['L-env'];
+      if (memLayer) bits.push('L-mem');
+      if (playbook) bits.push(`L4（${playbook.playbookId}/${playbook.stage}）`);
+      ctx.log(`[runtime] 已注入 ${bits.join(' + ')}`);
     } catch (err) {
       ctx.log(`[runtime] 系统提示词层注入失败: ${describeError(err)}`);
     }

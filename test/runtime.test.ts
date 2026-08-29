@@ -16,6 +16,7 @@ import type {
 import { Emitter } from '../src/protocol';
 import type { TaskSpec } from '../src/orchestrator';
 import {
+  L0_CORE,
   L0_IDENTITY,
   L1_SAFETY_REDLINES,
   L2_TOOL_DISCOVERY,
@@ -84,6 +85,7 @@ import {
   readSkillFile,
   readWorkspaceFile,
   recoverFromPromptError,
+  resolveSubagentModel,
   runPromptWithRecovery,
   resolveUnderRoot,
   runDispatchToolCall,
@@ -368,6 +370,7 @@ describe('buildSystemPrompt', () => {
     // P1-6：派发是阻塞式的，支持 tasks[] 并行
     expect(L2_TOOL_DISCOVERY).toContain('阻塞');
     expect(L2_TOOL_DISCOVERY).toContain('tasks[]');
+    expect(L2_TOOL_DISCOVERY).toContain('并行 tasks[] 必须给同一 timeWindow');
   });
 
   it('P0 §11：L3 不要求模型计算 SHA-256——哈希与 approvalToken 由 host 计算/附上', () => {
@@ -407,12 +410,14 @@ describe('prompts · client-first (docs/12)', () => {
     expect(L2_TOOL_DISCOVERY).toContain('playbooks/daily-inspection/SKILL.md');
   });
 
-  it('composeSystemPrompt() 组装 L0+L1+L2+L3 四层', () => {
+  it('composeSystemPrompt() 组装 CORE+BOOTSTRAP+L1+L2+L3；仍含 select 引导', () => {
     const prompt = composeSystemPrompt();
     expect(prompt).toContain(L0_IDENTITY);
+    expect(prompt).toContain(L0_CORE);
     expect(prompt).toContain(L1_SAFETY_REDLINES);
     expect(prompt).toContain(L2_TOOL_DISCOVERY);
     expect(prompt).toContain(L3_OUTPUT_FORMAT);
+    expect(prompt).toContain('ops_select_tools');
   });
 
   it('SUBAGENT_DISCIPLINE：一等工具名，禁止伪造 XML/文本 tool_call（ops_list_ssh_servers 式假名）', () => {
@@ -594,6 +599,70 @@ describe('CreateOpsRuntimeOptions.getApiKey', () => {
     expect(text).not.toContain('sk-secret-value');
     await runtime.dispose();
   }, 30_000);
+});
+
+describe('CreateOpsRuntimeOptions.roleModels', () => {
+  const stubRuntime = {
+    getModel: () => null,
+    getAvailable: async () => []
+  };
+
+  it('investigator 配置另一 id 时 mock resolveModel 看到该 id；未配置不调用', async () => {
+    const seen: Array<{ provider?: string; id?: string }> = [];
+    const fallback = { id: 'main-model', provider: 'gw' };
+    const configured = await resolveSubagentModel({
+      role: 'investigator',
+      roleModels: { investigator: { provider: 'gw', model: 'cheap-inv' } },
+      fallback,
+      modelRuntime: stubRuntime,
+      injectApiKey: async () => {},
+      resolveModel: async (_rt, pref) => {
+        seen.push(pref ?? {});
+        return { id: pref?.id, provider: pref?.provider };
+      }
+    });
+    expect(seen[0]?.id).toBe('cheap-inv');
+    expect((configured as { id: string }).id).toBe('cheap-inv');
+
+    let calls = 0;
+    const unconfigured = await resolveSubagentModel({
+      role: 'investigator',
+      fallback,
+      modelRuntime: stubRuntime,
+      injectApiKey: async () => {},
+      resolveModel: async () => {
+        calls += 1;
+        return { id: 'other' };
+      }
+    });
+    expect(calls).toBe(0);
+    expect(unconfigured).toBe(fallback);
+  });
+
+  it('resolveModel 失败时 log 并回落主模型，不抛错', async () => {
+    const fallback = { id: 'main-model', provider: 'gw' };
+    const logs: string[] = [];
+    const model = await resolveSubagentModel({
+      role: 'writer',
+      roleModels: { writer: { provider: 'gw', model: 'missing' } },
+      fallback,
+      modelRuntime: stubRuntime,
+      injectApiKey: async () => {},
+      resolveModel: async () => {
+        throw new Error('未找到模型');
+      },
+      onError: (message) => logs.push(message)
+    });
+    expect(model).toBe(fallback);
+    expect(logs[0]).toMatch(/回落主模型/);
+  });
+
+  it('类型接受 settings 形状 { provider, model }', () => {
+    const options: CreateOpsRuntimeOptions = {
+      roleModels: { investigator: { provider: 'gw', model: 'cheap' } }
+    };
+    expect(options.roleModels?.investigator?.model).toBe('cheap');
+  });
 });
 
 // ── P1：模型侧结果截断（truncateForModel / executeBusinessTool）─────────
@@ -924,27 +993,33 @@ function makeInvestigatorSpec(): TaskSpec {
 }
 
 describe('composeSubagentPrompt', () => {
-  it('L0+L1+L3\'+L5，无 L2 工具发现层', () => {
+  it('CORE+L1+L3\'+L5，无 L2 / 无主会话发现引导', () => {
     const spec = makeInvestigatorSpec();
     const prompt = composeSubagentPrompt({ role: 'investigator', spec });
-    expect(prompt).toContain(L0_IDENTITY);
-    expect(prompt).toContain(L1_SAFETY_REDLINES);
-    expect(prompt).toContain(SUBAGENT_DISCIPLINE);
-    expect(prompt).toContain(ROLE_LAYERS.investigator);
-    // 无 L2：不含发现层与其工具介绍
+    expect(prompt).toContain(L0_CORE);
     expect(prompt).not.toContain(L2_TOOL_DISCOVERY);
     expect(prompt).not.toContain('# L2');
     expect(prompt).not.toContain('ops_search_tools');
     expect(prompt).not.toContain('ops_get_tool');
+    expect(prompt).not.toContain('ops_list_providers');
+    expect(prompt).not.toContain('ops_select_tools');
+    expect(prompt).not.toContain('L-env');
+    expect(prompt).toContain('可见工具');
+    expect(prompt).toContain(L1_SAFETY_REDLINES);
+    expect(prompt).toContain(SUBAGENT_DISCIPLINE);
+    expect(prompt).toContain(ROLE_LAYERS.investigator);
   });
 
-  it('明确禁止 dispatch/start_playbook/select/clear 与工具发现', () => {
-    const prompt = composeSubagentPrompt({ role: 'investigator', spec: makeInvestigatorSpec() });
+  it('明确禁止 dispatch/start_playbook 与工具发现；可见工具一行', () => {
+    const prompt = composeSubagentPrompt({
+      role: 'investigator',
+      spec: makeInvestigatorSpec(),
+      visibleTools: ['grafana_query_prometheus', 'loki_query_range']
+    });
     expect(prompt).toContain('禁止调用 ops_dispatch_subagent');
     expect(prompt).toContain('ops_start_playbook');
-    expect(prompt).toContain('ops_select_tools');
-    expect(prompt).toContain('ops_clear_tool_selection');
     expect(prompt).toContain('不做工具发现与选择');
+    expect(prompt).toContain('可见工具：grafana_query_prometheus,loki_query_range');
   });
 
   it('L5 内联 TaskSpec JSON 与输出契约要求', () => {
@@ -953,6 +1028,24 @@ describe('composeSubagentPrompt', () => {
     expect(prompt).toContain('# L5 任务派单');
     expect(prompt).toContain('"taskId": "sub-inv-test01"');
     expect(prompt).toContain('output.contract=evidence-note@1');
+  });
+
+  it('L5 JSON 含 inputs.timeWindow 与 inputs.targets', () => {
+    const built = buildTaskSpec({
+      role: 'investigator',
+      goal: '窄窗',
+      riskCeiling: 'read',
+      taskId: 'sub-win',
+      inputs: {
+        timeWindow: { from: '2026-08-29T00:00:00Z', to: '2026-08-29T01:00:00Z' },
+        targets: [{ kind: 'host', id: 'web-1' }]
+      }
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const prompt = composeSubagentPrompt({ role: 'investigator', spec: built.spec });
+    expect(prompt).toContain('2026-08-29T00:00:00Z');
+    expect(prompt).toContain('inputs.targets：host:web-1');
   });
 
   it('角色专属 L3\'：executor 绑定令牌、writer 无业务工具、verifier 独立只读', () => {
@@ -1097,6 +1190,24 @@ describe('buildTaskSpec', () => {
     const rebuilt = buildTaskSpec(normalized);
     expect(rebuilt.ok).toBe(true);
     if (rebuilt.ok) expect(rebuilt.spec.taskId).toBe('sub-inv-test01');
+  });
+
+  it('inputs.timeWindow 写入 TaskSpec；未知字段被丢掉；schema additionalProperties=false', () => {
+    const timeWindow = { from: '2026-08-29T00:00:00Z', to: '2026-08-29T01:00:00Z' };
+    const normalized = normalizeDispatchInput({
+      role: 'investigator',
+      goal: '窄窗取证',
+      riskCeiling: 'read',
+      inputs: { timeWindow, extra: 'nope' } as never
+    });
+    expect(normalized.inputs).toEqual({ timeWindow });
+    expect((normalized.inputs as { extra?: unknown } | undefined)?.extra).toBeUndefined();
+    const built = buildTaskSpec(normalized);
+    expect(built.ok).toBe(true);
+    if (built.ok) expect(built.spec.inputs?.timeWindow).toEqual(timeWindow);
+
+    const params = dispatchToolSpec.parameters as { properties: Record<string, { additionalProperties?: boolean }> };
+    expect(params.properties.inputs?.additionalProperties).toBe(false);
   });
 });
 
@@ -1510,6 +1621,96 @@ describe('createSubagentManager', () => {
     manager.abortAll();
     await expect(pending).resolves.toMatchObject({ taskId: 'inv-abort-wait', status: 'aborted' });
   });
+
+  it('失败且 retries>0 → 自动重试一次，结果 ok 且 taskId 含 -retry', async () => {
+    let calls = 0;
+    const manager = createSubagentManager({
+      runner: async (spec) => {
+        calls += 1;
+        if (calls === 1) throw new Error('瞬时失败');
+        return {
+          finalText:
+            '```json\n{"contract":"evidence-note@1","taskId":"' +
+            spec.taskId +
+            '","confidence":"pending","summary":"重试成功"}\n```'
+        };
+      }
+    });
+    const built = buildTaskSpec({
+      role: 'investigator',
+      goal: '瞬时失败后重试',
+      riskCeiling: 'read',
+      taskId: 'inv-retry-me'
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    manager.dispatch(built.spec);
+    const final = await manager.waitFor('inv-retry-me');
+    expect(final.status).toBe('ok');
+    expect(final.taskId).toContain('-retry');
+    expect(calls).toBe(2);
+  });
+
+  it('aborted / timedOut 不重试', async () => {
+    const abortManager = createSubagentManager({
+      runner: (_spec, signal) =>
+        new Promise<SubagentRunOutcome>((_, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        })
+    });
+    const abortBuilt = buildTaskSpec({
+      role: 'investigator',
+      goal: 'abort',
+      riskCeiling: 'read',
+      taskId: 'inv-abort-nretry'
+    });
+    expect(abortBuilt.ok).toBe(true);
+    if (!abortBuilt.ok) return;
+    abortManager.dispatch(abortBuilt.spec);
+    abortManager.abort('inv-abort-nretry');
+    await expect(abortManager.waitFor('inv-abort-nretry')).resolves.toMatchObject({
+      taskId: 'inv-abort-nretry',
+      status: 'aborted'
+    });
+    expect(abortManager.statusOf('inv-abort-nretry-retry')).toBeUndefined();
+
+    const events: SubagentStatusEvent[] = [];
+    const timeoutManager = createSubagentManager({
+      runner: (_spec, signal) =>
+        new Promise<SubagentRunOutcome>((_, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }),
+      onStatus: (e) => events.push(e)
+    });
+    const timed = makeManagedSpec('investigator', 'inv-timeout-nretry', { maxWallMs: 20 });
+    timed.escalation = { retries: 1, onFail: 'degrade' };
+    timeoutManager.dispatch(timed);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(timeoutManager.statusOf('inv-timeout-nretry')).toBe('failed');
+    expect(timeoutManager.statusOf('inv-timeout-nretry-retry')).toBeUndefined();
+    expect(events.filter((e) => e.taskId.endsWith('-retry'))).toHaveLength(0);
+  });
+
+  it('两次失败 error 含「已重试 1 次」', async () => {
+    const manager = createSubagentManager({
+      runner: async () => {
+        throw new Error('boom');
+      }
+    });
+    const built = buildTaskSpec({
+      role: 'investigator',
+      goal: '双失败',
+      riskCeiling: 'read',
+      taskId: 'inv-double-fail'
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    manager.dispatch(built.spec);
+    const final = await manager.waitFor('inv-double-fail');
+    expect(final.status).toBe('failed');
+    expect(final.taskId).toContain('-retry');
+    expect(final.error).toContain('已重试 1 次');
+  });
 });
 
 // ── runDispatchToolCall（P1-6 阻塞式派发） ───────────────────────────────
@@ -1589,6 +1790,65 @@ describe('runDispatchToolCall', () => {
     expect(bad.status).toBe('rejected'); // executor 缺 approvalToken
     expect(bad.error).toBeTruthy();
   });
+
+  it('dispatch 带 timeWindow → TaskSpec.inputs.timeWindow 相等；顶层 inputs 写入 tasks[]', async () => {
+    const seen: TaskSpec[] = [];
+    const manager = createSubagentManager({
+      runner: async (spec) => {
+        seen.push(spec);
+        return {
+          finalText:
+            '```json\n{"contract":"evidence-note@1","taskId":"' +
+            spec.taskId +
+            '","confidence":"pending","summary":"窗口取证"}\n```'
+        };
+      }
+    });
+    const timeWindow = { from: '2026-08-29T00:00:00Z', to: '2026-08-29T01:00:00Z' };
+    await runDispatchToolCall(
+      { role: 'investigator', goal: '查窗口', riskCeiling: 'read', inputs: { timeWindow } },
+      manager
+    );
+    expect(seen[0]?.inputs?.timeWindow).toEqual(timeWindow);
+
+    seen.length = 0;
+    await runDispatchToolCall(
+      {
+        inputs: { timeWindow },
+        tasks: [
+          { role: 'investigator', goal: '主机 A', riskCeiling: 'read' },
+          { role: 'investigator', goal: '主机 B', riskCeiling: 'read' }
+        ]
+      },
+      manager
+    );
+    expect(seen).toHaveLength(2);
+    expect(seen[0]?.inputs?.timeWindow).toEqual(timeWindow);
+    expect(seen[1]?.inputs?.timeWindow).toEqual(timeWindow);
+  });
+
+  it('两条同窗同 subject 不同结论 → conflicts 互含对方 id', async () => {
+    const manager = createSubagentManager({
+      runner: async (spec) => ({
+        finalText:
+          spec.taskId === 'inv-a'
+            ? '```json\n{"contract":"evidence-note@1","id":"note-a","taskId":"inv-a","confidence":"confirmed","summary":"根因是连接池","subject":"root-cause","timeWindow":{"from":"t0","to":"t1"}}\n```'
+            : '```json\n{"contract":"evidence-note@1","id":"note-b","taskId":"inv-b","confidence":"hypothesis","summary":"根因是慢查询","subject":"root-cause","timeWindow":{"from":"t0","to":"t1"}}\n```'
+      })
+    });
+    const raw = await runDispatchToolCall(
+      {
+        tasks: [
+          { role: 'investigator', goal: 'a', riskCeiling: 'read', taskId: 'inv-a' },
+          { role: 'investigator', goal: 'b', riskCeiling: 'read', taskId: 'inv-b' }
+        ]
+      },
+      manager
+    );
+    const parsed = JSON.parse(raw) as { tasks: DispatchToolTaskResult[] };
+    expect(parsed.tasks[0]?.evidenceNote?.conflicts).toContain('note-b');
+    expect(parsed.tasks[1]?.evidenceNote?.conflicts).toContain('note-a');
+  });
 });
 
 // ── ops_dispatch_subagent 工具面 ─────────────────────────────────────────
@@ -1606,7 +1866,7 @@ describe('ops_dispatch_subagent 契约', () => {
     // 单任务字段与 tasks[] 二选一，因此顶层不再有 required（由 runDispatchToolCall 校验）
     expect(params.required).toBeUndefined();
     expect(Object.keys(params.properties)).toEqual(
-      expect.arrayContaining(['role', 'goal', 'riskCeiling', 'approvalToken', 'tasks'])
+      expect.arrayContaining(['role', 'goal', 'riskCeiling', 'approvalToken', 'tasks', 'inputs'])
     );
     const tasks = params.properties.tasks as { items: { required: string[] } };
     expect(tasks.items.required).toEqual(['role', 'goal', 'riskCeiling']);

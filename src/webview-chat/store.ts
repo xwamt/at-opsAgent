@@ -272,10 +272,14 @@ export const useOpsStore = defineStore('ops-chat', {
       this.post('settings/open', { tab });
     },
 
-    /** notice 卡动作按钮：request 型上行 req，command 型由模板走 command: 深链。 */
-    runNoticeAction(action: { request?: string }): void {
+    /** notice 卡动作按钮：request 型上行 req；未知 id 走 notice/action。 */
+    runNoticeAction(action: { id?: string; request?: string }): void {
       if (action.request) {
         this.post(action.request, {});
+        return;
+      }
+      if (typeof action.id === 'string' && action.id.length > 0) {
+        this.post('notice/action', { id: action.id });
       }
     },
 
@@ -333,6 +337,32 @@ export const useOpsStore = defineStore('ops-chat', {
     newSession(): void {
       this.post('session/new', {});
       this.historyOpen = false;
+    },
+
+    renameSession(id: string, title: string): void {
+      if (!id) {
+        return;
+      }
+      const trimmed = title.replace(/\s+/g, ' ').trim();
+      if (!trimmed) {
+        return;
+      }
+      const session = this.sessions.find((item) => item.id === id);
+      if (session) {
+        session.title = trimmed;
+      }
+      this.post('session/rename', { id, title: trimmed });
+    },
+
+    deleteSession(id: string): void {
+      if (!id) {
+        return;
+      }
+      this.post('session/delete', { id });
+    },
+
+    saveOpsDoc(itemId?: string): void {
+      this.post('opsDoc/save', itemId ? { itemId } : {});
     },
 
     abortSubagent(taskId: string): void {

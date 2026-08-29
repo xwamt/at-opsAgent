@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { t } from '../i18n';
+import { annotateLogLine, type LogSegment } from '../lib/ansi';
 import { postEnvelope } from '../vscode-api';
 
 const props = defineProps<{
@@ -25,15 +26,15 @@ const clipped = computed(
 
 interface LogLine {
   n: number;
-  text: string;
+  segs: LogSegment[];
   level: 'error' | 'warn' | null;
 }
 
-function levelOf(line: string): LogLine['level'] {
-  if (/\b(ERROR|FATAL|Exception|panic)\b/i.test(line)) {
+function levelOf(segs: LogSegment[]): LogLine['level'] {
+  if (segs.some((s) => s.tone === 'error')) {
     return 'error';
   }
-  if (/\bWARN(ING)?\b/i.test(line)) {
+  if (segs.some((s) => s.tone === 'warn')) {
     return 'warn';
   }
   return null;
@@ -44,7 +45,10 @@ const lines = computed<LogLine[]>(() =>
     .slice(0, BYTE_CAP)
     .split('\n')
     .slice(0, LINE_CAP)
-    .map((text, i) => ({ n: i + 1, text, level: levelOf(text) }))
+    .map((text, i) => {
+      const segs = annotateLogLine(text);
+      return { n: i + 1, segs, level: levelOf(segs) };
+    })
 );
 
 function openInEditor(): void {
@@ -63,7 +67,14 @@ function openInEditor(): void {
         :class="line.level ? 'logv__line--' + line.level : ''"
       >
         <span class="logv__num" aria-hidden="true">{{ line.n }}</span>
-        <span class="logv__text">{{ line.text }}</span>
+        <span class="logv__text">
+          <span
+            v-for="(seg, i) in line.segs"
+            :key="i"
+            :class="seg.tone ? 'logv__kw logv__kw--' + seg.tone : undefined"
+            >{{ seg.text }}</span
+          >
+        </span>
       </div>
     </div>
     <div v-else class="logv__empty ops-muted">{{ t('logEmpty') }}</div>
@@ -131,11 +142,22 @@ function openInEditor(): void {
   min-width: 0;
 }
 
-.logv__line--error .logv__text {
+/* 行 class 只做左边框，关键词高亮走 span（避免整行前景色误伤 error_rate） */
+.logv__line--error {
+  border-left: 2px solid var(--ops-crit);
+  padding-left: 4px;
+}
+
+.logv__line--warn {
+  border-left: 2px solid var(--ops-warn);
+  padding-left: 4px;
+}
+
+.logv__kw--error {
   color: var(--ops-crit);
 }
 
-.logv__line--warn .logv__text {
+.logv__kw--warn {
   color: var(--ops-warn);
 }
 

@@ -9,9 +9,22 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApprovalService } from '../src/host/services/approvalService';
+import type { HostContext } from '../src/host/services/context';
 import { SessionStore } from '../src/host/sessionStore';
 import type { ApprovalBriefView, SubagentCard } from '../src/protocol';
+
+vi.mock('vscode', () => ({
+  workspace: {
+    getConfiguration: () => ({
+      get: (_key: string, defaultValue?: unknown) => defaultValue
+    })
+  },
+  commands: {
+    executeCommand: () => Promise.resolve()
+  }
+}));
 
 const tempDirs: string[] = [];
 
@@ -224,6 +237,140 @@ describe('SessionStore · 持久化（P1-3 / P0-C）', () => {
     expect(disk).not.toContain('secret-token');
     expect(disk).not.toContain('hunter2');
     expect(disk).toContain('[REDACTED]');
+    store.dispose();
+  });
+});
+
+describe('SessionStore · appendItem ts / patchItem（Plan 10）', () => {
+  it('调用方省略 ts 时 appendItem 写入 Date.now()', () => {
+    const { store } = tempStore();
+    const before = Date.now();
+    store.appendItem({ kind: 'user', id: 'u1', text: 'hi' });
+    expect(typeof store.items[0]?.ts).toBe('number');
+    expect(store.items[0]!.ts).toBeGreaterThanOrEqual(before);
+    store.dispose();
+  });
+
+  it('调用方传入 ts 时不覆盖', () => {
+    const { store } = tempStore();
+    store.appendItem({ kind: 'assistant', id: 'a1', text: 'ok', ts: 42 });
+    expect(store.items[0]).toMatchObject({ id: 'a1', ts: 42 });
+    store.dispose();
+  });
+
+  it('patchItem 按 id 合并；persist/hydrate 不丢 approval decision+ts', () => {
+    const { store, filePath } = tempStore();
+    store.appendItem({ kind: 'approval', id: 'ap1', briefId: 'brief-1', decision: 'pending' });
+    const ts = 1_703_000_000_000;
+    expect(store.patchItem('ap1', { decision: 'approved', ts })).toMatchObject({
+      kind: 'approval',
+      decision: 'approved',
+      ts
+    });
+    expect(store.patchItem('missing', { decision: 'rejected' })).toBeUndefined();
+    store.persistNow();
+
+    const revived = new SessionStore({ filePath });
+    expect(revived.items.find((i) => i.id === 'ap1')).toMatchObject({
+      kind: 'approval',
+      briefId: 'brief-1',
+      decision: 'approved',
+      ts
+    });
+    revived.dispose();
+    store.dispose();
+  });
+});
+
+describe('ApprovalService · registerBrief + applyApproval 写 decision+ts', () => {
+  it('register 为 pending；applyApproval 后 itemsOf 为 approved 且 ts 为 number；hydrate 不丢', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'at-ops-approval-item-'));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, 'ui-sessions.json');
+    const store = new SessionStore({ filePath });
+    const ctx = {
+      store,
+      hub: { listAllTools: () => [] },
+      playbooks: { runOf: () => undefined },
+      log: () => {},
+      broadcastToSession: () => {}
+    } as unknown as HostContext;
+    const svc = new ApprovalService(ctx);
+    svc._timeoutMsForTest = 0;
+    const sid = store.activeSessionId;
+    const pending = svc.resolveSessionApproval(sid, {
+      toolName: 'k8s.rollback',
+      args: { deployment: 'nginx' },
+      risk: 'exec'
+    });
+    const approval = store.items.find((i) => i.kind === 'approval');
+    expect(approval).toMatchObject({ kind: 'approval', decision: 'pending' });
+    expect(typeof approval?.ts).toBe('number');
+    const briefId = approval && approval.kind === 'approval' ? approval.briefId : '';
+    await svc.applyApproval({ briefId, decision: 'approved' });
+    await pending;
+    const decided = store.itemsOf(sid).find((i) => i.kind === 'approval' && i.briefId === briefId);
+    expect(decided).toMatchObject({ kind: 'approval', decision: 'approved' });
+    expect(typeof decided?.ts).toBe('number');
+    store.persistNow();
+    svc.dispose();
+    store.dispose();
+
+    const revived = new SessionStore({ filePath });
+    expect(revived.items.find((i) => i.kind === 'approval')).toMatchObject({
+      kind: 'approval',
+      briefId,
+      decision: 'approved'
+    });
+    expect(typeof revived.items.find((i) => i.kind === 'approval')?.ts).toBe('number');
+    revived.dispose();
+  });
+});
+
+describe('SessionStore · rename / delete', () => {
+  it('renameSession trim、空拒、超长截断，persist 写回标题', () => {
+    const { store, filePath } = tempStore();
+    const id = store.activeSessionId;
+    expect(store.renameSession(id, '  支付网关超时  ')).toBe(true);
+    expect(store.sessions[0].title).toBe('支付网关超时');
+    expect(store.renameSession(id, '   ')).toBe(false);
+    expect(store.sessions[0].title).toBe('支付网关超时');
+    expect(store.renameSession('missing', 'x')).toBe(false);
+    expect(store.renameSession(id, 'y'.repeat(80))).toBe(true);
+    expect(store.sessions[0].title).toBe(`${'y'.repeat(40)}…`);
+    store.persistNow();
+
+    const revived = new SessionStore({ filePath });
+    expect(revived.sessions[0].title).toBe(`${'y'.repeat(40)}…`);
+    revived.dispose();
+    store.dispose();
+  });
+
+  it('deleteSession 删 bag+列表；删活动会话切到最近一条；删光则 newSession', () => {
+    const { store, filePath } = tempStore();
+    const first = store.activeSessionId;
+    store.appendItem({ kind: 'user', id: 'u1', text: '第一' });
+    const second = store.newSession().id;
+    store.appendItem({ kind: 'user', id: 'u2', text: '第二' });
+    expect(store.deleteSession('missing')).toBe(false);
+
+    expect(store.deleteSession(first)).toBe(true);
+    expect(store.sessions.map((s) => s.id)).toEqual([second]);
+    expect(store.activeSessionId).toBe(second);
+    expect(store.switchSession(first)).toBe(false);
+
+    expect(store.deleteSession(second)).toBe(true);
+    expect(store.sessions).toHaveLength(1);
+    expect(store.activeSessionId.length).toBeGreaterThan(0);
+    expect(store.activeSessionId).not.toBe(second);
+    expect(store.items).toHaveLength(0);
+    store.persistNow();
+
+    const revived = new SessionStore({ filePath });
+    expect(revived.sessions.map((s) => s.id)).not.toContain(first);
+    expect(revived.sessions.map((s) => s.id)).not.toContain(second);
+    expect(revived.activeSessionId.length).toBeGreaterThan(0);
+    revived.dispose();
     store.dispose();
   });
 });

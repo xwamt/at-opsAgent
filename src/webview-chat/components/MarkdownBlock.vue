@@ -1,38 +1,22 @@
 <script setup lang="ts">
 /**
- * Markdown 渲染（P0-E）：markdown-it，html:false ⇒ 原始 HTML 一律按文本转义，
- * 不需要额外消毒库；linkify 开启方便贴 URL。样式在 ops-tokens.css 的 .ops-md
+ * Markdown 渲染（P0-E / Plan 10）：markdown-it 单例 html:false ⇒ 原始 HTML
+ * 一律按文本转义；linkify 开启方便贴 URL。样式在 ops-tokens.css 的 .ops-md
  * 命名空间（v-html 内容不吃 scoped 样式）。代码块底色 --vscode-textCodeBlock-background。
+ *
+ * streaming===true 时只做 md 排版、不跑 highlight.js（finalize 后才上 hljs-*）。
  *
  * 代码块 hover 复制：不把 Vue 事件写进 v-html。fence 仍由 markdown-it 输出 pre，
  * mounted/updated 时清旧 .ops-copy-btn 再插入按钮，复制 pre.innerText（不是 HTML）。
  */
-import MarkdownIt from 'markdown-it';
 import { computed, onMounted, onUpdated, ref } from 'vue';
 import { t } from '../i18n';
 import { COPIED_FEEDBACK_MS, copyText } from '../lib/clipboard';
+import { renderMarkdown } from '../lib/markdown';
 
-const props = defineProps<{ source: string }>();
+const props = defineProps<{ source: string; streaming?: boolean }>();
 
-const md = new MarkdownIt({
-  html: false, // 禁 raw html：LLM 输出中的 <script> 等按文本渲染
-  linkify: true,
-  breaks: false
-});
-
-// 链接加 title（悬浮可见完整 URL）；webview 内点击由 VS Code 接管外开
-const defaultLinkOpen =
-  md.renderer.rules.link_open ??
-  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
-md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
-  const href = tokens[idx].attrGet('href');
-  if (href && !tokens[idx].attrGet('title')) {
-    tokens[idx].attrSet('title', href);
-  }
-  return defaultLinkOpen(tokens, idx, options, env, self);
-};
-
-const html = computed(() => md.render(props.source ?? ''));
+const html = computed(() => renderMarkdown(props.source ?? '', !!props.streaming));
 const root = ref<HTMLElement | null>(null);
 
 function ensureFence(pre: HTMLElement): HTMLElement {
@@ -157,5 +141,32 @@ onUpdated(bindCopyButtons);
 .ops-copy-btn--copied {
   width: auto;
   padding: 0 6px;
+}
+
+/* highlight.js：贴近 VS Code token，避免 github-dark 与 --vscode-editor-background 打架 */
+.ops-md .hljs-keyword,
+.ops-md .hljs-selector-tag,
+.ops-md .hljs-literal {
+  color: var(--vscode-symbolIcon-keywordForeground, #569cd6);
+}
+.ops-md .hljs-string,
+.ops-md .hljs-attr {
+  color: var(--vscode-symbolIcon-stringForeground, #ce9178);
+}
+.ops-md .hljs-number {
+  color: var(--vscode-symbolIcon-numberForeground, #b5cea8);
+}
+.ops-md .hljs-comment,
+.ops-md .hljs-quote {
+  color: var(--vscode-editorLineNumber-foreground, #6a9955);
+}
+.ops-md .hljs-title,
+.ops-md .hljs-function {
+  color: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
+}
+.ops-md .hljs-built_in,
+.ops-md .hljs-type,
+.ops-md .hljs-class {
+  color: var(--vscode-symbolIcon-classForeground, #4ec9b0);
 }
 </style>

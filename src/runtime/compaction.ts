@@ -14,10 +14,23 @@
  * 上抛（保留原始错误信息），不触发 compact。
  */
 
-/** 压缩后仍失败时抛出的中文提示（请用户开新会话）。 */
+/** 压缩后仍失败时抛出的中文提示（请用户开新会话；host 提供一键交接）。 */
 export const COMPACTION_NEW_SESSION_MESSAGE =
   '上下文已超过模型窗口，自动压缩后仍无法继续；请开启新会话，' +
-  '并把关键结论（证据便签、审批简报）带到新会话继续。';
+  '并把关键结论（证据便签、审批简报）带到新会话继续。' +
+  '可点击下方按钮，把证据与阶段带到新会话。';
+
+/**
+ * 传给 pi `session.compact(customInstructions)` 的运维压缩指令。
+ * 英文：pi compact 面向英文模型指令，不要改成 coding-session 摘要风格。
+ */
+export const OPS_COMPACT_INSTRUCTIONS = [
+  'This is an SRE/on-call session, not a coding session.',
+  'Keep every evidence-note with confidence (confirmed/hypothesis/pending).',
+  'Keep approved/rejected command-set summaries and pending approvals.',
+  'Keep current playbook id, stage, DoD, unchecked items.',
+  'Keep identified hosts/targets; drop duplicate MCP list/search dumps and long stdout (cite toolCallId instead).'
+].join(' ');
 
 const PROMPT_TOO_LONG_PATTERN = new RegExp(
   [
@@ -86,7 +99,7 @@ export async function recoverFromPromptError(input: {
   }
   let compactionResult: unknown;
   try {
-    compactionResult = await compact.call(input.session);
+    compactionResult = await compact.call(input.session, OPS_COMPACT_INSTRUCTIONS);
   } catch {
     throw new Error(COMPACTION_NEW_SESSION_MESSAGE);
   }

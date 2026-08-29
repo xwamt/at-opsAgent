@@ -218,9 +218,24 @@ export class SessionStore {
 
   appendItem(item: TranscriptItem, sessionId?: string): void {
     const sid = sessionId ?? this._activeSessionId;
+    if (item.ts === undefined) {
+      item.ts = Date.now();
+    }
     this.itemsRef(sid).push(item);
     if (item.kind === 'user') this.maybeAdoptTitle(item.text, sid);
     this.schedulePersist();
+  }
+
+  /**
+   * 按 item id 合并字段（审批决议等）。找不到则 no-op。
+   * 调用方负责 `broadcast('transcript/patch', { itemId, patch })`（webview 已有同路径）。
+   */
+  patchItem(id: string, partial: object, sessionId?: string): TranscriptItem | undefined {
+    const item = this.findItem(id, sessionId);
+    if (!item) return undefined;
+    Object.assign(item, partial);
+    this.schedulePersist();
+    return item;
   }
 
   /** 首条用户消息 → 会话标题（仅覆盖自动标题「会话 N」）。 */
@@ -490,6 +505,53 @@ export class SessionStore {
     this.sessionsEmitter.dispose();
     this.approvalsEmitter.dispose();
     this.timelineEmitter.dispose();
+  }
+
+  renameSession(id: string, title: string): boolean {
+    const session = this._sessions.find((s) => s.id === id);
+    if (!session) return false;
+    const compact = title.replace(/\s+/g, ' ').trim();
+    if (compact.length === 0) return false;
+    session.title =
+      compact.length > TITLE_MAX_CHARS ? `${compact.slice(0, TITLE_MAX_CHARS)}…` : compact;
+    this.sessionsEmitter.fire();
+    this.schedulePersist();
+    return true;
+  }
+
+  /**
+   * 删 bag + sessions 项。若删的是活动会话则切到最近一条或 newSession。
+   * 禁止删光后无活动 id。
+   */
+  deleteSession(id: string): boolean {
+    const idx = this._sessions.findIndex((s) => s.id === id);
+    if (idx < 0) return false;
+    const wasActive = id === this._activeSessionId;
+    if (wasActive) this.saveActiveBag();
+    this._sessions.splice(idx, 1);
+    this._bags.delete(id);
+    if (!wasActive) {
+      this.sessionsEmitter.fire();
+      this.schedulePersist();
+      return true;
+    }
+    if (this._sessions.length === 0) {
+      this._activeSessionId = '';
+      this.newSession();
+      return true;
+    }
+    const newest = [...this._sessions].sort((a, b) => b.createdAt - a.createdAt)[0];
+    const bag = this._bags.get(newest.id);
+    this._activeSessionId = newest.id;
+    this._items = bag?.items ?? [];
+    this._playbook = bag?.playbook;
+    this._pendingBriefs = bag?.pendingBriefs ?? [];
+    this._subagents = bag?.subagents ?? new Map();
+    this._timeline = bag?.timeline ?? [];
+    this.sessionsEmitter.fire();
+    this.approvalsEmitter.fire();
+    this.schedulePersist();
+    return true;
   }
 }
 

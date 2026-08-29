@@ -394,9 +394,9 @@ export function createOrchestrator(options: CreateOrchestratorOptions) {
   }
 
   /**
-   * 重试阶梯（docs/04 §3.3：失败 retry 1 → degrade）。host 回报子代理结果：
-   * 更新卡片状态；failed 且还有重试额度时 clone 原 spec（taskId 加 `-retry`
-   * 后缀）返回给 host 再次下发，额度用尽返回 undefined（host 走 degrade）。
+   * 重试阶梯（docs/04 §3.3：失败 retry 1 → degrade）。
+   * 生产派发路径的 retries 由 runtime `createSubagentManager.settle` 消费；
+   * 本函数保留给测试与 host 卡片登记（非 dispatch 热路径）。
    */
   function recordSubagentResult(
     taskId: string,

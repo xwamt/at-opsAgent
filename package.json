@@ -110,6 +110,11 @@
         "command": "atOpsAgent.exportReport",
         "title": "%cmd.exportReport%",
         "icon": "$(export)"
+      },
+      {
+        "command": "atOpsAgent.saveOpsDoc",
+        "title": "%cmd.saveOpsDoc%",
+        "icon": "$(save)"
       }
     ],
     "menus": {
@@ -329,6 +334,7 @@
     "@earendil-works/pi-coding-agent": "0.84.3",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@vscode/codicons": "^0.0.46-24",
+    "highlight.js": "11.11.1",
     "js-yaml": "^4.1.1",
     "markdown-it": "^14.1.0",
     "pinia": "^3.0.3",

@@ -244,6 +244,16 @@ export interface RuntimeHandlers {
       | { ok: boolean; stage?: string; error?: string }
       | Promise<{ ok: boolean; stage?: string; error?: string }>;
   };
+  /**
+   * 运维文档落盘（ops_write_ops_doc）。缺席时 runtime 不注册该工具。
+   * 真正写盘在 host（闸门通过之后）；runtime 禁止 fs.writeFile。
+   */
+  writeOpsDoc?(req: {
+    docType: string;
+    title: string;
+    markdown: string;
+    overwritePath?: string;
+  }): Promise<{ ok: true; path: string } | { ok: false; error: string }>;
 }
 
 export interface RuntimeLike {

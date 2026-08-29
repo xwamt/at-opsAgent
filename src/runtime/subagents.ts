@@ -8,7 +8,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import type { EvidenceNote, RiskLevel, SubagentRole, TaskSpec } from '../orchestrator';
+import { mergeEvidence, type EvidenceNote, type RiskLevel, type SubagentRole, type TaskSpec } from '../orchestrator';
 import type { AgentToolDescriptor } from '../protocol';
 import { isBusinessToolName } from './discovery-tools';
 
@@ -70,10 +70,59 @@ export interface SubagentDispatchInput {
   stage?: string;
 }
 
+function normalizeInputs(raw: unknown): TaskSpec['inputs'] | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const rec = raw as Record<string, unknown>;
+  const out: NonNullable<TaskSpec['inputs']> = {};
+  const tw = rec.timeWindow;
+  if (tw !== null && typeof tw === 'object' && !Array.isArray(tw)) {
+    const window = tw as Record<string, unknown>;
+    if (typeof window.from === 'string' && typeof window.to === 'string') {
+      out.timeWindow = { from: window.from, to: window.to };
+    }
+  }
+  if (Array.isArray(rec.targets)) {
+    const targets: Array<{ kind: string; id: string }> = [];
+    for (const item of rec.targets) {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+      const t = item as Record<string, unknown>;
+      if (typeof t.kind === 'string' && typeof t.id === 'string') {
+        targets.push({ kind: t.kind, id: t.id });
+      }
+    }
+    if (targets.length > 0) out.targets = targets;
+  }
+  if (Array.isArray(rec.contextNotes)) {
+    const notes = rec.contextNotes.filter((n): n is string => typeof n === 'string');
+    if (notes.length > 0) out.contextNotes = notes;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function mergeTaskInputs(
+  inherited: TaskSpec['inputs'] | undefined,
+  own: unknown
+): TaskSpec['inputs'] | undefined {
+  const a = inherited;
+  const b = normalizeInputs(own);
+  if (a === undefined && b === undefined) return undefined;
+  return { ...a, ...b };
+}
+
 /** 兼容完整 TaskSpec（orchestrator spawnSubagentSpecs 产物）与工具参数子集。 */
 export function normalizeDispatchInput(input: SubagentDispatchInput | TaskSpec): SubagentDispatchInput {
-  if (!('toolPolicy' in input)) return input;
+  if (!('toolPolicy' in input)) {
+    const inputs = normalizeInputs(input.inputs);
+    const next: SubagentDispatchInput = { ...input };
+    if (inputs === undefined) {
+      delete next.inputs;
+    } else {
+      next.inputs = inputs;
+    }
+    return next;
+  }
   const spec = input;
+  const inputs = normalizeInputs(spec.inputs);
   return {
     role: spec.role,
     goal: spec.goal,
@@ -84,7 +133,7 @@ export function normalizeDispatchInput(input: SubagentDispatchInput | TaskSpec):
       ? { approvalToken: spec.approvalToken }
       : {}),
     ...(spec.plan !== undefined ? { plan: spec.plan } : {}),
-    ...(spec.inputs !== undefined ? { inputs: spec.inputs } : {}),
+    ...(inputs !== undefined ? { inputs } : {}),
     taskId: spec.taskId,
     sessionId: spec.sessionId,
     ...(spec.playbookId !== undefined ? { playbookId: spec.playbookId } : {}),
@@ -395,6 +444,8 @@ interface TaskRecord {
   timer?: ReturnType<typeof setTimeout>;
   userAborted?: boolean;
   timedOut?: boolean;
+  /** 本记录是 settle 自动重试出来的（taskId 含 -retry）。 */
+  retried?: boolean;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<SubagentRunStatus> = new Set([
@@ -411,6 +462,18 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
   /** 终态结果登记（waitFor 的真源；不清理——单会话任务量有限）。 */
   const finals = new Map<string, SubagentFinalResult>();
   const waiters = new Map<string, Array<(result: SubagentFinalResult) => void>>();
+  /** 原 taskId → 重试 taskId；waitFor / abort / statusOf 跟随。 */
+  const aliases = new Map<string, string>();
+
+  function resolveTaskId(taskId: string): string {
+    let id = taskId;
+    const seen = new Set<string>();
+    while (aliases.has(id) && !seen.has(id)) {
+      seen.add(id);
+      id = aliases.get(id)!;
+    }
+    return id;
+  }
 
   const limitOf = (role: SubagentRole): number => options.limits?.[role] ?? ROLE_PARALLEL_LIMITS[role];
 
@@ -439,6 +502,45 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
     if (record.timer !== undefined) {
       clearTimeout(record.timer);
       record.timer = undefined;
+    }
+    const retriesLeft = record.spec.escalation?.retries ?? 0;
+    const canRetry =
+      !record.userAborted &&
+      !record.timedOut &&
+      result.failure !== undefined &&
+      retriesLeft > 0;
+    if (canRetry) {
+      record.status = 'failed';
+      const retrySpec: TaskSpec = {
+        ...record.spec,
+        taskId: `${record.spec.taskId}-retry`,
+        escalation: {
+          retries: retriesLeft - 1,
+          onFail: record.spec.escalation?.onFail ?? 'degrade'
+        }
+      };
+      aliases.set(record.spec.taskId, retrySpec.taskId);
+      const pending = waiters.get(record.spec.taskId);
+      if (pending !== undefined) {
+        waiters.delete(record.spec.taskId);
+        const existing = waiters.get(retrySpec.taskId);
+        waiters.set(retrySpec.taskId, existing === undefined ? pending : [...existing, ...pending]);
+      }
+      emit(record, {
+        error: result.failure instanceof Error ? result.failure.message : String(result.failure)
+      });
+      // 插到队首，立刻占用刚释放的角色并行位；超时不走这条路径。
+      const retryRecord: TaskRecord = {
+        spec: retrySpec,
+        controller: new AbortController(),
+        status: 'queued',
+        retried: true
+      };
+      records.set(retrySpec.taskId, retryRecord);
+      queue.unshift(retryRecord);
+      emit(retryRecord);
+      pump();
+      return;
     }
     let extra: Pick<SubagentStatusEvent, 'summary' | 'error' | 'evidenceNote'> = {};
     if (record.userAborted) {
@@ -475,6 +577,9 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
         record.status = 'ok';
         extra = { summary, ...(note !== undefined ? { evidenceNote: note } : {}) };
       }
+    }
+    if (record.retried === true && record.status === 'failed' && extra.error !== undefined) {
+      extra = { ...extra, error: `${extra.error}（已重试 1 次）` };
     }
     const final: SubagentFinalResult = {
       taskId: record.spec.taskId,
@@ -532,7 +637,7 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
   }
 
   function abort(taskId: string): boolean {
-    const record = records.get(taskId);
+    const record = records.get(resolveTaskId(taskId));
     if (record === undefined || TERMINAL_STATUSES.has(record.status)) return false;
     record.userAborted = true;
     record.controller.abort();
@@ -555,18 +660,20 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
       return { taskId: spec.taskId, status: record.status };
     },
     waitFor(taskId: string): Promise<SubagentFinalResult> {
-      const record = records.get(taskId);
+      const resolved = resolveTaskId(taskId);
+      const record = records.get(resolved) ?? records.get(taskId);
       if (record === undefined) {
         return Promise.reject(new Error(`未知子代理任务 ${taskId}`));
       }
+      const waitId = record.spec.taskId;
       if (TERMINAL_STATUSES.has(record.status)) {
-        const final = finals.get(taskId);
+        const final = finals.get(waitId);
         if (final !== undefined) return Promise.resolve(final);
       }
       return new Promise((resolve) => {
-        const list = waiters.get(taskId);
+        const list = waiters.get(waitId);
         if (list === undefined) {
-          waiters.set(taskId, [resolve]);
+          waiters.set(waitId, [resolve]);
         } else {
           list.push(resolve);
         }
@@ -587,7 +694,7 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
       return n;
     },
     statusOf(taskId: string): SubagentRunStatus | undefined {
-      return records.get(taskId)?.status;
+      return records.get(resolveTaskId(taskId))?.status;
     }
   };
 }
@@ -621,7 +728,8 @@ function finalToTaskResult(final: SubagentFinalResult): DispatchToolTaskResult {
 
 async function runOneDispatchTask(
   raw: unknown,
-  manager: Pick<SubagentManager, 'dispatch' | 'waitFor'>
+  manager: Pick<SubagentManager, 'dispatch' | 'waitFor'>,
+  inheritedInputs?: TaskSpec['inputs']
 ): Promise<DispatchToolTaskResult> {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     return {
@@ -631,7 +739,11 @@ async function runOneDispatchTask(
     };
   }
   const input = raw as SubagentDispatchInput;
-  const built = buildTaskSpec(normalizeDispatchInput(input));
+  const mergedInputs = mergeTaskInputs(inheritedInputs, input.inputs);
+  const normalized = normalizeDispatchInput(
+    mergedInputs === undefined ? input : { ...input, inputs: mergedInputs }
+  );
+  const built = buildTaskSpec(normalized);
   if (!built.ok) {
     return {
       taskId: typeof input.taskId === 'string' ? input.taskId : '',
@@ -653,18 +765,34 @@ async function runOneDispatchTask(
   }
 }
 
+function applyMergedEvidence(tasks: DispatchToolTaskResult[]): DispatchToolTaskResult[] {
+  const notes = tasks
+    .map((task) => task.evidenceNote)
+    .filter((note): note is EvidenceNote => note !== undefined);
+  if (notes.length === 0) return tasks;
+  const merged = mergeEvidence(notes);
+  const byId = new Map(merged.map((note) => [note.id, note]));
+  return tasks.map((task) => {
+    if (task.evidenceNote === undefined) return task;
+    const next = byId.get(task.evidenceNote.id);
+    return next === undefined ? task : { ...task, evidenceNote: next };
+  });
+}
+
 /**
  * ops_dispatch_subagent 的 execute 主体（P1-6 阻塞式）：
  * - 单任务（顶层 role/goal/riskCeiling）→ 阻塞到终态，返回单个结果 JSON；
  * - tasks[]（并行数组）→ 全部派发后等全部终态，返回 { tasks: [...] } JSON；
  * - spec 校验失败的任务标 status='rejected'，不影响其余任务；
  * - 结果绝不 throw：拒绝/失败都是结构化 JSON（模型自行处理）。
+ * - Promise.all 之后 mergeEvidence：同窗冲突写回各任务 evidenceNote.conflicts。
  * 摘要 ≤SUBAGENT_SUMMARY_CHAR_LIMIT 字符；原始大输出不回主会话（无 prompt 回灌）。
  */
 export async function runDispatchToolCall(
   args: Record<string, unknown>,
   manager: Pick<SubagentManager, 'dispatch' | 'waitFor'>
 ): Promise<string> {
+  const inheritedInputs = normalizeInputs(args.inputs);
   const rawTasks = args.tasks;
   if (rawTasks !== undefined) {
     if (!Array.isArray(rawTasks) || rawTasks.length === 0) {
@@ -679,10 +807,13 @@ export async function runDispatchToolCall(
         error: `tasks 一次最多 ${MAX_DISPATCH_TASKS} 个（收到 ${rawTasks.length}）；请分批派发`
       });
     }
-    const tasks = await Promise.all(rawTasks.map((raw) => runOneDispatchTask(raw, manager)));
-    return JSON.stringify({ tasks });
+    const tasks = await Promise.all(
+      rawTasks.map((raw) => runOneDispatchTask(raw, manager, inheritedInputs))
+    );
+    return JSON.stringify({ tasks: applyMergedEvidence(tasks) });
   }
-  return JSON.stringify(await runOneDispatchTask(args, manager));
+  const [one] = applyMergedEvidence([await runOneDispatchTask(args, manager)]);
+  return JSON.stringify(one);
 }
 
 // ── ops_dispatch_subagent 工具 spec（execute 由 runtime 注入 manager 后包装） ──
@@ -749,6 +880,34 @@ const DISPATCH_TASK_PROPERTIES: Record<string, unknown> = {
       additionalProperties: false
     },
     description: 'executor 的确切执行步骤（与已批命令集一致）'
+  },
+  inputs: {
+    type: 'object',
+    additionalProperties: false,
+    description: '取证窗口与目标（并行 tasks[] 必须给同一 timeWindow）',
+    properties: {
+      timeWindow: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          from: { type: 'string' },
+          to: { type: 'string' }
+        }
+      },
+      targets: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string' },
+            id: { type: 'string' }
+          },
+          required: ['kind', 'id']
+        }
+      },
+      contextNotes: { type: 'array', items: { type: 'string' } }
+    }
   }
 };
 

@@ -25,6 +25,7 @@ import { buildApprovalCommandSet, buildApprovalElements } from '../approvalGate'
 import type { ApprovalBriefLike } from '../hostTypes';
 import { postApprovalWebhook, toBriefView } from './approvalNotify';
 import { describeError, type HostContext } from './context';
+import { isOpsWriteOpsDocCommandSet, tryPreviewOpsDocDiff } from './opsDocService';
 
 const SELECT_TOOL_NAMES = new Set(['ops_select_tools', 'at_select_tools']);
 
@@ -314,11 +315,36 @@ export class ApprovalService {
       this.briefHashes.set(brief.briefId, brief.commandSetSha256);
     }
     ctx.store.addBrief(view, sessionId);
-    const item = { kind: 'approval' as const, id: randomUUID(), briefId: view.id };
+    const item = {
+      kind: 'approval' as const,
+      id: randomUUID(),
+      briefId: view.id,
+      decision: 'pending' as const
+    };
     ctx.store.appendItem(item, sessionId);
     ctx.broadcastToSession(sessionId, 'transcript/append', { item });
     ctx.broadcastToSession(sessionId, 'approval/request', view);
     postApprovalWebhook(ctx, view, sessionId);
+    if (isOpsWriteOpsDocCommandSet(brief.commandSet)) {
+      void tryPreviewOpsDocDiff(brief.commandSet, ctx);
+    }
+  }
+
+  /**
+   * 按 briefId 找到 approval transcript item，写入 decision + ts，并广播 transcript/patch。
+   */
+  private patchApprovalItem(
+    briefId: string,
+    sessionId: string,
+    decision: 'approved' | 'rejected' | 'timeout'
+  ): void {
+    const item = this.ctx.store.itemsOf(sessionId).find(
+      (i) => i.kind === 'approval' && i.briefId === briefId
+    );
+    if (!item) return;
+    const patch = { decision, ts: Date.now() };
+    this.ctx.store.patchItem(item.id, patch, sessionId);
+    this.ctx.broadcastToSession(sessionId, 'transcript/patch', { itemId: item.id, patch });
   }
 
   /** orchestrator approval/resolved 事件：清理视图与映射（幂等）。 */
@@ -384,6 +410,7 @@ export class ApprovalService {
       { kind: 'approval', briefId: req.briefId, decision: req.decision },
       sessionId
     );
+    this.patchApprovalItem(req.briefId, sessionId, req.decision);
 
     const hadWaiter = this.resolveApprovalWaiter(req.briefId, req.decision);
     if (!hadWaiter && req.decision === 'approved') {
@@ -442,15 +469,17 @@ export class ApprovalService {
     this.briefRuns.delete(briefId);
     this.briefHashes.delete(briefId);
     this.briefSessions.delete(briefId);
+    const decision = reason === 'timeout' ? 'timeout' : 'rejected';
     this.ctx.store.appendTimeline(
       {
         kind: 'approval',
         briefId,
-        decision: reason === 'timeout' ? 'timeout' : 'rejected',
+        decision,
         ...(reason === 'user' ? {} : { reason })
       },
       sessionId
     );
+    this.patchApprovalItem(briefId, sessionId, decision);
     if (reason === 'timeout') {
       this.ctx.log(`[approval] 审批超时 briefId=${briefId} session=${sessionId}`);
       this.ctx.emitAssistantNotice('审批已超时，已按拒绝处理', sessionId);

@@ -136,4 +136,25 @@ describe('buildOpsReportMarkdown', () => {
     expect(md).not.toContain('secret-token');
     expect(redactSecrets('Authorization: Bearer secret-token').hits).toBeGreaterThanOrEqual(1);
   });
+
+  it('审批段优先读 item.decision（patched），timeline 仅作双源兜底', () => {
+    const md = buildOpsReportMarkdown({
+      sessionId: 'sess-decision',
+      items: [
+        {
+          kind: 'approval',
+          id: 'ap1',
+          briefId: 'brief-1',
+          decision: 'rejected',
+          ts: NOW.getTime()
+        }
+      ],
+      timeline: [
+        { id: 'tl1', ts: NOW.getTime() - 60_000, kind: 'approval', briefId: 'brief-1', decision: 'approved' }
+      ],
+      now: NOW
+    });
+    expect(md).toContain('简报 `brief-1` · ⛔ 已拒绝');
+    expect(md).not.toContain('✅ 已批准');
+  });
 });

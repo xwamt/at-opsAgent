@@ -6,6 +6,8 @@
  * 调用时」policy 从入参推导出的哈希，否则令牌永远命中 OPS_APPROVAL_STALE。
  */
 
+import { WRITE_OPS_DOC_TOOL_NAME, formatOpsDocApprovalCommands } from '../runtime/workspace-write';
+
 function firstString(...values: unknown[]): string | undefined {
   for (const v of values) {
     if (typeof v === 'string' && v.length > 0) return v;
@@ -101,7 +103,10 @@ export function buildApprovalElements(input: {
     }影响，确切影响面以下方命令集为准。`,
     prechecks: '请人工核对命令集中的目标（实例/库表/主机/配置项）与预期一致后再批准。',
     backup: '涉及数据或配置变更时，请确认已有备份或可用回滚点；无法确认请先拒绝。',
-    commands: previewJson(input.commandSet),
+    commands:
+      input.toolName === WRITE_OPS_DOC_TOOL_NAME
+        ? formatOpsDocApprovalCommands(input.args)
+        : previewJson(input.commandSet),
     successCriteria: '工具返回成功，且读回/监控验证结果符合预期。',
     rollback: '如结果异常，按回滚指引撤销本次变更；无回滚手段时请勿批准。',
     unknowns: commandPolicyLine !== undefined ? `${commandPolicyLine}。${unknowns}` : unknowns,

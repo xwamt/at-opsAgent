@@ -1,9 +1,21 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { getLocale, t } from '../i18n';
 import { useOpsStore } from '../store';
 
 const store = useOpsStore();
+const query = ref('');
+const renamingId = ref<string | null>(null);
+const renameDraft = ref('');
+const renameInput = ref<HTMLInputElement | null>(null);
+
+const filteredSessions = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  if (!q) {
+    return store.historySessions;
+  }
+  return store.historySessions.filter((session) => session.title.toLowerCase().includes(q));
+});
 
 function close(): void {
   store.toggleHistory(false);
@@ -11,6 +23,33 @@ function close(): void {
 
 function exportSession(sessionId: string): void {
   store.post('chat/export', { sessionId });
+}
+
+async function startRename(sessionId: string, title: string): Promise<void> {
+  renamingId.value = sessionId;
+  renameDraft.value = title;
+  await nextTick();
+  renameInput.value?.focus();
+  renameInput.value?.select();
+}
+
+function commitRename(sessionId: string): void {
+  if (renamingId.value !== sessionId) {
+    return;
+  }
+  renamingId.value = null;
+  store.renameSession(sessionId, renameDraft.value);
+}
+
+function cancelRename(): void {
+  renamingId.value = null;
+}
+
+function confirmDelete(sessionId: string, title: string): void {
+  const ok = window.confirm(`${t('historyDeleteConfirm')}\n${title}`);
+  if (ok) {
+    store.deleteSession(sessionId);
+  }
 }
 
 function formatTime(createdAt: number): string {
@@ -27,6 +66,10 @@ function formatTime(createdAt: number): string {
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
+    if (renamingId.value) {
+      cancelRename();
+      return;
+    }
     close();
   }
 }
@@ -59,19 +102,30 @@ onBeforeUnmount(() => {
           <span class="codicon codicon-close" aria-hidden="true"></span>
         </button>
       </header>
+      <div class="history__search">
+        <input
+          v-model="query"
+          type="search"
+          class="history__search-input"
+          :placeholder="t('historySearchPlaceholder')"
+          :aria-label="t('historySearchPlaceholder')"
+        />
+      </div>
       <div class="history__list">
         <div
-          v-for="session in store.historySessions"
+          v-for="session in filteredSessions"
           :key="session.id"
           class="history__item"
           :class="{ 'history__item--current': session.id === store.sessionId }"
         >
           <button
+            v-if="renamingId !== session.id"
             type="button"
             class="history__item-main"
             :aria-label="t('historySwitchAria') + ' ' + session.title"
             :title="session.id"
             @click="store.switchSession(session.id)"
+            @dblclick.stop="startRename(session.id, session.title)"
           >
             <span class="history__item-row">
               <span class="history__item-title">{{ session.title }}</span>
@@ -83,6 +137,30 @@ onBeforeUnmount(() => {
               {{ formatTime(session.createdAt) }}
             </span>
           </button>
+          <form
+            v-else
+            class="history__rename"
+            @submit.prevent="commitRename(session.id)"
+            @click.stop
+          >
+            <input
+              ref="renameInput"
+              v-model="renameDraft"
+              class="history__rename-input"
+              :aria-label="t('historyRenameAria')"
+              @keydown.escape.prevent="cancelRename"
+              @blur="commitRename(session.id)"
+            />
+          </form>
+          <button
+            type="button"
+            class="ops-copy-btn history__icon-btn"
+            :aria-label="t('historyRenameAria')"
+            :title="t('historyRenameAria')"
+            @click.stop="startRename(session.id, session.title)"
+          >
+            <span class="codicon codicon-edit" aria-hidden="true"></span>
+          </button>
           <button
             type="button"
             class="ops-copy-btn history__export"
@@ -92,8 +170,17 @@ onBeforeUnmount(() => {
           >
             <span class="codicon codicon-export" aria-hidden="true"></span>
           </button>
+          <button
+            type="button"
+            class="ops-copy-btn history__icon-btn"
+            :aria-label="t('historyDeleteAria')"
+            :title="t('historyDeleteAria')"
+            @click.stop="confirmDelete(session.id, session.title)"
+          >
+            <span class="codicon codicon-trash" aria-hidden="true"></span>
+          </button>
         </div>
-        <p v-if="store.historySessions.length === 0" class="history__empty ops-muted">
+        <p v-if="filteredSessions.length === 0" class="history__empty ops-muted">
           {{ t('historyEmpty') }}
         </p>
       </div>
@@ -166,6 +253,28 @@ onBeforeUnmount(() => {
   padding: 1px calc(var(--ops-density) + 2px);
   font-size: calc(var(--ops-font-size) - 2px);
   white-space: nowrap;
+}
+
+.history__search {
+  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  border-bottom: 1px solid var(--ops-border);
+}
+
+.history__search-input,
+.history__rename-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--ops-bg);
+  color: var(--ops-fg);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  padding: 2px var(--ops-density);
+  font: inherit;
+}
+
+.history__rename {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .history__close {
@@ -245,14 +354,17 @@ onBeforeUnmount(() => {
   border-left: 2px solid var(--ops-accent);
 }
 
-.history__export {
+.history__export,
+.history__icon-btn {
   opacity: 0;
   width: 22px;
   height: 22px;
 }
 
 .history__item:hover .history__export,
-.history__export:focus-visible {
+.history__item:hover .history__icon-btn,
+.history__export:focus-visible,
+.history__icon-btn:focus-visible {
   opacity: 1;
 }
 

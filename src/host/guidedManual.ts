@@ -7,6 +7,7 @@
  * 引导用户走插件自身的命令 / 面板；完成后经 guidedManual/complete 续链路。
  */
 import type { PlaybookMeta } from './hostTypes';
+import type { NoticeAction } from '../protocol';
 
 interface GuidedHint {
   command: string;
@@ -26,6 +27,12 @@ const DEFAULT_HINTS: Record<string, GuidedHint> = {
 };
 
 export const GUIDED_MANUAL_PLAYBOOKS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_HINTS));
+
+/** notice 双按钮：打开插件 / 我已在 UI 完成（不靠用户打「已完成」）。 */
+export const GUIDED_MANUAL_NOTICE_ACTIONS: NoticeAction[] = [
+  { id: 'gm-open', label: '打开对应插件', request: 'guidedManual/open' },
+  { id: 'gm-complete', label: '我已在 UI 完成', request: 'guidedManual/complete' }
+];
 
 /** 该 playbook 是否含人工步骤（yaml 有 guidedManual 阶段，或在已知清单里）。 */
 export function hasGuidedManualStep(playbookId: string, meta: PlaybookMeta | undefined): boolean {
@@ -59,6 +66,6 @@ export function buildGuidedManualNotice(
   if (command) {
     lines.push(`- 推荐命令：\`${command}\`（命令面板运行，或打开对应 AT 插件面板）。`);
   }
-  lines.push('- 完成后回复「已完成」，链路将推进到验证 / 报告阶段。');
+  lines.push('- 完成后点下方按钮，链路将推进到验证 / 报告阶段。');
   return lines.join('\n');
 }

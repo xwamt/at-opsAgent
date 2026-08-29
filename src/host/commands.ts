@@ -110,6 +110,19 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     }
   });
 
+  // 用户主动「存为运维文档」：跳过审批，QuickPick 类型后写入 ops-docs/。
+  const saveOpsDoc = vscode.commands.registerCommand(
+    'atOpsAgent.saveOpsDoc',
+    async (itemId?: string) => {
+      const result = await controller.saveOpsDoc(typeof itemId === 'string' ? itemId : undefined);
+      if (result.ok && result.path !== undefined) {
+        void vscode.window.showInformationMessage(`已写入 ${result.path}`);
+      } else if (!result.ok && result.error !== undefined && result.error !== '已取消') {
+        void vscode.window.showWarningMessage(result.error);
+      }
+    }
+  );
+
   // 不进 package.json contributes：escalateSelect 绝不自动触发（首轮
   // investigating 之后由用户/模型显式驱动），这里给 webview 深链 /
   // 程序化调用留一个入口，等价于 host 请求 playbook/escalate-select。
@@ -156,6 +169,7 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     reject,
     abort,
     exportReport,
+    saveOpsDoc,
     escalateSelect,
     openArtifact
   ];

@@ -20,10 +20,11 @@ export type ResolvedToolRisk = ProxyToolRisk;
  * Resolve a tool's policy risk.
  *
  * 1. Catalog descriptor risk wins when it is a known level.
- * 2. `ops_*` discovery/meta tools are read (even when absent from the hub).
- * 3. External MCP proxy tools use {@link RISK_BY_PROXY_TOOL}
+ * 2. `ops_write_ops_doc` is write (host-built docs tool, not in the hub catalog).
+ * 3. Other `ops_*` discovery/meta tools are read (even when absent from the hub).
+ * 4. External MCP proxy tools use {@link RISK_BY_PROXY_TOOL}
  *    (`mcp_list_servers` / `mcp_search_tools` = read, `mcp_call_tool` = write).
- * 4. Everything else fail-closes to exec.
+ * 5. Everything else fail-closes to exec.
  */
 export function resolveToolRisk(
   toolName: string,
@@ -32,6 +33,7 @@ export function resolveToolRisk(
   if (descriptor?.risk && KNOWN_RISKS.has(descriptor.risk)) {
     return descriptor.risk as ResolvedToolRisk;
   }
+  if (toolName === 'ops_write_ops_doc') return 'write';
   if (toolName.startsWith('ops_')) return 'read';
   if ((EXTERNAL_MCP_PROXY_TOOL_NAMES as readonly string[]).includes(toolName)) {
     return RISK_BY_PROXY_TOOL[toolName as keyof typeof RISK_BY_PROXY_TOOL];

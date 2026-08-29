@@ -109,7 +109,7 @@ MCP 不能触发构建或发布配置。阶段产出：
 - 同 `parallelGroup` 默认 3、硬顶 4
 - exec 并行度 1；同一 pluginId 的 exec 与其它任务互斥
 - 子代理只回传 ≤800 token 摘要 + 证据引用 id；原始大输出落盘
-- EvidenceBoard 按 timeWindow 归并；冲突生成冲突便签
+- EvidenceBoard 按 timeWindow 归并；`ops_dispatch_subagent` 在 dispatch 返回前合并（`mergeEvidence`），冲突写回各任务 `evidenceNote.conflicts`，不静默取舍
 - 失败：retry 1 → degrade（该面标未取证）→ escalate 主代理 → 用户「调查受阻」条
 - Executor 失败：停后续 step、保留现场；命中回滚触发 → **新的**审批简报，不自动回滚
 

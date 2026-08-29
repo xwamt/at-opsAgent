@@ -172,6 +172,20 @@ describe('常规配置：绑定键覆盖、归一化与 patch 载荷', () => {
     }
   });
 
+  it('workspaceShell 文案是只读文件访问，不出现「执行 Shell 命令」', () => {
+    setLocale('zh-CN');
+    expect(t('cfgWorkspaceShellDesc')).toBe(
+      '允许 Agent 只读访问工作区文件（限工作区路径、单文件 64KB）。默认关闭。不提供 Shell。'
+    );
+    expect(t('cfgWorkspaceShellDesc')).not.toContain('执行 Shell 命令');
+    expect(t('cfgWorkspaceShell')).not.toContain('Shell 命令');
+    setLocale('en');
+    expect(t('cfgWorkspaceShellDesc')).toBe(
+      'Allow read-only workspace file access (cwd-bound, 64KB). Off by default. Does not enable a shell.'
+    );
+    expect(t('cfgWorkspaceShellDesc').toLowerCase()).not.toContain('run shell commands');
+  });
+
   it('normalizeConfig：空载荷回默认值；坏枚举回退；maxParallel 钳到 1–4', () => {
     expect(normalizeConfig({})).toEqual(CONFIG_DEFAULTS);
     const config = normalizeConfig({

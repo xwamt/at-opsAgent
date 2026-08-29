@@ -15,7 +15,9 @@ import * as vscode from 'vscode';
 import type {
   ChatPromptReq,
   HydrateEvt,
+  NoticeAction,
   SessionSummary,
+  TranscriptItem,
   UsageView
 } from '../../protocol';
 import type { CreateOpsRuntimeOptions, OpsRuntimeHandlers, OpsSubagentEvent } from '../../core';
@@ -24,12 +26,33 @@ import { readAgentSettings } from '../agentSettings';
 import { normalizeRoleModels } from '../modelsView';
 import type { RuntimeLike } from '../hostTypes';
 import { describeError, type HostContext } from './context';
+import { COMPACTION_NEW_SESSION_MESSAGE } from '../../runtime/compaction';
 import { sanitizeErrorText } from '../../runtime/sanitize';
 import { ensureVisibleInspectionReport } from './inspectionSummary';
 import { RuntimeEventRouter } from './runtimeEvents';
 import { SessionPoolExhaustedError, SessionRuntimePool } from './runtimePool';
+import { buildDutyDigest, collectDutyDigestInput } from './memoryDigest';
 import { StageLayerInjector } from './stageLayers';
 import { appendEvidenceNote, patchSubagentCard, type SubagentCardPatch } from './subagentCards';
+import { writeOpsDoc as writeOpsDocOnHost } from './opsDocService';
+import type { WriteOpsDocRequest } from '../../runtime/workspace-write';
+
+/** 溢出兜底：携带本会话证据/阶段开新会话（须用户点击，禁止自动开）。 */
+export const HANDOFF_NEW_SESSION_ACTION: NoticeAction = {
+  id: 'handoff-new-session',
+  label: '携带交接包开新会话'
+};
+
+/** 溢出 notice 的默认「仅提示」——无 request/command，点击后 host 无额外动作。 */
+export const DISMISS_COMPACTION_NOTICE_ACTION: NoticeAction = {
+  id: 'dismiss-notice',
+  label: '仅提示'
+};
+
+const COMPACTION_HANDOFF_ACTIONS: NoticeAction[] = [
+  HANDOFF_NEW_SESSION_ACTION,
+  DISMISS_COMPACTION_NOTICE_ACTION
+];
 
 export class ChatService {
   private readonly pool: SessionRuntimePool;
@@ -185,7 +208,11 @@ export class ChatService {
     void runtime.prompt(text, mode !== undefined ? { mode } : undefined).catch((err) => {
       const msg = sanitizeErrorText(describeError(err));
       ctx.log(`[runtime] prompt 失败: ${msg}`);
-      ctx.emitAssistantNotice(`⚠ 模型调用失败：${msg}`, sessionId);
+      if (isCompactionOverflowMessage(msg)) {
+        this.emitHandoffNotice(sessionId, msg);
+      } else {
+        ctx.emitAssistantNotice(`⚠ 模型调用失败：${msg}`, sessionId);
+      }
       this.pool.markIdle(sessionId);
     });
     return { accepted: true };
@@ -217,6 +244,38 @@ export class ChatService {
   }
 
   /**
+   * notice 动作：handoff-new-session 开带交接包的新会话；其余 id 为 no-op
+   * （「仅提示」等）。不要在 compact 失败时自动开新会话。
+   */
+  async handleNoticeAction(
+    id: string,
+    fromSessionId?: string
+  ): Promise<{ ok: boolean; sessionId?: string }> {
+    if (id === HANDOFF_NEW_SESSION_ACTION.id) {
+      return this.startHandoffSession(fromSessionId ?? this.ctx.store.activeSessionId);
+    }
+    return { ok: true };
+  }
+
+  /**
+   * 从 FROM 会话合成 digest，开「交接 …」新会话：首条 system item + L-mem 注入。
+   * store.newSession 保持可选 title；禁止 compact 失败时自动调用本方法。
+   */
+  async startHandoffSession(fromSessionId: string): Promise<{ ok: boolean; sessionId: string }> {
+    const ctx = this.ctx;
+    const from = ctx.store.sessions.find((s) => s.id === fromSessionId);
+    const digest = this.buildDutyDigestForSession(fromSessionId);
+    const created = ctx.store.newSession(`交接 ${from?.title ?? '会话'}`);
+    const item: TranscriptItem = { kind: 'system', id: randomUUID(), text: digest };
+    ctx.store.appendItem(item, created.id);
+    ctx.broadcast('transcript/append', { item });
+    await this.liveLayers.applyLayers(created.id, { memLayer: digest });
+    this.afterActiveSessionChanged();
+    ctx.broadcast('hydrate', this.snapshot());
+    return { ok: true, sessionId: created.id };
+  }
+
+  /**
    * 切换会话：store 恢复目标会话的内存包（transcript / 简报 / 时间线）。
    * sessions.maxParallel=1 时其余席位（含旧会话 runtime 与其审批/playbook
    * 运行态）随切换驱逐——审批令牌绑定 sessionId，跨会话绝不复用；
@@ -229,6 +288,24 @@ export class ChatService {
     this.afterActiveSessionChanged();
     this.ctx.broadcast('hydrate', this.snapshot());
     return { ok: true };
+  }
+
+  renameSession(id: string, title: string): { ok: boolean } {
+    if (typeof id !== 'string' || typeof title !== 'string') return { ok: false };
+    if (!this.ctx.store.renameSession(id, title)) return { ok: false };
+    this.ctx.broadcast('hydrate', this.snapshot());
+    return { ok: true };
+  }
+
+  /** 删除会话：先 evict runtime（onSessionEvicted），再改 store，禁止留下悬空池席。 */
+  deleteSession(id: string): { ok: boolean } {
+    if (typeof id !== 'string' || id.length === 0) return { ok: false };
+    if (!this.ctx.store.sessions.some((s) => s.id === id)) return { ok: false };
+    this.pool.evict(id);
+    const ok = this.ctx.store.deleteSession(id);
+    this.afterActiveSessionChanged();
+    this.ctx.broadcast('hydrate', this.snapshot());
+    return { ok };
   }
 
   private afterActiveSessionChanged(): void {
@@ -327,7 +404,20 @@ export class ChatService {
       // P0-D 阻塞派发：needSessionApproval 时 runtime 在同一 execute 内
       // await 本回调；批准继续同一调用，无需模型重试。
       requestApproval: (input) => ctx.approvals.resolveSessionApproval(sessionId, input),
-      onEvent: (e) => this.events.route(sessionId, e),
+      onEvent: (e) => {
+        if (e.type === 'compaction') {
+          void this.rehydrateMemoryLayer(sessionId);
+        }
+        if (e.type === 'notice' && isCompactionOverflowMessage(e.text)) {
+          this.events.route(sessionId, {
+            ...e,
+            variant: 'info',
+            actions: COMPACTION_HANDOFF_ACTIONS
+          });
+          return;
+        }
+        this.events.route(sessionId, e);
+      },
       // goal / visibleTools 为 runtime 侧后续开始发送的可选字段：交集类型
       // 让旧 runtime（不带这两个字段）与新 runtime 都能通过类型检查。
       onSubagentEvent: (e: OpsSubagentEvent & { goal?: string; visibleTools?: string[] }) => {
@@ -354,15 +444,16 @@ export class ChatService {
         advance: (stage?: string) => ctx.playbooks.advancePlaybook(stage, sessionId),
         close: () => ctx.playbooks.closePlaybook(sessionId)
       }
-    };
+    } as OpsRuntimeHandlers;
+    (
+      handlers as OpsRuntimeHandlers & {
+        writeOpsDoc: (req: WriteOpsDocRequest) => ReturnType<typeof writeOpsDocOnHost>;
+      }
+    ).writeOpsDoc = (req) => writeOpsDocOnHost(ctx, req);
     // per-role 模型映射（settings.json roleModels；C 提供 UI）。
-    // D-runtime 落地 roleModels 选项前多余字段会被忽略——行为不劣于现状。
     const roleModels = normalizeRoleModels((await readAgentSettings(ctx.agentDir)).roleModels);
     const resumeSessionFile = ctx.store.sessionFileOf(sessionId);
-    // 变量承载（避免字面量多余属性检查）：runtime 未落地 roleModels 前忽略该字段。
-    const options: CreateOpsRuntimeOptions & {
-      roleModels?: ReturnType<typeof normalizeRoleModels>;
-    } = {
+    const options: CreateOpsRuntimeOptions = {
       agentDir: ctx.agentDir,
       cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir(),
       model: ctx.models.resolveRuntimeModelPref(),
@@ -390,4 +481,56 @@ export class ChatService {
     }
     return runtime;
   }
+
+  // ── L-mem / 交接 ────────────────────────────────────────────────────────
+
+  private buildDutyDigestForSession(sessionId: string): string {
+    const store = this.ctx.store;
+    let exposed: string[] | undefined;
+    try {
+      exposed = this.ctx.hub.listExposedTools().map((t) => t.name);
+    } catch {
+      exposed = undefined;
+    }
+    const playbook = store.playbookOf(sessionId);
+    const timeline = sessionId === store.activeSessionId ? store.timeline : [];
+    const pendingBriefs = sessionId === store.activeSessionId ? store.pendingBriefs : [];
+    return buildDutyDigest(
+      collectDutyDigestInput({
+        ...(playbook !== undefined ? { playbook } : {}),
+        items: store.itemsOf(sessionId),
+        timeline,
+        pendingBriefs,
+        ...(exposed !== undefined ? { exposed } : {})
+      })
+    );
+  }
+
+  /** compact 事件后回灌 L-mem；runtime 仍在本席，下一次 compose 含 digest。 */
+  private async rehydrateMemoryLayer(sessionId: string): Promise<void> {
+    const digest = this.buildDutyDigestForSession(sessionId);
+    const playbook = this.ctx.store.playbookOf(sessionId);
+    await this.liveLayers.applyLayers(sessionId, {
+      ...(playbook !== undefined ? { playbookId: playbook.id, stage: playbook.stage } : {}),
+      memLayer: digest
+    });
+  }
+
+  private emitHandoffNotice(sessionId: string, text: string): void {
+    const item: TranscriptItem = {
+      kind: 'notice',
+      id: randomUUID(),
+      variant: 'info',
+      text,
+      actions: COMPACTION_HANDOFF_ACTIONS
+    };
+    this.ctx.store.appendItem(item, sessionId);
+    this.ctx.broadcastToSession(sessionId, 'transcript/append', { item });
+  }
+}
+
+function isCompactionOverflowMessage(text: string): boolean {
+  return (
+    text.includes(COMPACTION_NEW_SESSION_MESSAGE) || text.includes('自动压缩后仍无法继续')
+  );
 }

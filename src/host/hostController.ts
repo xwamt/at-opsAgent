@@ -41,6 +41,7 @@ import { HostContext } from './services/context';
 import { ModelService } from './services/modelService';
 import { PlaybookService } from './services/playbookService';
 import { WorkbenchService } from './services/workbenchService';
+import { saveOpsDocFromTranscript } from './services/opsDocService';
 
 export type { SettingsSnapshot } from './services/configService';
 
@@ -184,6 +185,24 @@ export class HostController {
         const p = payload as { id?: string; sessionId?: string } | undefined;
         return this.chat.switchSession(p?.id ?? p?.sessionId);
       }
+      case 'session/rename': {
+        const p = payload as { id?: string; title?: string } | undefined;
+        return this.chat.renameSession(p?.id ?? '', p?.title ?? '');
+      }
+      case 'session/delete': {
+        const p = payload as { id?: string } | undefined;
+        return this.chat.deleteSession(p?.id ?? '');
+      }
+      case 'opsDoc/save': {
+        const p = payload as { itemId?: string } | undefined;
+        return saveOpsDocFromTranscript(this.ctx, p?.itemId);
+      }
+      case 'notice/action': {
+        const p = payload as { id?: string; sessionId?: string } | undefined;
+        const id = typeof p?.id === 'string' ? p.id : '';
+        if (id.length === 0) return { ok: false };
+        return this.chat.handleNoticeAction(id, p?.sessionId);
+      }
       case 'settings/hydrate':
         return this.config.settingsSnapshot();
       case 'settings/open':
@@ -244,6 +263,10 @@ export class HostController {
 
   switchSession(id: string | undefined): { ok: boolean } {
     return this.chat.switchSession(id);
+  }
+
+  async saveOpsDoc(itemId?: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+    return saveOpsDocFromTranscript(this.ctx, itemId);
   }
 
   async setModel(req: ModelSetReq): Promise<{ ok: boolean }> {

@@ -115,10 +115,10 @@ type OpsCustomEntry =
 运维数据比代码 diff 更大。三层：
 
 1. **工具结果裁剪**：超过 `payloadCaps` 的 result 落 `globalStorageUri/tool-results/<id>.json`，喂给模型的是摘要 + URI；UI LogViewer 用 URI 打开。
-2. **pi 自带 compaction**：保留尾部 checkpoint（v3 `retainedTail`）。
-3. **`prompt_too_long` 重试**：先再裁一轮工具结果，再强制 compact，仍失败则停并请用户开新会话。
+2. **pi 自带 compaction**：调用时带运维 `customInstructions`（保留 evidence-note 与置信度、审批摘要、playbook 阶段/DoD、已识别主机；丢弃重复 MCP list/search 与长 stdout，改引 toolCallId）。这是 SRE/on-call 会话，不是 coding 摘要。
+3. **`prompt_too_long` 重试**：强制 compact 一次并 retry 一次；仍失败则停。host 拦截后发 notice（「携带交接包开新会话」+「仅提示」），**不**自动开新会话。
 
-EvidenceBoard 的结构化便签 **不** 被 compact 丢掉：存在 orchestrator 内存 + `custom` entry。
+compact 之后 host 从本会话 evidence 便签与审批时间线合成 ≤20 行 L-mem digest，经 `StageLayerInjector.applyLayers({ memLayer })` 回灌系统提示词（L-env → L-mem → L4）。EvidenceBoard 的结构化便签留在 `sessionStore`（UI 不丢）；模型侧靠 L-mem digest 再看见证据板，而不是 orchestrator 内存或 JSONL `custom` entry。仍溢出时可一键开新会话并自动带上同一交接包，不必手抄。
 
 ## 6. 流式事件 → UI
 

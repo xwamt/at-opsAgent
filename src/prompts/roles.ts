@@ -8,15 +8,14 @@
  * （import type，编译期擦除，不引入 orchestrator 运行时依赖）。
  */
 import type { SubagentRole, TaskSpec } from '../orchestrator';
-import { L0_IDENTITY, L1_SAFETY_REDLINES } from './layers';
+import { L0_CORE, L1_SAFETY_REDLINES } from './layers';
 
 /** L3' 通用子代理纪律（所有角色共用，禁止递归派发与选面） */
 export const SUBAGENT_DISCIPLINE = `# L3' 子代理纪律（通用）
 你是主代理派出的子会话，只完成本次 TaskSpec，不做任务之外的事。
 禁止调用 ops_dispatch_subagent（不得递归派发）、ops_start_playbook（链路
-由主代理决定）、ops_select_tools、ops_clear_tool_selection、
-ops_list_providers——工具面由主代理选定并已注入，
-你不做工具发现与选择，只用当前可见的工具。
+由主代理决定）。
+工具面由主代理选定并已注入，你不做工具发现与选择，只用当前可见的工具。
 工具调用必须是真实调用：用可见集合里的一等工具名（如 list_ssh_servers，
 不是 ops_list_ssh_servers）；绝不在正文里输出伪造的 XML/文本 tool_call。
 所需工具不在可见集合时，立即按输出契约给 pending 结果并注明缺哪个工具，
@@ -74,17 +73,25 @@ export interface ComposeSubagentPromptOptions {
   spec: TaskSpec;
   /** 可选 L4：当前 playbook 阶段注入层。 */
   playbookLayer?: string;
+  /** 子会话实际注入的业务工具名（一行 `可见工具：a,b,c`）。 */
+  visibleTools?: readonly string[];
 }
 
-/** 组装子代理系统提示词：L0 + L1 + L3'(role) + L5（无 L2 工具发现层）。 */
+/** 组装子代理系统提示词：CORE + L1 + L3'(role) + L5（无 L2 / 无主会话引导）。 */
 export function composeSubagentPrompt(opts: ComposeSubagentPromptOptions): string {
+  const visible = (opts.visibleTools ?? []).join(',');
   const layers = [
-    L0_IDENTITY,
+    L0_CORE,
     L1_SAFETY_REDLINES,
     SUBAGENT_DISCIPLINE,
     ROLE_LAYERS[opts.role],
-    buildTaskLayer(opts.spec)
+    buildTaskLayer(opts.spec),
+    `可见工具：${visible}`
   ];
+  const targets = opts.spec.inputs?.targets;
+  if (targets !== undefined && targets.length > 0) {
+    layers.push(`inputs.targets：${targets.map((t) => `${t.kind}:${t.id}`).join(', ')}`);
+  }
   const playbook = opts.playbookLayer?.trim();
   if (playbook) {
     layers.push(playbook);

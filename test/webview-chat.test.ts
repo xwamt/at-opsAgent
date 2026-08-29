@@ -793,3 +793,32 @@ describe('复制 i18n + clipboard helper（P0-E hover 复制）', () => {
     expect(history).toContain('@click.stop="exportSession');
   });
 });
+
+describe('ChatTranscript 流式 Markdown + 审批留痕（Plan 10）', () => {
+  const transcript = readFileSync(
+    path.join(process.cwd(), 'src/webview-chat/components/ChatTranscript.vue'),
+    'utf8'
+  );
+
+  it('assistant content 走 MarkdownBlock + streaming，不再插值原文；caret 仍只有一套', () => {
+    expect(transcript).toContain(
+      '<MarkdownBlock :source="entry.item.text" :streaming="!!entry.item.streaming" />'
+    );
+    expect(transcript).not.toMatch(
+      /\{\{\s*entry\.item\.text\s*\}\}\s*<span class="transcript__caret"/
+    );
+    expect((transcript.match(/class="transcript__caret"/g) ?? []).length).toBe(1);
+  });
+
+  it('user / error 分支仍可插值原文', () => {
+    expect(transcript).toContain('class="transcript__text transcript__well">{{ entry.item.text }}');
+    expect(transcript).toContain('class="transcript__text transcript__text--error"');
+  });
+
+  it('审批行显示决议 + toLocaleTimeString，不再只写已处理', () => {
+    expect(transcript).toContain('approvalOutcomeText(entry.item)');
+    expect(transcript).toContain('toLocaleTimeString');
+    expect(transcript).toContain("t('approvalTimeout')");
+    expect(transcript).not.toMatch(/v-else>\{\{\s*t\('approvalHandled'\)\s*\}\}<\/span>/);
+  });
+});

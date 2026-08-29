@@ -55,6 +55,7 @@ import {
 } from './resource-loader';
 import { createWorkspaceReadTool } from './workspace-read';
 import { createPlaybookTools, type PlaybookToolHost } from './playbook-tools';
+import { createWriteOpsDocTool, type WriteOpsDocHandler } from './workspace-write';
 import {
   buildTaskSpec,
   createSubagentManager,
@@ -363,11 +364,22 @@ export interface CreateOpsRuntimeOptions {
    * {@link TRANSIENT_PROMPT_RETRY_MS}（500）。0 = 不睡立刻重试一次。
    */
   retryDelayMs?: number;
+  /**
+   * per-role 子会话模型（settings.json roleModels）。
+   * 字段名 `model` 即 resolveModel 的 id（与设置页 `{ provider, model }` 对齐）；
+   * 也接受 `{ provider, id }`。解析失败时 log 并回落主会话模型，不抛错。
+   */
+  roleModels?: Partial<
+    Record<
+      'investigator' | 'executor' | 'writer' | 'verifier',
+      { provider: string; model?: string; id?: string }
+    >
+  >;
 }
 
-/** 组装主代理系统提示词：L0+L1+L2+L3（+可选 L-env 现场层 +可选 L4 playbook 注入层）。 */
+/** 组装主代理系统提示词：L0+L1+L2+L3（+可选 L-env 现场层 +可选 L-mem 工作记忆 +可选 L4 playbook 注入层）。 */
 export function buildSystemPrompt(
-  opts: { playbookLayer?: string; envLayer?: string } = {}
+  opts: { playbookLayer?: string; envLayer?: string; memLayer?: string } = {}
 ): string {
   return composeSystemPrompt(opts);
 }
@@ -1035,6 +1047,64 @@ async function resolveModel(
   return available[0];
 }
 
+export type RoleModelRole = 'investigator' | 'executor' | 'writer' | 'verifier';
+
+/** settings `{provider, model}` → resolveModel 的 `{provider, id}`；也接受 `{id}`。 */
+export function roleModelPrefOf(
+  roleModels: CreateOpsRuntimeOptions['roleModels'] | undefined,
+  role: string
+): { provider: string; id: string } | undefined {
+  if (roleModels === undefined) return undefined;
+  const entry = roleModels[role as RoleModelRole];
+  if (entry === undefined || typeof entry.provider !== 'string' || entry.provider.length === 0) {
+    return undefined;
+  }
+  const id =
+    typeof entry.id === 'string' && entry.id.length > 0
+      ? entry.id
+      : typeof entry.model === 'string' && entry.model.length > 0
+        ? entry.model
+        : undefined;
+  if (id === undefined) return undefined;
+  return { provider: entry.provider, id };
+}
+
+export interface ResolveSubagentModelInput {
+  role: RoleModelRole;
+  roleModels?: CreateOpsRuntimeOptions['roleModels'];
+  fallback: unknown;
+  modelRuntime: PiModelRuntimeLike;
+  injectApiKey: (providerId: string | undefined) => Promise<void>;
+  resolveModel?: (
+    runtime: PiModelRuntimeLike,
+    pref: CreateOpsRuntimeOptions['model']
+  ) => Promise<unknown>;
+  onError?: (message: string) => void;
+}
+
+/**
+ * 子会话按 roleModels 解析模型；未配置或失败时回落 fallback（主会话模型），不抛错。
+ * 导出供单测 mock resolveModel。
+ */
+export async function resolveSubagentModel(input: ResolveSubagentModelInput): Promise<unknown> {
+  const pref = roleModelPrefOf(input.roleModels, input.role);
+  if (pref === undefined) return input.fallback;
+  try {
+    await input.injectApiKey(pref.provider);
+    const resolved = await (input.resolveModel ?? resolveModel)(input.modelRuntime, pref);
+    const resolvedProvider = (resolved as { provider?: unknown } | undefined)?.provider;
+    if (typeof resolvedProvider === 'string') {
+      await input.injectApiKey(resolvedProvider);
+    }
+    return resolved;
+  } catch (err) {
+    input.onError?.(
+      `roleModels[${input.role}] ${pref.provider}/${pref.id} 解析失败，回落主模型：${describeError(err)}`
+    );
+    return input.fallback;
+  }
+}
+
 // ── 子代理子会话 ─────────────────────────────────────────────────────────
 
 interface SubagentSessionEnv {
@@ -1044,6 +1114,9 @@ interface SubagentSessionEnv {
   agentDir: string;
   modelRuntime: ModelRuntime;
   model: CreateAgentSessionOptions['model'];
+  roleModels?: CreateOpsRuntimeOptions['roleModels'];
+  injectApiKey: (providerId: string | undefined) => Promise<void>;
+  resolveModel?: ResolveSubagentModelInput['resolveModel'];
 }
 
 /**
@@ -1056,6 +1129,17 @@ interface SubagentSessionEnv {
  */
 async function runSubagentSession(env: SubagentSessionEnv, spec: TaskSpec, signal: AbortSignal): Promise<SubagentRunOutcome> {
   const { pi, handlers } = env;
+  const model = (await resolveSubagentModel({
+    role: spec.role,
+    roleModels: env.roleModels,
+    fallback: env.model,
+    modelRuntime: env.modelRuntime,
+    injectApiKey: env.injectApiKey,
+    ...(env.resolveModel !== undefined ? { resolveModel: env.resolveModel } : {}),
+    onError: (message) => {
+      handlers.onEvent?.({ type: 'notice', variant: 'info', text: message });
+    }
+  })) as CreateAgentSessionOptions['model'];
   // P0-D：子会话的每次工具调用都带 origin（role/riskCeiling/approvalToken
   // 引用），host 透传给 evaluatePolicy 执行角色规则。
   const origin: ToolCallOrigin = {
@@ -1067,10 +1151,11 @@ async function runSubagentSession(env: SubagentSessionEnv, spec: TaskSpec, signa
       ? { approvalToken: spec.approvalToken.briefId }
       : {})
   };
-  const customTools = filterToolsForSubagent(
+  const descriptors = filterToolsForSubagent(
     listBusinessToolDescriptors(handlers.hub.listExposedTools()),
     spec
-  ).map((descriptor) =>
+  );
+  const customTools = descriptors.map((descriptor) =>
     toPiTool(pi, {
       name: descriptor.name,
       label: descriptor.title,
@@ -1089,7 +1174,11 @@ async function runSubagentSession(env: SubagentSessionEnv, spec: TaskSpec, signa
     })
   );
 
-  const systemPrompt = composeSubagentPrompt({ role: spec.role, spec });
+  const systemPrompt = composeSubagentPrompt({
+    role: spec.role,
+    spec,
+    visibleTools: descriptors.map((d) => d.name)
+  });
   const settingsManager = pi.SettingsManager.inMemory();
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd: env.cwd,
@@ -1108,7 +1197,7 @@ async function runSubagentSession(env: SubagentSessionEnv, spec: TaskSpec, signa
     cwd: env.cwd,
     agentDir: env.agentDir,
     modelRuntime: env.modelRuntime,
-    model: env.model,
+    model,
     // 子会话同样禁用 pi 内置 coding 四件套。
     noTools: 'builtin',
     customTools,
@@ -1259,7 +1348,16 @@ async function createPiRuntime(
   // P1-6：ops_dispatch_subagent 是阻塞式工具（工具结果 = 终态摘要 JSON），
   // 结果经 tool result 一次性回到主 transcript——deliverToMain 的 prompt
   // 回灌已删除（不再有伪装 user 消息的异步插播）。
-  const subagentEnv: SubagentSessionEnv = { pi, handlers, cwd, agentDir, modelRuntime, model };
+  const subagentEnv: SubagentSessionEnv = {
+    pi,
+    handlers,
+    cwd,
+    agentDir,
+    modelRuntime,
+    model,
+    injectApiKey,
+    ...(options.roleModels !== undefined ? { roleModels: options.roleModels } : {})
+  };
 
   // 派发时登记 goal + 实际注入的工具名（与 runSubagentSession 用同一套
   // filterToolsForSubagent 过滤），全部生命周期事件都带上——host 侧子代理卡
@@ -1387,6 +1485,14 @@ async function createPiRuntime(
   for (const spec of createPlaybookTools(handlers.playbooks)) {
     extraTools.push(gatedTool(spec));
     extraToolNames.push(spec.name);
+  }
+
+  // 运维文档落盘（仅 ops-docs/；write 走审批闸；host 未接线则不注册）。
+  const writeOpsDoc = (handlers as { writeOpsDoc?: WriteOpsDocHandler }).writeOpsDoc;
+  if (typeof writeOpsDoc === 'function') {
+    const writeSpec = createWriteOpsDocTool(writeOpsDoc);
+    extraTools.push(gatedTool(writeSpec));
+    extraToolNames.push(writeSpec.name);
   }
 
   // 目录热更新判定基线：本次注册进会话的业务工具名快照。

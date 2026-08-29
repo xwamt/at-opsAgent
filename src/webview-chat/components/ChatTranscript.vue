@@ -154,6 +154,31 @@ onMounted(async () => {
   }
   updateRange();
 });
+
+/** 审批行：批准/拒绝/超时 · HH:mm:ss；旧会话无 decision 仍显示「已处理」。 */
+function approvalOutcomeText(item: { decision?: string; ts?: number }): string {
+  let label: string;
+  switch (item.decision) {
+    case 'approved':
+      label = t('approvalApprove');
+      break;
+    case 'rejected':
+      label = t('approvalReject');
+      break;
+    case 'timeout':
+      label = t('approvalTimeout');
+      break;
+    case 'pending':
+      label = t('approvalPendingDecision');
+      break;
+    default:
+      return t('approvalHandled');
+  }
+  if (typeof item.ts === 'number') {
+    return `${label} · ${new Date(item.ts).toLocaleTimeString()}`;
+  }
+  return label;
+}
 </script>
 
 <template>
@@ -218,14 +243,25 @@ onMounted(async () => {
             v-else-if="assistantDisplay(entry.item) === 'content'"
             class="transcript__msg transcript__msg--agent"
           >
-            <span class="transcript__who transcript__who--agent">{{ t('roleAgent') }}</span>
+            <span class="transcript__who-row">
+              <span class="transcript__who transcript__who--agent">{{ t('roleAgent') }}</span>
+              <button
+                type="button"
+                class="ops-copy-btn transcript__save-doc"
+                :aria-label="t('saveOpsDocAria')"
+                :title="t('saveOpsDocAria')"
+                @click.stop="store.saveOpsDoc(entry.item.id)"
+              >
+                <span class="codicon codicon-save" aria-hidden="true"></span>
+              </button>
+            </span>
             <div v-if="entry.item.error" class="transcript__text transcript__text--error">
               {{ entry.item.text }}
             </div>
-            <MarkdownBlock v-else-if="!entry.item.streaming" :source="entry.item.text" />
-            <div v-else class="transcript__text">
-              {{ entry.item.text }}<span class="transcript__caret" :aria-label="t('generating')">▍</span>
-            </div>
+            <template v-else>
+              <MarkdownBlock :source="entry.item.text" :streaming="!!entry.item.streaming" />
+              <span v-if="entry.item.streaming" class="transcript__caret" :aria-label="t('generating')">▍</span>
+            </template>
             <!-- 失败可重试（P1-5）：错误 footer + Retry -->
             <div v-if="entry.item.error && entry.item.retryable" class="transcript__retry">
               <button
@@ -259,7 +295,7 @@ onMounted(async () => {
           <span class="codicon codicon-warning" aria-hidden="true"></span>
           {{ t('approvalRequestLabel') }} <span class="ops-mono">{{ entry.item.briefId }}</span>
           <span v-if="store.pendingApproval && store.pendingApproval.id === entry.item.briefId">{{ t('approvalSeeBelow') }}</span>
-          <span v-else>{{ t('approvalHandled') }}</span>
+          <span v-else>{{ approvalOutcomeText(entry.item) }}</span>
         </div>
 
         <!-- notice 卡（P0-D）：一句人话原因 + 动作按钮（打开设置 / 诊断 / 重试） -->
@@ -403,6 +439,24 @@ onMounted(async () => {
 .transcript__who--agent {
   color: var(--ops-accent);
   font-weight: 600;
+}
+
+.transcript__who-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  min-width: 0;
+}
+
+.transcript__save-doc {
+  opacity: 0;
+  width: 22px;
+  height: 22px;
+}
+
+.transcript__msg--agent:hover .transcript__save-doc,
+.transcript__save-doc:focus-visible {
+  opacity: 1;
 }
 
 .transcript__well {
