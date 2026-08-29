@@ -21,6 +21,7 @@ import { CHAT_VIEW_ID, ChatViewProvider } from './chatView';
 import { registerCommands } from './commands';
 import { HostController } from './hostController';
 import { OpsSecrets } from './secrets';
+import { pruneToolResults } from './retention';
 import { SessionStore } from './sessionStore';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -42,9 +43,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const secrets = new OpsSecrets(context.secrets);
   // P1-3：会话持久化到 ~/.at-series/agent/ui-sessions.json，构造期同步回载。
-  const store = new SessionStore({
-    agentDir: path.join(os.homedir(), '.at-series', 'agent')
-  });
+  const agentDir = path.join(os.homedir(), '.at-series', 'agent');
+  const store = new SessionStore({ agentDir });
   context.subscriptions.push({ dispose: () => store.dispose() });
 
   // ── HubHost：OpsCore facade 静态创建（P1-8：动态装载器与 fallback 已删） ──
@@ -56,6 +56,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       mode: config.get<'auto' | 'always' | 'off'>('discovery.mode', 'auto'),
       threshold: config.get<number>('discovery.threshold', 20)
     },
+    selectionIdleMs: 0,
     log
   });
   context.subscriptions.push({ dispose: () => hub.dispose() });
@@ -138,6 +139,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   scheduleInspectionReminder(context, controller, log);
 
   log(`[activate] 完成，耗时 ${Date.now() - startedAt}ms`);
+
+  // 过期 tool-results / 未被引用的 sessions JSONL：不阻塞启动，失败只记日志。
+  void pruneToolResults(agentDir).catch((err) =>
+    log(`[retention] prune 失败: ${err instanceof Error ? err.message : String(err)}`)
+  );
 }
 
 /**

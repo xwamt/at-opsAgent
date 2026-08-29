@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import type { ToolCallView } from '../../protocol/host-protocol';
 import { t } from '../i18n';
+import { useCopiedFlag } from '../lib/clipboard';
 import { toolCallHeadline } from '../store-helpers';
 import LogViewer from './LogViewer.vue';
 
@@ -33,6 +34,13 @@ const status = computed(() => STATUS_META[props.call.status] ?? STATUS_META.runn
 /** 标题显示命令意图（docs/14 P1-ui：磁盘/内存/…），原始工具名进 title 提示。 */
 const headline = computed(() => toolCallHeadline(props.call));
 
+const { copied, copy } = useCopiedFlag();
+
+/** 只复制 headline/命令，不复制 stdout preview。 */
+async function copyHeadline(): Promise<void> {
+  await copy(headline.value);
+}
+
 const duration = computed(() => {
   const ms = props.call.durationMs;
   if (ms === undefined || ms === null) {
@@ -63,13 +71,17 @@ const artifactHref = computed(() =>
 
 <template>
   <section class="tool" :class="'tool--' + props.call.risk">
-    <button
-      type="button"
+    <!-- 头行是 div：复制钮必须是真 button，不能嵌在展开 button 里 -->
+    <div
       class="tool__head"
-      :aria-expanded="expanded"
+      :class="{ 'tool__head--static': !hasBody }"
+      role="button"
+      :tabindex="hasBody ? 0 : -1"
+      :aria-expanded="hasBody ? expanded : undefined"
       :aria-label="t('toolToggleAria')"
-      :disabled="!hasBody"
-      @click="expanded = !expanded"
+      @click="hasBody && (expanded = !expanded)"
+      @keydown.enter.prevent="hasBody && (expanded = !expanded)"
+      @keydown.space.prevent="hasBody && (expanded = !expanded)"
     >
       <span
         class="codicon tool__chevron"
@@ -80,12 +92,23 @@ const artifactHref = computed(() =>
       <span class="tool__name ops-mono" :title="props.call.name">{{ headline }}</span>
       <span v-if="props.call.pluginId" class="tool__plugin ops-muted ops-mono">{{ props.call.pluginId }}</span>
       <span class="ops-badge" :class="'ops-risk-' + props.call.risk">{{ riskLabel }}</span>
+      <button
+        type="button"
+        class="ops-copy-btn tool__copy"
+        :class="{ 'ops-copy-btn--copied': copied }"
+        :aria-label="copied ? t('copied') : t('copyAria')"
+        :title="copied ? t('copied') : t('copy')"
+        @click.stop="copyHeadline"
+      >
+        <span class="codicon" :class="copied ? 'codicon-check' : 'codicon-copy'" aria-hidden="true"></span>
+        <span v-if="copied">{{ t('copied') }}</span>
+      </button>
       <span class="tool__spacer"></span>
       <span class="tool__status" :class="status.cls">
         <span class="codicon" :class="status.icon" aria-hidden="true"></span>{{ t(status.key) }}
       </span>
       <span v-if="duration" class="ops-muted ops-mono">{{ duration }}</span>
-    </button>
+    </div>
 
     <template v-if="expanded">
       <!-- 截断结果统一走 LogViewer（自带「已截断 · 在编辑器打开」） -->
@@ -148,7 +171,7 @@ const artifactHref = computed(() =>
   text-align: left;
 }
 
-.tool__head:disabled {
+.tool__head--static {
   cursor: default;
 }
 
@@ -157,13 +180,29 @@ const artifactHref = computed(() =>
   outline-offset: 1px;
 }
 
+.tool__copy {
+  opacity: 0;
+  width: 22px;
+  height: 22px;
+}
+
+.tool__head:hover .tool__copy,
+.tool__copy:focus-visible,
+.tool__copy.ops-copy-btn--copied {
+  opacity: 1;
+}
+
+.tool__copy.ops-copy-btn--copied {
+  width: auto;
+}
+
 .tool__chevron,
 .tool__icon {
   flex: 0 0 auto;
   color: var(--ops-muted);
 }
 
-.tool__head:disabled .tool__chevron {
+.tool__head--static .tool__chevron {
   visibility: hidden;
 }
 

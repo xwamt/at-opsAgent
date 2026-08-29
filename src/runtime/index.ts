@@ -37,6 +37,7 @@ import type {
 import { composeSystemPrompt } from '../prompts/layers';
 import { composeSubagentPrompt } from '../prompts/roles';
 import { recoverFromPromptError } from './compaction';
+import { redactSecrets } from './sanitize';
 import { applyDiscoveryNudge, createDiscoveryNudgeState } from './discovery-nudge';
 import {
   discoveryToolSpecs,
@@ -497,14 +498,15 @@ export function truncateForModel(
   context: TruncateForModelContext = {},
   limit = MODEL_RESULT_CHAR_LIMIT
 ): string {
-  if (text.length <= limit) return text;
+  const full = redactSecrets(text).text;
+  if (full.length <= limit) return full;
   const source = `${context.pluginId ?? '未知插件'}/${context.name ?? '未知工具'}`;
   const notice =
-    `【截断提示】工具 ${source} 的完整输出共 ${text.length} 字符，超过 ${limit} 字符上限，以下内容已被截断` +
+    `【截断提示】工具 ${source} 的完整输出共 ${full.length} 字符，超过 ${limit} 字符上限，以下内容已被截断` +
     (context.savedPath !== undefined ? `；完整 JSON 已写入 ${context.savedPath}` : '') +
     '。\n';
   const room = Math.max(limit - notice.length - TRUNCATED_SUFFIX.length, 0);
-  return `${notice}${text.slice(0, room)}${TRUNCATED_SUFFIX}`;
+  return `${notice}${full.slice(0, room)}${TRUNCATED_SUFFIX}`;
 }
 
 /** invoke 结果是否为用户取消（USER_CANCELLED）；此时必须走 isError 路径。 */
@@ -523,7 +525,7 @@ async function persistFullToolResult(
     const dir = join(agentDir, TOOL_RESULTS_DIRNAME);
     await mkdir(dir, { recursive: true });
     const file = join(dir, `${safeId.length > 0 ? safeId : randomUUID()}.json`);
-    await writeFile(file, json, 'utf8');
+    await writeFile(file, redactSecrets(json).text, 'utf8');
     return file;
   } catch {
     return undefined;
@@ -557,7 +559,7 @@ export async function executeBusinessTool(
   if (isCancelledInvocation(result)) {
     throw new Error(result.error?.message ?? `工具 ${descriptor.name} 调用已被用户取消`);
   }
-  const full = JSON.stringify(result);
+  const full = redactSecrets(JSON.stringify(result)).text;
   if (full.length <= MODEL_RESULT_CHAR_LIMIT) return full;
   const savedPath = await persistFullToolResult(agentDir, toolCallId ?? randomUUID(), full);
   return truncateForModel(full, {

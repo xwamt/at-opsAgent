@@ -12,7 +12,6 @@ import {
   normalizeToolRisk,
   HUB_BUILTIN_TOOL_NAMES,
   DEFAULT_TOOL_DISCOVERY_THRESHOLD,
-  DEFAULT_TOOL_SELECTION_IDLE_MS,
   type AggregatedCatalog,
   type HubRuntime,
   type ListProvidersResult as HubListProvidersResult,
@@ -220,7 +219,9 @@ class AtSeriesHubHost implements HubHost {
           home: this.options.home,
           discoveryMode: this.options.discoveryMode,
           discoveryThreshold: this.options.discoveryThreshold,
-          selectionIdleMs: this.options.selectionIdleMs ?? DEFAULT_TOOL_SELECTION_IDLE_MS,
+          // Embedded path forces 0 (no 120s idle clear). Duty-loop
+          // selection discipline is policy + playbook close / eviction.
+          selectionIdleMs: this.options.selectionIdleMs ?? 0,
           selectionMaxCalls: 0,
           onToolsListChanged: () => {
             void this.scheduleSync();
@@ -392,7 +393,7 @@ class AtSeriesHubHost implements HubHost {
       threshold: this.options.discoveryThreshold ?? DEFAULT_TOOL_DISCOVERY_THRESHOLD,
       selected: [...this.selectedNames],
       exposedBusinessToolCount: this.exposedTools.length,
-      idleMs: this.options.selectionIdleMs ?? DEFAULT_TOOL_SELECTION_IDLE_MS,
+      idleMs: this.options.selectionIdleMs ?? 0,
       maxCalls: 0
     };
   }
@@ -475,6 +476,26 @@ class AtSeriesHubHost implements HubHost {
     if (added.length > 0 || removed.length > 0) {
       this.toolsEmitter.fire({ exposed, added, removed });
     }
+    this.reconcileSelectedNames();
+  }
+
+  /**
+   * Keep adapter `selectedNames` honest after the engine drops a selection
+   * without going through `select`/`clear` (idle TTL, or a future engine
+   * path). This is **not ACL**: `invoke` still routes any tool; we only
+   * stop L-env / policy from reporting a stale selected set.
+   *
+   * HubRuntime has no `getSelectionState` (P2 / Plan 12). Heuristic: empty
+   * exposed *business* tools ⇒ engine has nothing selected (or no winners).
+   * Do not clear while any business tool remains exposed — auto/off under
+   * threshold still lists winners without a selection.
+   */
+  private reconcileSelectedNames(): void {
+    const exposedBusiness = this.exposedTools.filter((t) => !META_TOOL_NAMES.has(t.name));
+    if (exposedBusiness.length === 0 && this.selectedNames.length > 0) {
+      this.selectedNames = [];
+      this.selectionEmitter.fire(this.selectionState());
+    }
   }
 }
 
@@ -485,3 +506,5 @@ export function createAtSeriesHubHost(options: AtSeriesHubHostOptions): HubHost 
     discoveryThreshold: options.discoveryThreshold ?? options.discovery?.threshold
   });
 }
+
+export { clearHubSelection } from './clearSelection';

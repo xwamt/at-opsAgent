@@ -8,6 +8,9 @@
  * - 401/403 归类为「Key 无效或无权限」；DNS/连接/超时归类为网络错误。
  * - API key 只进 Authorization 头，**绝不出现在返回的 error 文本或日志里**。
  */
+import { sanitizeErrorText } from '../runtime/sanitize';
+
+export { sanitizeErrorText };
 
 export interface ProbeInput {
   baseUrl: string;
@@ -70,13 +73,6 @@ export function describeNetworkError(err: unknown): string {
     return 'TLS/证书错误：请核对 https 地址与内网证书配置。';
   }
   return `网络错误：${sanitizeErrorText(raw)}`;
-}
-
-/** 防御性脱敏：错误原文中疑似 bearer/key 的片段一律抹掉。 */
-export function sanitizeErrorText(text: string): string {
-  return text
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***');
 }
 
 function headersFor(apiKey: string | undefined): Record<string, string> {

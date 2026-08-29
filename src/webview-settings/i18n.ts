@@ -37,6 +37,8 @@ const zhCN = {
   cfgSessionRequiredForDesc: '哪些风险等级需要会话内审批简报：写+执行 / 仅执行 / 从不。',
   cfgDedupePluginModal: '合并插件确认弹窗',
   cfgDedupePluginModalDesc: '开启后以 Agent 审批简报为准，尽量抑制插件自身的确认弹窗。',
+  cfgApprovalTimeoutMs: '审批等待超时（毫秒）',
+  cfgApprovalTimeoutMsDesc: '无人处理的审批在此时长后按拒绝落定（默认 15 分钟）。0 表示不超时。软停与硬停同样按拒绝解挂。',
   cfgSessionReadAllowlist: '只读工具免审名单',
   cfgSessionReadAllowlistDesc:
     '这些只读工具在会话内跳过审批（逗号分隔工具名）。批准只读工具时选「本会话不再询问」也会加入。写 / 执行类工具永远需要审批。',
@@ -182,6 +184,9 @@ const en: Record<SettingsMessageKey, string> = {
   cfgDedupePluginModal: 'Merge plugin confirmation dialogs',
   cfgDedupePluginModalDesc:
     'When on, the agent approval brief is authoritative and plugin confirmation dialogs are suppressed when possible.',
+  cfgApprovalTimeoutMs: 'Approval wait timeout (ms)',
+  cfgApprovalTimeoutMsDesc:
+    'Unhandled approvals settle as rejected after this duration (default 15 minutes). 0 disables the timeout. Soft-stop and hard-stop also reject waiters.',
   cfgSessionReadAllowlist: 'Approval-exempt read-only tools',
   cfgSessionReadAllowlistDesc:
     'These read-only tools skip in-session approval (comma-separated tool names). Choosing “don’t ask again this session” when approving a read tool also adds it. Write / exec tools always require approval.',

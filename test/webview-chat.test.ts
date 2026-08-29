@@ -17,7 +17,9 @@
  *
  * @vitest-environment jsdom
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import type { SubagentCard, TranscriptItem } from '../src/protocol/host-protocol';
 import {
   confidenceClass,
@@ -702,5 +704,92 @@ describe('ChatTranscript 空 assistant（assistantDisplay，docs/14 P1-ui）', (
     expect(t('inspectingProgress')).toBe('正在巡检…');
     setLocale('en');
     expect(t('inspectingProgress')).toBe('Inspecting…');
+  });
+});
+
+describe('复制 i18n + clipboard helper（P0-E hover 复制）', () => {
+  it('copy / copied / copyAria zh+en 齐备', () => {
+    expect(t('copy')).toBe('复制');
+    expect(t('copied')).toBe('已复制');
+    expect(t('copyAria')).toBe('复制到剪贴板');
+    expect(t('historyExportAria')).toBe('导出值班报告');
+    setLocale('en');
+    expect(t('copy')).toBe('Copy');
+    expect(t('copied')).toBe('Copied');
+    expect(t('copyAria')).toBe('Copy to clipboard');
+    expect(t('historyExportAria')).toBe('Export duty report');
+  });
+
+  it('工具卡复制文本是 headline 不是 preview 全文', () => {
+    const call = {
+      name: 'run_remote_command',
+      preview: 'df -h\nFilesystem      Size  Used Avail Use%\n/dev/vda1        50G   46G  4.0G  93%'
+    };
+    const headline = toolCallHeadline(call);
+    expect(headline).toBe('磁盘 · df -h');
+    expect(headline).not.toContain('Filesystem');
+    expect(headline).not.toContain('93%');
+  });
+
+  it('copyText 成功路径走 navigator.clipboard.writeText', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const nav = globalThis as { navigator: { clipboard?: { writeText: (s: string) => Promise<void> } } };
+    Object.defineProperty(nav.navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText }
+    });
+    // 非字面量 import：避免 tsc 把 webview vscode-api（window）拉进 node tsconfig
+    const spec = '../src/webview-chat/lib/clipboard';
+    const { copyText } = (await import(spec)) as { copyText: (text: string) => Promise<boolean> };
+    await expect(copyText('df -h')).resolves.toBe(true);
+    expect(writeText).toHaveBeenCalledWith('df -h');
+  });
+
+  it('copyText 在 clipboard 失败时 post clipboard/write', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    const nav = globalThis as { navigator: { clipboard?: { writeText: (s: string) => Promise<void> } } };
+    Object.defineProperty(nav.navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText }
+    });
+    const posted: unknown[] = [];
+    const apiSpec = '../src/webview-chat/vscode-api';
+    const { getVsCodeApi } = (await import(apiSpec)) as {
+      getVsCodeApi: () => { postMessage: (message: unknown) => void };
+    };
+    const api = getVsCodeApi();
+    const orig = api.postMessage.bind(api);
+    api.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    const spec = '../src/webview-chat/lib/clipboard';
+    const { copyText } = (await import(spec)) as { copyText: (text: string) => Promise<boolean> };
+    await expect(copyText('systemctl status nginx')).resolves.toBe(true);
+    expect(
+      posted.some(
+        (m) =>
+          typeof m === 'object' &&
+          m !== null &&
+          (m as { type?: string }).type === 'clipboard/write' &&
+          (m as { payload?: { text?: string } }).payload?.text === 'systemctl status nginx'
+      )
+    ).toBe(true);
+    api.postMessage = orig;
+  });
+
+  it('三处复制组件含 codicon-copy；工具卡 @click.stop 且不复制 preview', () => {
+    const dir = path.join(process.cwd(), 'src/webview-chat/components');
+    const markdown = readFileSync(path.join(dir, 'MarkdownBlock.vue'), 'utf8');
+    const tool = readFileSync(path.join(dir, 'ToolCallCard.vue'), 'utf8');
+    const approval = readFileSync(path.join(dir, 'ApprovalBar.vue'), 'utf8');
+    const history = readFileSync(path.join(dir, 'HistoryOverlay.vue'), 'utf8');
+    expect(markdown).toContain('codicon-copy');
+    expect(tool).toContain('codicon-copy');
+    expect(approval).toContain('codicon-copy');
+    expect(tool).toContain('@click.stop="copyHeadline"');
+    expect(tool).not.toMatch(/copy\(preview/);
+    expect(tool).not.toContain('copyPreview');
+    expect(history).toContain("store.post('chat/export', { sessionId");
+    expect(history).toContain('@click.stop="exportSession');
   });
 });

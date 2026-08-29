@@ -29,6 +29,7 @@
   "config.approval.sessionRequiredFor": "Which risk levels require an in-chat session approval before a tool runs: write and exec operations, exec only, or never (plugin-side approvals still apply).",
   "config.approval.dedupePluginModal": "Skip the capability plugin's own confirmation modal when the session approval already covers the same command set (uses HMAC approval tokens).",
   "config.approval.sessionReadAllowlist": "Tool name prefixes treated as read-only for this machine; matching tools bypass session approval. Example: [\"kb.\", \"metrics.query\"].",
+  "config.approval.timeoutMs": "Pending-approval timeout in milliseconds. Timed-out requests are treated as rejected and the session is released. 0 disables the timeout.",
   "config.models.defaultThinkingLevel": "Default reasoning effort requested from models that support it.",
   "config.models.toolCallPromptFallback": "Emulate tool calling through prompts for models without native tool/function calling.",
   "config.workspaceShell.enabled": "Allow the agent to run shell commands in the workspace (requires approval per policy). Off by default.",

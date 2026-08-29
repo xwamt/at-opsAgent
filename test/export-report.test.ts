@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildOpsReportMarkdown, exportReportFileName } from '../src/host/exportReport';
+import { redactSecrets } from '../src/runtime/sanitize';
 import type { TranscriptItem } from '../src/protocol';
 
 const NOW = new Date('2026-08-28T10:30:00Z');
@@ -110,5 +111,29 @@ describe('buildOpsReportMarkdown', () => {
     const name = exportReportFileName(new Date(2026, 7, 28, 10, 5));
     expect(name).toBe('at-ops-report-20260828-1005.md');
     expect(name).not.toMatch(/[:*?"<>|]/);
+  });
+
+  it('工具 preview 含 Bearer 时输出 [REDACTED] 且不含 secret-token', () => {
+    const md = buildOpsReportMarkdown({
+      sessionId: 'sess-secret',
+      items: [
+        {
+          kind: 'tool',
+          id: 't-secret',
+          call: {
+            name: 'http.dump',
+            pluginId: 'at.http',
+            risk: 'read',
+            status: 'ok',
+            preview: 'Authorization: Bearer secret-token'
+          }
+        }
+      ],
+      timeline: [],
+      now: NOW
+    });
+    expect(md).toContain('[REDACTED]');
+    expect(md).not.toContain('secret-token');
+    expect(redactSecrets('Authorization: Bearer secret-token').hits).toBeGreaterThanOrEqual(1);
   });
 });

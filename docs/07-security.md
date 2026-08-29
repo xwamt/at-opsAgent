@@ -23,6 +23,8 @@
 
 `allowBackgroundAccess === false` 不是安全漏洞：工具会 `UNAVAILABLE`。不要在 Agent 里绕过该开关。
 
+审批 waiter 超时（`atOpsAgent.approval.timeoutMs`，默认 15 分钟，0 禁用）以及软停 / 硬停，一律按 **拒绝** 落定，不得当成批准。超时后令牌不得留在 `currentApprovals`。
+
 ## 3. 凭据
 
 | 秘密 | 位置 | Agent |
@@ -61,3 +63,22 @@ Remote-SSH：扩展跑在远程机，registry 是远程 `$HOME`。这是正确�
 
 - pi 三包精确锁定 + shrinkwrap/lockfile
 - 不执行用户 skill 里的任意 TS（pi 扩展若开启，`defaultProjectTrust` 对非交互默认不信任项目扩展——运维 Agent 应 **默认关闭** 项目本地 pi extensions，只加载打包 skills）
+
+## 9. 落盘刮密范围 / JSONL 限制 / 30 天 tool-results
+
+本扩展**自己写到磁盘或导出文件**的文本先过 `redactSecrets`（`src/runtime/sanitize.ts`，禁止 import vscode）：
+
+| 路径 | 刮密点 |
+|------|--------|
+| `~/.at-series/agent/tool-results/*.json` | `persistFullToolResult` 写盘前；回模型的截断文本同样先刮密 |
+| `~/.at-series/agent/ui-sessions.json` | `sessionStore.persistNow` 序列化前对 item 的 `text` / `call.preview` / `errorMessage` |
+| 值班报告 Markdown | `buildOpsReportMarkdown` return 前 |
+
+规则覆盖 Bearer、`password=`/`token=` 键、PEM 私钥块、`mysql://user:pass@` 类连接串、`sk-`、`x-at-series-token`。刮密不可逆。
+
+**JSONL 限制：** pi 会话 JSONL（`~/.at-series/agent/sessions/*.jsonl`）由 SessionManager 写入。`createAgentSession` / SessionManager **没有**本仓可接的 transform hook，本扩展不 fork pi，因此 JSONL **可能仍含工具原文**。回给模型的业务工具结果会先刮密，这是进入 JSONL 的主要通道，但 pi 自身写入不经过 `redactSecrets`。
+
+**保留：** activate 末尾 `void pruneToolResults(agentDir)`（不阻塞启动，失败只记日志）：
+
+- `tool-results/*.json`：mtime 超过 30 天则删除
+- `sessions/*.jsonl`：mtime 超过 30 天 **且** 不被 `ui-sessions.json` 任何 `sessionFile` 引用才删除。读不到引用表则跳过 JSONL（宁可漏删，不删仍被引用的文件）

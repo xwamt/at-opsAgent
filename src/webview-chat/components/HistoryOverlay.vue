@@ -9,6 +9,10 @@ function close(): void {
   store.toggleHistory(false);
 }
 
+function exportSession(sessionId: string): void {
+  store.post('chat/export', { sessionId });
+}
+
 function formatTime(createdAt: number): string {
   if (!createdAt) {
     return '';
@@ -56,26 +60,39 @@ onBeforeUnmount(() => {
         </button>
       </header>
       <div class="history__list">
-        <button
+        <div
           v-for="session in store.historySessions"
           :key="session.id"
-          type="button"
           class="history__item"
           :class="{ 'history__item--current': session.id === store.sessionId }"
-          :aria-label="t('historySwitchAria') + ' ' + session.title"
-          :title="session.id"
-          @click="store.switchSession(session.id)"
         >
-          <span class="history__item-row">
-            <span class="history__item-title">{{ session.title }}</span>
-            <span v-if="session.id === store.sessionId" class="history__item-badge">
-              {{ t('historyCurrent') }}
+          <button
+            type="button"
+            class="history__item-main"
+            :aria-label="t('historySwitchAria') + ' ' + session.title"
+            :title="session.id"
+            @click="store.switchSession(session.id)"
+          >
+            <span class="history__item-row">
+              <span class="history__item-title">{{ session.title }}</span>
+              <span v-if="session.id === store.sessionId" class="history__item-badge">
+                {{ t('historyCurrent') }}
+              </span>
             </span>
-          </span>
-          <span v-if="session.createdAt" class="history__item-meta ops-mono ops-muted">
-            {{ formatTime(session.createdAt) }}
-          </span>
-        </button>
+            <span v-if="session.createdAt" class="history__item-meta ops-mono ops-muted">
+              {{ formatTime(session.createdAt) }}
+            </span>
+          </button>
+          <button
+            type="button"
+            class="ops-copy-btn history__export"
+            :aria-label="t('historyExportAria')"
+            :title="t('historyExportAria')"
+            @click.stop="exportSession(session.id)"
+          >
+            <span class="codicon codicon-export" aria-hidden="true"></span>
+          </button>
+        </div>
         <p v-if="store.historySessions.length === 0" class="history__empty ops-muted">
           {{ t('historyEmpty') }}
         </p>
@@ -187,8 +204,8 @@ onBeforeUnmount(() => {
 
 .history__item {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
   gap: 2px;
   text-align: left;
   background: transparent;
@@ -196,23 +213,47 @@ onBeforeUnmount(() => {
   border-radius: var(--ops-radius);
   padding: var(--ops-density) calc(var(--ops-density) + 2px);
   color: var(--ops-fg);
-  cursor: pointer;
   min-width: 0;
 }
 
-.history__item:hover,
-.history__item:focus-visible {
-  background: var(--ops-hover-bg);
-  outline: none;
+.history__item-main {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
 }
 
-.history__item:focus-visible {
+.history__item:hover,
+.history__item:focus-within {
+  background: var(--ops-hover-bg);
+}
+
+.history__item-main:focus-visible {
   outline: 1px solid var(--ops-accent);
-  outline-offset: -1px;
+  outline-offset: 1px;
 }
 
 .history__item--current {
   border-left: 2px solid var(--ops-accent);
+}
+
+.history__export {
+  opacity: 0;
+  width: 22px;
+  height: 22px;
+}
+
+.history__item:hover .history__export,
+.history__export:focus-visible {
+  opacity: 1;
 }
 
 .history__item-row {

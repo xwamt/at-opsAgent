@@ -22,6 +22,7 @@ import {
   type SubagentCard,
   type TranscriptItem
 } from '../protocol';
+import { redactSecrets } from '../runtime/sanitize';
 
 export interface SessionInfo {
   id: string;
@@ -397,7 +398,7 @@ export class SessionStore {
     for (const [id, bag] of this._bags) {
       if (!keepIds.has(id)) continue;
       bags[id] = {
-        items: bag.items,
+        items: bag.items.map(redactPersistedItem),
         playbook: bag.playbook ?? null,
         timeline: bag.timeline
       };
@@ -406,7 +407,9 @@ export class SessionStore {
       version: PERSIST_VERSION,
       activeSessionId: this._activeSessionId,
       // 落盘顺序保持创建序（keep 只用于淘汰判定）。
-      sessions: this._sessions.filter((s) => keepIds.has(s.id)),
+      sessions: this._sessions
+        .filter((s) => keepIds.has(s.id))
+        .map((s) => ({ ...s, title: redactSecrets(s.title).text })),
       bags
     };
     try {
@@ -487,6 +490,27 @@ export class SessionStore {
     this.sessionsEmitter.dispose();
     this.approvalsEmitter.dispose();
     this.timelineEmitter.dispose();
+  }
+}
+
+/** 落盘前刮密 transcript 字符串字段（至少 text / preview / errorMessage）。 */
+function redactPersistedItem(item: TranscriptItem): TranscriptItem {
+  switch (item.kind) {
+    case 'user':
+    case 'assistant':
+    case 'notice':
+    case 'system':
+      return { ...item, text: redactSecrets(item.text).text };
+    case 'tool': {
+      const call = { ...item.call };
+      if (typeof call.preview === 'string') call.preview = redactSecrets(call.preview).text;
+      if (typeof call.errorMessage === 'string') {
+        call.errorMessage = redactSecrets(call.errorMessage).text;
+      }
+      return { ...item, call };
+    }
+    default:
+      return item;
   }
 }
 

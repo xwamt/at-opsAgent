@@ -1,7 +1,8 @@
 /**
  * 工作台服务（编辑器 / 窗口交互的小件）：
  * - asset/pick：QuickPick 选素材附进 Composer（证据便签 + 工作区文件）；
- * - chat/export（P1-10）：当前会话 → Markdown 值班报告；
+ * - chat/export（P1-10）：指定/活动会话 → Markdown 值班报告（取消保存零 IO）；
+ * - clipboard/write：host 回退剪贴板；
  * - log/open：LogViewer「在编辑器打开」；
  * - skill/run：内置技能无用户入口，收到请求只记日志（无害 no-op）。
  */
@@ -67,20 +68,24 @@ export class WorkbenchService {
   }
 
   /**
-   * chat/export（P1-10）：当前会话 → Markdown 值班报告。
-   * showSaveDialog 选路径；取消时落系统临时目录，两种路径都会在编辑器打开。
+   * chat/export（P1-10）：指定会话（缺省活动会话）→ Markdown 值班报告。
+   * showSaveDialog 选路径；取消（undefined）时零 write、零 openTextDocument。
    * 报告绝不包含审批令牌 / API key。
    */
-  async exportReport(): Promise<{ ok: boolean; path?: string; error?: string }> {
+  async exportReport(sessionId?: string): Promise<{ ok: boolean; path?: string; error?: string }> {
     const store = this.ctx.store;
-    const session = store.sessions.find((s) => s.id === store.activeSessionId);
+    const sid =
+      typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : store.activeSessionId;
+    const session = store.sessions.find((s) => s.id === sid);
+    const playbook = store.playbookOf(sid);
+    const isActive = sid === store.activeSessionId;
     const markdown = buildOpsReportMarkdown({
-      sessionId: store.activeSessionId,
+      sessionId: sid,
       ...(session !== undefined ? { sessionTitle: session.title } : {}),
-      ...(store.playbook !== undefined ? { playbook: store.playbook } : {}),
-      items: store.items,
-      timeline: store.timeline,
-      pendingBriefs: store.pendingBriefs
+      ...(playbook !== undefined ? { playbook } : {}),
+      items: store.itemsOf(sid),
+      timeline: isActive ? store.timeline : [],
+      pendingBriefs: isActive ? store.pendingBriefs : []
     });
     const fileName = exportReportFileName();
     let target: vscode.Uri | undefined;
@@ -93,16 +98,32 @@ export class WorkbenchService {
     } catch {
       target = undefined;
     }
-    const filePath = target?.fsPath ?? path.join(os.tmpdir(), fileName);
+    if (!target) {
+      return { ok: false }; // 取消：零 write、零 openTextDocument
+    }
     try {
-      await fs.writeFile(filePath, markdown, 'utf8');
-      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+      await fs.writeFile(target.fsPath, markdown, 'utf8');
+      const doc = await vscode.workspace.openTextDocument(target);
       await vscode.window.showTextDocument(doc, { preview: false });
-      this.ctx.log(`[export] 值班报告已导出：${filePath}`);
-      return { ok: true, path: filePath };
+      this.ctx.log(`[export] 值班报告已导出：${target.fsPath}`);
+      return { ok: true, path: target.fsPath };
     } catch (err) {
       this.ctx.log(`[export] 导出失败: ${describeError(err)}`);
       return { ok: false, error: describeError(err) };
+    }
+  }
+
+  /**
+   * clipboard/write：host 回退剪贴板。失败只记日志，仍返回 ok
+   * （webview 已展示「已复制」，不要 toast 打断值班）。
+   */
+  async writeClipboard(text: string): Promise<{ ok: boolean }> {
+    try {
+      await vscode.env.clipboard.writeText(text);
+      return { ok: true };
+    } catch (err) {
+      this.ctx.log(`[clipboard] 写入失败: ${describeError(err)}`);
+      return { ok: true };
     }
   }
 

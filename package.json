@@ -135,6 +135,11 @@
           "group": "navigation@4"
         },
         {
+          "command": "atOpsAgent.exportReport",
+          "when": "view == atOpsAgent.chat",
+          "group": "navigation@5"
+        },
+        {
           "command": "atOpsAgent.openSettings",
           "when": "view == atOpsAgent.chat",
           "group": "navigation@9"
@@ -241,6 +246,12 @@
           },
           "default": [],
           "description": "%config.approval.sessionReadAllowlist%"
+        },
+        "atOpsAgent.approval.timeoutMs": {
+          "type": "number",
+          "default": 900000,
+          "minimum": 0,
+          "description": "%config.approval.timeoutMs%"
         },
         "atOpsAgent.models.defaultThinkingLevel": {
           "type": "string",

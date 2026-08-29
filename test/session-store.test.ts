@@ -6,7 +6,7 @@
  *   （标题取首条用户消息；sessionFile 随会话保存；流式中断项被清洗）。
  * 测试一律用临时目录，绝不读写真实 ~/.at-series。
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -191,5 +191,39 @@ describe('SessionStore · 持久化（P1-3 / P0-C）', () => {
     expect(corrupt.sessions).toHaveLength(1);
     expect(corrupt.items).toHaveLength(0);
     corrupt.dispose();
+  });
+
+  it('persistNow 刮密 tool preview / errorMessage / text，磁盘无 Bearer 明文', () => {
+    const { store, filePath } = tempStore();
+    store.appendItem({ kind: 'user', id: 'u1', text: 'Authorization: Bearer secret-token' });
+    store.appendItem({
+      kind: 'tool',
+      id: 't1',
+      call: {
+        name: 'http.dump',
+        risk: 'read',
+        status: 'ok',
+        preview: 'Authorization: Bearer secret-token'
+      }
+    });
+    store.appendItem({
+      kind: 'tool',
+      id: 't2',
+      call: {
+        name: 'db.query',
+        pluginId: 'at.database',
+        risk: 'read',
+        status: 'error',
+        errorCode: 'E_AUTH',
+        errorMessage: 'password=hunter2 rejected'
+      }
+    });
+    store.persistNow();
+
+    const disk = readFileSync(filePath, 'utf8');
+    expect(disk).not.toContain('secret-token');
+    expect(disk).not.toContain('hunter2');
+    expect(disk).toContain('[REDACTED]');
+    store.dispose();
   });
 });

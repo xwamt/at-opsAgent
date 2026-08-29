@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { dualConfirmText, t, type OpsMessageKey } from '../i18n';
+import { useCopiedFlag } from '../lib/clipboard';
 import { useOpsStore } from '../store';
 
 const store = useOpsStore();
@@ -112,6 +113,15 @@ const riskLabel = computed(() => {
   const risk = String(store.pendingApproval?.risk ?? '');
   return t(risk === 'exec' ? 'riskExec' : risk === 'read' ? 'riskRead' : 'riskWrite');
 });
+
+const { copied, copy } = useCopiedFlag();
+
+async function copyCommands(row: ElementRow): Promise<void> {
+  if (!row.commands) {
+    return;
+  }
+  await copy(row.commands.join('\n'));
+}
 </script>
 
 <template>
@@ -154,7 +164,20 @@ const riskLabel = computed(() => {
       <template v-for="row in rows" :key="row.key">
         <dt class="approval__dt ops-muted">{{ row.label }}</dt>
         <dd class="approval__dd">
-          <pre v-if="row.commands" class="ops-codeblock approval__commands">{{ row.commands.join('\n') }}</pre>
+          <div v-if="row.commands" class="approval__commands-wrap">
+            <pre class="ops-codeblock approval__commands">{{ row.commands.join('\n') }}</pre>
+            <button
+              type="button"
+              class="ops-copy-btn approval__copy"
+              :class="{ 'ops-copy-btn--copied': copied }"
+              :aria-label="copied ? t('copied') : t('copyAria')"
+              :title="copied ? t('copied') : t('copy')"
+              @click.stop="copyCommands(row)"
+            >
+              <span class="codicon" :class="copied ? 'codicon-check' : 'codicon-copy'" aria-hidden="true"></span>
+              <span v-if="copied">{{ t('copied') }}</span>
+            </button>
+          </div>
           <template v-else>{{ row.text }}</template>
         </dd>
       </template>
@@ -257,5 +280,29 @@ const riskLabel = computed(() => {
 
 .approval__commands {
   max-height: 120px;
+}
+
+.approval__commands-wrap {
+  position: relative;
+}
+
+.approval__copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  opacity: 0;
+  width: 22px;
+  height: 22px;
+}
+
+.approval__commands-wrap:hover .approval__copy,
+.approval__copy:focus-visible,
+.approval__copy.ops-copy-btn--copied {
+  opacity: 1;
+}
+
+.approval__copy.ops-copy-btn--copied {
+  width: auto;
 }
 </style>

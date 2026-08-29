@@ -153,6 +153,7 @@ describe('常规配置：绑定键覆盖、归一化与 patch 载荷', () => {
         'approval.sessionRequiredFor',
         'approval.dedupePluginModal',
         'approval.sessionReadAllowlist',
+        'approval.timeoutMs',
         'models.defaultThinkingLevel',
         'models.toolCallPromptFallback',
         'workspaceShell.enabled',

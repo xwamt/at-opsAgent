@@ -29,6 +29,7 @@
   "config.approval.sessionRequiredFor": "哪些风险级别的工具执行前需要会话内审批：写入和执行操作、仅执行操作，或从不（插件侧审批仍然生效）。",
   "config.approval.dedupePluginModal": "当会话审批已覆盖相同命令集时，跳过能力插件自身的确认弹窗（基于 HMAC 审批令牌）。",
   "config.approval.sessionReadAllowlist": "本机视为只读的工具名前缀；匹配的工具跳过会话审批。示例：[\"kb.\", \"metrics.query\"]。",
+  "config.approval.timeoutMs": "待审批超时（毫秒），超时按拒绝处理并释放会话；0 表示不超时。",
   "config.models.defaultThinkingLevel": "对支持推理的模型默认请求的推理力度。",
   "config.models.toolCallPromptFallback": "对不支持原生工具调用的模型，通过提示词模拟工具调用。",
   "config.workspaceShell.enabled": "允许 Agent 在工作区执行 Shell 命令（按策略需要审批）。默认关闭。",

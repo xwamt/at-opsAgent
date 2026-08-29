@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { BridgeRegistryRecord, ListProvidersResult as HubListProvidersResult, ToolCatalogEntry } from '@at-series/mcp-hub';
 import {
+  clearHubSelection,
   createAtSeriesHubHost,
   isOkFalseResult,
   mapHubProviders,
@@ -313,6 +314,122 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
   it('refresh() re-reads the catalog on demand', async () => {
     await host.refresh();
     expect(host.getProviders().providers.some((p) => p.pluginId === 'at.grafana')).toBe(true);
+  });
+
+  it('selection idleMs defaults to 0', () => {
+    expect(host.selection.state().idleMs).toBe(0);
+  });
+
+  it('options.selectionIdleMs: 1 is passed through to selection.state()', () => {
+    const shortIdle = createAtSeriesHubHost({ hostApp: HOST_APP, home, selectionIdleMs: 1 });
+    try {
+      expect(shortIdle.selection.state().idleMs).toBe(1);
+    } finally {
+      shortIdle.dispose();
+    }
+  });
+
+  it('refresh after select does not shrink exposure when idle TTL is off', async () => {
+    const progressive = createAtSeriesHubHost({
+      hostApp: HOST_APP,
+      home,
+      discoveryMode: 'always'
+    });
+    try {
+      await progressive.start();
+      await waitFor(() => progressive.listAllTools().length === BRIDGE_TOOLS.length, 3000);
+      await progressive.selection.select({ names: ['grafana_list_instances'] });
+      expect(progressive.selection.state().selected).toEqual(['grafana_list_instances']);
+      expect(progressive.selection.state().idleMs).toBe(0);
+      await progressive.refresh();
+      await progressive.refresh();
+      expect(progressive.selection.state().selected).toEqual(['grafana_list_instances']);
+      expect(progressive.listExposedTools().map((t) => t.name)).toEqual(['grafana_list_instances']);
+    } finally {
+      progressive.dispose();
+    }
+  });
+
+  it('clear then sync leaves selection.state().selected empty', async () => {
+    const progressive = createAtSeriesHubHost({
+      hostApp: HOST_APP,
+      home,
+      discoveryMode: 'always'
+    });
+    try {
+      await progressive.start();
+      await waitFor(() => progressive.listAllTools().length === BRIDGE_TOOLS.length, 3000);
+      await progressive.selection.select({ pluginIds: ['at.grafana'] });
+      expect(progressive.selection.state().selected.length).toBeGreaterThan(0);
+      await progressive.selection.clear();
+      await progressive.refresh();
+      expect(progressive.selection.state().selected).toEqual([]);
+      expect(progressive.listExposedTools()).toHaveLength(0);
+    } finally {
+      progressive.dispose();
+    }
+  });
+
+  it('syncOnce reconciles adapter selectedNames after engine idle-clear', async () => {
+    // Production idle TTL is 0; this fixture injects a short idle so
+    // refreshCatalog's maybeAutoClearSelection empties exposure without
+    // adapter.clear(). Reconcile is defensive (not ACL).
+    const progressive = createAtSeriesHubHost({
+      hostApp: HOST_APP,
+      home,
+      discoveryMode: 'always',
+      selectionIdleMs: 300
+    });
+    try {
+      await progressive.start();
+      await waitFor(() => progressive.listAllTools().length === BRIDGE_TOOLS.length, 3000);
+      await progressive.selection.select({ names: ['grafana_list_instances'] });
+      expect(progressive.selection.state().selected).toEqual(['grafana_list_instances']);
+      await sleep(400);
+      await progressive.refresh();
+      expect(progressive.listExposedTools()).toHaveLength(0);
+      expect(progressive.selection.state().selected).toEqual([]);
+    } finally {
+      progressive.dispose();
+    }
+  });
+});
+
+describe('clearHubSelection (eviction / playbook-closed best-effort)', () => {
+  it('resolves when hub.selection.clear resolves', async () => {
+    const logs: string[] = [];
+    let clears = 0;
+    await clearHubSelection(
+      {
+        selection: {
+          clear: async () => {
+            clears += 1;
+          }
+        }
+      },
+      (m) => logs.push(m),
+      'playbook-closed'
+    );
+    expect(clears).toBe(1);
+    expect(logs).toEqual([]);
+  });
+
+  it('logs and does not throw when hub.selection.clear rejects', async () => {
+    const logs: string[] = [];
+    await expect(
+      clearHubSelection(
+        {
+          selection: {
+            clear: async () => {
+              throw new Error('hub gone');
+            }
+          }
+        },
+        (m) => logs.push(m),
+        'eviction'
+      )
+    ).resolves.toBeUndefined();
+    expect(logs).toEqual(['[hub] eviction clear 失败: hub gone']);
   });
 });
 

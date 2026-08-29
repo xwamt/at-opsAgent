@@ -36,12 +36,16 @@ const SUBAGENT_POLICY_ROLES: ReadonlySet<string> = new Set([
 
 const RISK_LEVELS: ReadonlySet<string> = new Set(['read', 'write', 'exec']);
 
+/** 生产默认审批超时：15min。测试经 `_timeoutMsForTest` 注入短 TTL，禁止改此默认。 */
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 900_000;
+
 /** 阻塞派发审批的等待者（briefId → 决议 promise；记录所属会话）。 */
 interface ApprovalWaiter {
   sessionId: string;
   commandSetSha256: string;
   promise: Promise<'approved' | 'rejected'>;
   resolve: (decision: 'approved' | 'rejected') => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export class ApprovalService {
@@ -62,8 +66,26 @@ export class ApprovalService {
   private readonly currentApprovals = new Map<string, ApprovalRef>();
   /** 审批令牌 HMAC 秘钥：进程内随机生成，同样绝不外发/落日志。 */
   private readonly approvalSecret = randomBytes(32).toString('hex');
+  /**
+   * 测试注入审批超时（毫秒）。未设置时读 `atOpsAgent.approval.timeoutMs`
+   *（默认 15min）。0 = 不超时；非法值回退默认。
+   */
+  _timeoutMsForTest: number | undefined;
 
   constructor(private readonly ctx: HostContext) {}
+
+  /** 解析 TTL：有限且 ≥0 的数字；0 禁用超时；其余非法回退 15min。 */
+  private readTimeoutMs(): number {
+    const raw =
+      this._timeoutMsForTest !== undefined
+        ? this._timeoutMsForTest
+        : vscode.workspace
+            .getConfiguration('atOpsAgent')
+            .get<number>('approval.timeoutMs', DEFAULT_APPROVAL_TIMEOUT_MS);
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isFinite(n) || n < 0) return DEFAULT_APPROVAL_TIMEOUT_MS;
+    return n;
+  }
 
   // ── 权限闸（policy.evaluate 装配点） ────────────────────────────────────
 
@@ -244,12 +266,20 @@ export class ApprovalService {
       };
       this.registerBrief(brief, sessionId);
     }
+    const briefId = brief.briefId;
 
     let resolve!: (decision: 'approved' | 'rejected') => void;
     const promise = new Promise<'approved' | 'rejected'>((r) => {
       resolve = r;
     });
-    this.approvalWaiters.set(brief.briefId, { sessionId, commandSetSha256, promise, resolve });
+    const waiter: ApprovalWaiter = { sessionId, commandSetSha256, promise, resolve };
+    const timeoutMs = this.readTimeoutMs();
+    if (timeoutMs > 0) {
+      waiter.timer = setTimeout(() => {
+        this.onApprovalTimeout(briefId);
+      }, timeoutMs);
+    }
+    this.approvalWaiters.set(briefId, waiter);
     return promise;
   }
 
@@ -361,16 +391,66 @@ export class ApprovalService {
     return { ok: true };
   }
 
-  /** 决议阻塞派发等待者；返回是否存在等待者。 */
+  /** 决议阻塞派发等待者；返回是否存在等待者。决议时清 TTL，避免事后二次 reject。 */
   private resolveApprovalWaiter(briefId: string, decision: 'approved' | 'rejected'): boolean {
     const waiter = this.approvalWaiters.get(briefId);
     if (!waiter) return false;
     this.approvalWaiters.delete(briefId);
+    if (waiter.timer !== undefined) {
+      clearTimeout(waiter.timer);
+      waiter.timer = undefined;
+    }
     waiter.resolve(decision);
     return true;
   }
 
-  /** 指定会话的全部挂起审批按拒绝决议（stop / 驱逐时避免 execute 悬挂）。 */
+  /**
+   * 审批 TTL 到期：fail-closed 为 rejected（永不 approved）。
+   * 清 UI / 映射 / 令牌，不走 orchestrator.applyApproval（不推进 executing）。
+   */
+  private onApprovalTimeout(briefId: string): void {
+    const waiter = this.approvalWaiters.get(briefId);
+    if (!waiter) return;
+    const sessionId = waiter.sessionId;
+    if (!this.resolveApprovalWaiter(briefId, 'rejected')) return;
+    this.finalizeRejection(briefId, sessionId, 'timeout');
+  }
+
+  /**
+   * 拒绝落定后的 store / 广播 / 令牌清理（timeout / abort 与用户拒绝同形）。
+   * 用户点拒绝仍走 applyApproval（含 orchestrator）；本方法不推进状态机。
+   */
+  private finalizeRejection(
+    briefId: string,
+    sessionId: string,
+    reason: 'user' | 'timeout' | 'abort'
+  ): void {
+    this.currentApprovals.delete(sessionId);
+    if (this.ctx.store.resolveBrief(briefId, sessionId)) {
+      this.ctx.broadcastToSession(sessionId, 'approval/resolve', {
+        briefId,
+        decision: 'rejected'
+      });
+    }
+    this.briefRuns.delete(briefId);
+    this.briefHashes.delete(briefId);
+    this.briefSessions.delete(briefId);
+    this.ctx.store.appendTimeline(
+      {
+        kind: 'approval',
+        briefId,
+        decision: reason === 'timeout' ? 'timeout' : 'rejected',
+        ...(reason === 'user' ? {} : { reason })
+      },
+      sessionId
+    );
+    if (reason === 'timeout') {
+      this.ctx.log(`[approval] 审批超时 briefId=${briefId} session=${sessionId}`);
+      this.ctx.emitAssistantNotice('审批已超时，已按拒绝处理', sessionId);
+    }
+  }
+
+  /** 指定会话的全部挂起审批按拒绝决议（stop / cancel / 驱逐时避免 execute 悬挂）。 */
   rejectWaitersFor(sessionId: string): void {
     for (const [briefId, waiter] of [...this.approvalWaiters]) {
       if (waiter.sessionId === sessionId) this.resolveApprovalWaiter(briefId, 'rejected');

@@ -136,9 +136,9 @@ describe('fetchModelCatalog', () => {
 describe('脱敏', () => {
   it('sanitizeErrorText 抹掉 Bearer 与 sk- 片段', () => {
     expect(sanitizeErrorText('failed: Bearer sk-abcdef123456 rejected')).toBe(
-      'failed: Bearer *** rejected'
+      'failed: Bearer [REDACTED] rejected'
     );
-    expect(sanitizeErrorText('key sk-abcdefgh1234 leaked')).toBe('key sk-*** leaked');
+    expect(sanitizeErrorText('key sk-abcdefgh1234 leaked')).toBe('key sk-[REDACTED] leaked');
   });
 
   it('describeNetworkError 对未知错误也不透出敏感串', () => {

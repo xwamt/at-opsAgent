@@ -19,6 +19,7 @@ import type {
   UsageView
 } from '../../protocol';
 import type { CreateOpsRuntimeOptions, OpsRuntimeHandlers, OpsSubagentEvent } from '../../core';
+import { clearHubSelection } from '../../hub-host';
 import { readAgentSettings } from '../agentSettings';
 import { normalizeRoleModels } from '../modelsView';
 import type { RuntimeLike } from '../hostTypes';
@@ -191,13 +192,13 @@ export class ChatService {
   /**
    * 中止（按会话定向，缺省活动会话；不牵连另一席）。
    * mode='stop'（默认）：立即 abort 该会话并级联其子代理；
-   * mode='cancel'：软停——runtime 等当前 in-flight 工具结束后停止（保在途证据）。
-   * 阻塞派发中挂起的审批在 stop 时一并按拒绝决议，避免 execute 悬挂。
+   * mode='cancel'：软停——runtime 等当前 in-flight 非审批工具结束后停止（保在途证据）。
+   * 阻塞派发中挂起的审批在 cancel 与 stop 时均按拒绝决议，避免 execute 悬挂。
    */
   abort(mode: 'cancel' | 'stop' = 'stop', sessionId?: string): void {
     const sid = sessionId ?? this.ctx.store.activeSessionId;
+    this.ctx.approvals.rejectWaitersFor(sid);
     if (mode === 'stop') {
-      this.ctx.approvals.rejectWaitersFor(sid);
       for (const taskId of [...(this.activeSubagentTaskIds.get(sid) ?? [])]) {
         this.abortSubagentTask(taskId, { keepMainSession: true }, sid);
       }
@@ -243,6 +244,7 @@ export class ChatService {
     this.liveLayers.clearSession(sessionId);
     this.lastUsage.delete(sessionId);
     this.activeSubagentTaskIds.delete(sessionId);
+    void clearHubSelection(this.ctx.hub, (m) => this.ctx.log(m), 'eviction');
   }
 
   sessionSummaries(): SessionSummary[] {

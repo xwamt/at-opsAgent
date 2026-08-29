@@ -65,6 +65,7 @@ function snapshot(): Record<string, unknown> {
       'plugins.autoEnableNew': true,
       'approval.sessionRequiredFor': 'write-exec',
       'approval.dedupePluginModal': false,
+      'approval.timeoutMs': 900000,
       'models.defaultThinkingLevel': 'medium',
       'models.toolCallPromptFallback': true,
       'workspaceShell.enabled': false,

@@ -652,6 +652,64 @@ describe('executeBusinessTool', () => {
     expect(text).toContain(join(dir, 'call-1.json'));
   });
 
+  it('超限结果落盘与回模型均刮密 Bearer，文件内无 secret-token', async () => {
+    const hub = makeFakeHub();
+    hub.invoke = async () => ({
+      ok: true,
+      result: {
+        header: 'Authorization: Bearer secret-token',
+        blob: 'y'.repeat(MODEL_RESULT_CHAR_LIMIT * 2)
+      },
+      attemptCount: 1,
+      durationMs: 7
+    });
+    const handlers: OpsRuntimeHandlers = { hub };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+
+    const text = await executeBusinessTool(
+      handlers,
+      bizDescriptor,
+      {},
+      undefined,
+      agentDir,
+      'call-redact'
+    );
+    const resultsDir = join(agentDir, TOOL_RESULTS_DIRNAME);
+    expect(text).not.toContain('secret-token');
+    expect(text).toContain('[REDACTED]');
+    expect(text).toContain('截断');
+    expect(readdirSync(resultsDir)).toEqual(['call-redact.json']);
+
+    const file = join(agentDir, TOOL_RESULTS_DIRNAME, 'call-redact.json');
+    const disk = readFileSync(file, 'utf8');
+    expect(disk).not.toContain('secret-token');
+    expect(disk).toContain('[REDACTED]');
+    expect(JSON.parse(disk).result.header).toContain('Bearer [REDACTED]');
+  });
+
+  it('小结果不落盘，回模型 JSON 仍刮密 Bearer', async () => {
+    const hub = makeFakeHub();
+    hub.invoke = async () => ({
+      ok: true,
+      result: { header: 'Authorization: Bearer secret-token' },
+      attemptCount: 1,
+      durationMs: 3
+    });
+    const handlers: OpsRuntimeHandlers = { hub };
+    const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-biz-'));
+    const text = await executeBusinessTool(
+      handlers,
+      bizDescriptor,
+      {},
+      undefined,
+      agentDir,
+      'call-small-secret'
+    );
+    expect(text).not.toContain('secret-token');
+    expect(text).toContain('[REDACTED]');
+    expect(() => readdirSync(join(agentDir, TOOL_RESULTS_DIRNAME))).toThrow();
+  });
+
   it('落盘失败（agentDir 是普通文件）不影响工具调用，仍返回截断文本', async () => {
     const hub = makeFakeHub();
     hub.invoke = async () => ({

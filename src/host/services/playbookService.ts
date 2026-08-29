@@ -10,6 +10,7 @@
  */
 import * as vscode from 'vscode';
 import type { Playbook } from '../../core';
+import { clearHubSelection } from '../../hub-host';
 import type {
   OrchestratorEventLike,
   OrchestratorLike,
@@ -253,6 +254,10 @@ export class PlaybookService {
     this.runs.delete(sid);
     this.runSessions.delete(run.id);
     this.selectCounts.set(sid, 0);
+    // Plan 01 T4: clear Hub selection only on the successful closed path.
+    // Failure branches above return without touching selection (investigating
+    // close that cannot advance stays selected; Plan 03 owns tryAdvance).
+    await clearHubSelection(this.ctx.hub, (m) => this.ctx.log(m), 'playbook-closed');
     return { ok: true, stage };
   }
 

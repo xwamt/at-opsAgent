@@ -141,7 +141,9 @@ export class HostController {
       case 'chat/retry':
         return this.chat.retryLastPrompt();
       case 'chat/export':
-        return this.workbench.exportReport();
+        return this.workbench.exportReport((payload as { sessionId?: string } | undefined)?.sessionId);
+      case 'clipboard/write':
+        return this.workbench.writeClipboard(String((payload as { text?: string })?.text ?? ''));
       case 'model/set':
         return this.models.setModel(payload as ModelSetReq);
       case 'playbook/start':
@@ -275,8 +277,8 @@ export class HostController {
     return this.approvals.applyApproval(req);
   }
 
-  async exportReport(): Promise<{ ok: boolean; path?: string; error?: string }> {
-    return this.workbench.exportReport();
+  async exportReport(sessionId?: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+    return this.workbench.exportReport(sessionId);
   }
 
   async settingsSnapshot(): Promise<SettingsSnapshot> {

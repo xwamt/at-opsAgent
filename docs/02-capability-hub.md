@@ -49,7 +49,7 @@ Agent activate
         hubVersion: AGENT_HUB_COMPAT_VERSION,  // 仅遥测，不写 hub.js
         discoveryMode: 'auto',
         discoveryThreshold: 20,
-        selectionIdleMs: 120_000,              // 嵌入路径用运行时默认，不用 installer 的 0
+        selectionIdleMs: 0,                    // 嵌入路径强制 0；选择纪律由 policy + playbook 负责
         selectionMaxCalls: 0,
         audit: { enabled: true },
         onToolsListChanged: () => emit(ToolChangeEvent)
@@ -78,7 +78,7 @@ Hub v2 的五个 meta-tools 在嵌入形态下 **不必** 以同名 MCP 工具�
 | `at_select_tools` | `ops_select_tools` → `SelectionController.select`；Playbook 阶段可 **由 Orchestrator 代发**，不占用模型一轮 |
 | 刷新 list | `onDidChangeTools` → `session.setActiveTools(exposed)` |
 | 一等名 `tools/call` | `HubHost.invoke` → `bridgeInvoke` |
-| `at_clear_tool_selection` | 任务 Closed 时 Orchestrator 调用 `selection.clear()`；模型在调查中调用被权限闸拒绝 |
+| `at_clear_tool_selection` | host PlaybookService.closePlaybook 成功路径调用 `hub.selection.clear()`；模型在调查中调用被权限闸拒绝 |
 
 当业务工具数 ≤ `threshold`（默认 20）且 `discoveryMode=auto`：可把当前 winner 业务工具全部设为 active，跳过 select（与 Hub v2 一致）。超过则只暴露发现工具 + 已选中集合。
 
@@ -167,6 +167,8 @@ Agent 对未知 `pluginId` **默认启用**（热注册核心体验）。设置�
 | 4 | 修 `getServer?` 类型漂移 | 中 |
 
 第一期可用现有 `createHubRuntime` + `callTool('at_list_providers')` 撑住，适配层做 JSON 解析。第二期再升 Hub 0.4。
+
+`getSelectionState` 未出口前，嵌入适配层在 `syncOnce` 用启发式对账：exposed 业务工具为空且 adapter `selectedNames` 非空 → 清空并 fire（**不是 ACL**）。P2 向上游要 `getSelectionState`（Plan 12）。
 
 ## 8. 能力视图数据
 

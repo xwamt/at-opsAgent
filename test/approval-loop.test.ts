@@ -5,6 +5,8 @@
  * - policy + orchestrator 集成：needSessionApproval → requestApproval（9 要素简报）
  *   → applyApproval → issueApprovalToken → 同一命令集重试放行 / 篡改命令集拒绝。
  */
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -270,3 +272,17 @@ describe('approval loop · policy + orchestrator 集成', () => {
     if (denied.block) expect(denied.code).toBe(OPS_ERROR.APPROVAL_REQUIRED);
   });
 });
+
+describe('approval timeout · 配置默认', () => {
+  it('package.json 生产默认 900000ms（15min），测试不得改此默认', () => {
+    const pkg = JSON.parse(
+      readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8')
+    ) as {
+      contributes: { configuration: { properties: Record<string, { default?: unknown }> } };
+    };
+    expect(pkg.contributes.configuration.properties['atOpsAgent.approval.timeoutMs']?.default).toBe(
+      900000
+    );
+  });
+});
+

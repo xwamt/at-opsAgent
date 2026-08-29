@@ -3,9 +3,10 @@
  * 审批记录 + 证据便签 + 看板时间线渲染成 Markdown。
  *
  * 纯函数、不 import vscode，可直接单测；写盘与打开由 hostController 完成。
- * 红线：报告绝不包含审批令牌 / API key（transcript 里本来就没有）。
+ * 红线：return 前过 redactSecrets，审批令牌 / API key / Bearer 不会出现在报告中。
  */
 import type { ApprovalBriefView, TranscriptItem } from '../protocol';
+import { redactSecrets } from '../runtime/sanitize';
 import type { PlaybookState, TimelineEventView } from './sessionStore';
 
 export interface ExportReportInput {
@@ -178,7 +179,7 @@ export function buildOpsReportMarkdown(input: ExportReportInput): string {
   lines.push('');
   lines.push('> 本报告由 AT Ops Agent 自动导出；审批令牌与凭证不会出现在报告中。');
   lines.push('');
-  return lines.join('\n');
+  return redactSecrets(lines.join('\n')).text;
 }
 
 /** 导出文件名（时间戳到分钟，避免冒号等非法字符）。 */

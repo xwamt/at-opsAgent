@@ -64,6 +64,8 @@ export interface OpsConfig {
   'approval.dedupePluginModal': boolean;
   /** P1-9：会话内免审的只读工具名（批准只读工具时勾「本会话不再问」也会写入）。 */
   'approval.sessionReadAllowlist': string[];
+  /** P0-C：审批 waiter 超时（毫秒）；0 = 禁用超时。 */
+  'approval.timeoutMs': number;
   'models.defaultThinkingLevel': ThinkingLevel;
   'models.toolCallPromptFallback': boolean;
   'workspaceShell.enabled': boolean;
@@ -78,6 +80,7 @@ export const CONFIG_DEFAULTS: OpsConfig = {
   'approval.sessionRequiredFor': 'write-exec',
   'approval.dedupePluginModal': false,
   'approval.sessionReadAllowlist': [],
+  'approval.timeoutMs': 900000,
   'models.defaultThinkingLevel': 'medium',
   'models.toolCallPromptFallback': true,
   'workspaceShell.enabled': false,
@@ -137,6 +140,13 @@ export const CONFIG_FIELDS: readonly ConfigFieldMeta[] = [
     kind: 'list',
     labelKey: 'cfgSessionReadAllowlist',
     descKey: 'cfgSessionReadAllowlistDesc'
+  },
+  {
+    key: 'approval.timeoutMs',
+    kind: 'number',
+    min: 0,
+    labelKey: 'cfgApprovalTimeoutMs',
+    descKey: 'cfgApprovalTimeoutMsDesc'
   },
   {
     key: 'models.defaultThinkingLevel',
@@ -250,6 +260,7 @@ export function normalizeConfig(raw: unknown): OpsConfig {
     ),
     'approval.dedupePluginModal': toBool(get('approval.dedupePluginModal'), false),
     'approval.sessionReadAllowlist': toStringList(get('approval.sessionReadAllowlist')),
+    'approval.timeoutMs': toNum(get('approval.timeoutMs'), CONFIG_DEFAULTS['approval.timeoutMs'], 0),
     'models.defaultThinkingLevel': toEnum(get('models.defaultThinkingLevel'), THINKING_LEVELS, 'medium'),
     'models.toolCallPromptFallback': toBool(get('models.toolCallPromptFallback'), true),
     'workspaceShell.enabled': toBool(get('workspaceShell.enabled'), false),

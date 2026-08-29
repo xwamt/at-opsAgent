@@ -20,6 +20,7 @@ const KNOWN_CONFIG_KEYS: readonly string[] = [
   'approval.sessionRequiredFor',
   'approval.dedupePluginModal',
   'approval.sessionReadAllowlist',
+  'approval.timeoutMs',
   'models.defaultThinkingLevel',
   'models.toolCallPromptFallback',
   'workspaceShell.enabled',
