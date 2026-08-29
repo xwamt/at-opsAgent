@@ -4,7 +4,7 @@
  * 纯函数、无 IO、不依赖 vscode。由 Agent runtime 在每次 tools/call 前调用；
  * Hub 选路（②）与插件确认弹窗（③）不被本闸替代。
  */
-import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import { OPS_ERROR } from '../protocol';
 
@@ -81,6 +81,167 @@ const REMOTE_COMMAND_TOOL_RE = /(?:^|[._/])run_(?:remote|terminal)_command$/i;
 
 /** 出现重定向 / 反引号 / $() 命令替换的命令一律不做只读推断。 */
 const SHELL_DANGER_RE = /[<>`]|\$\(/;
+
+const COMMAND_POLICY_REASON_MAX = 200;
+
+type CommandPolicyAction = 'allow' | 'review' | 'deny';
+
+export type CommandPolicyPreview = {
+  action: CommandPolicyAction;
+  reason: string;
+  source: 'command-policy' | 'handwritten';
+};
+
+type ShellPolicyEvaluatorLike = {
+  evaluate(input: { sourceText: string; cwd?: string }): Promise<{
+    action?: unknown;
+    reasonCode?: unknown;
+    evidence?: ReadonlyArray<{ summary?: string }>;
+  }>;
+};
+
+let commandPolicyUnavailableLogged = false;
+let shellEvaluator: ShellPolicyEvaluatorLike | null | undefined;
+
+function logCommandPolicyUnavailableOnce(detail: unknown): void {
+  if (commandPolicyUnavailableLogged) return;
+  commandPolicyUnavailableLogged = true;
+  const msg = detail instanceof Error ? detail.message : String(detail);
+  console.warn(`[policy] @at-series/command-policy unavailable, using handwritten table: ${msg}`);
+}
+
+function loadShellEvaluator(): ShellPolicyEvaluatorLike | null {
+  if (shellEvaluator !== undefined) return shellEvaluator;
+  try {
+    // Subpath types need moduleResolution node16; runtime CJS exports exist.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('@at-series/command-policy/shell') as {
+      createShellPolicyEvaluator?: () => ShellPolicyEvaluatorLike;
+    };
+    if (typeof mod.createShellPolicyEvaluator !== 'function') {
+      logCommandPolicyUnavailableOnce(new Error('createShellPolicyEvaluator missing'));
+      shellEvaluator = null;
+      return null;
+    }
+    shellEvaluator = mod.createShellPolicyEvaluator();
+    return shellEvaluator;
+  } catch (err) {
+    logCommandPolicyUnavailableOnce(err);
+    shellEvaluator = null;
+    return null;
+  }
+}
+
+const LIBRARY_UNAVAILABLE_REASON_CODES = new Set([
+  'policy.analysis_unavailable',
+  'policy.initialization_failed'
+]);
+
+function isRemoteExecTool(toolName: string): boolean {
+  return REMOTE_COMMAND_TOOL_RE.test(toolName);
+}
+
+function clipPolicyReason(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= COMMAND_POLICY_REASON_MAX) return trimmed;
+  return `${trimmed.slice(0, COMMAND_POLICY_REASON_MAX)}…`;
+}
+
+function formatLibraryReason(decision: {
+  reasonCode?: unknown;
+  evidence?: ReadonlyArray<{ summary?: string }>;
+}): string {
+  const code = typeof decision.reasonCode === 'string' ? decision.reasonCode : '';
+  const summary = decision.evidence?.find((e) => typeof e.summary === 'string')?.summary ?? '';
+  return clipPolicyReason([code, summary].filter((s) => s.length > 0).join('：'));
+}
+
+function handwrittenIsReadOnly(command: string): boolean {
+  if (SHELL_DANGER_RE.test(command)) return false;
+  const segments = command
+    .split(/&&|\|\||[;|&\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return segments.length > 0 && segments.every(isReadOnlyCommandSegment);
+}
+
+/**
+ * 远程执行类工具的命令策略预判（简报「命令策略：allow|review|deny」）。
+ * 只对 run_remote_command / jumpserver_run_terminal_command 等白名单生效，
+ * 绝不对 grafana_query 跑 shell 分析器。库不可用时回退手写表。
+ */
+export async function previewRemoteCommandPolicy(
+  toolName: string,
+  args: Record<string, unknown>
+): Promise<CommandPolicyPreview | undefined> {
+  if (!isRemoteExecTool(toolName)) return undefined;
+  const command = firstString(args.command);
+  if (command === undefined) return undefined;
+
+  const evaluator = loadShellEvaluator();
+  if (evaluator !== null) {
+    try {
+      const cwd = typeof args.cwd === 'string' && args.cwd.length > 0 ? args.cwd : undefined;
+      const decision = await Promise.race([
+        evaluator.evaluate({
+          sourceText: command,
+          ...(cwd !== undefined ? { cwd } : {})
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('command-policy evaluate timed out')), 1500);
+        })
+      ]);
+      const reasonCode = typeof decision.reasonCode === 'string' ? decision.reasonCode : '';
+      if (!LIBRARY_UNAVAILABLE_REASON_CODES.has(reasonCode)) {
+        const action = decision.action;
+        if (action === 'allow' || action === 'review' || action === 'deny') {
+          return {
+            action,
+            reason: formatLibraryReason(decision),
+            source: 'command-policy'
+          };
+        }
+        return {
+          action: 'review',
+          reason: '策略判定无效，保持申报风险',
+          source: 'command-policy'
+        };
+      }
+      logCommandPolicyUnavailableOnce(reasonCode);
+    } catch {
+      return {
+        action: 'review',
+        reason: '策略分析失败，保持申报风险',
+        source: 'command-policy'
+      };
+    }
+  }
+
+  return {
+    action: handwrittenIsReadOnly(command) ? 'allow' : 'review',
+    reason: handwrittenIsReadOnly(command)
+      ? '手写表：只读巡检命令'
+      : '手写表：非只读命令，保持申报风险',
+    source: 'handwritten'
+  };
+}
+
+/** 简报装配用：同步手写预判，不 await WASM（waiter 必须先于任何 I/O 登记）。 */
+export function previewRemoteCommandPolicySync(
+  toolName: string,
+  args: Record<string, unknown>
+): CommandPolicyPreview | undefined {
+  if (!isRemoteExecTool(toolName)) return undefined;
+  const command = firstString(args.command);
+  if (command === undefined) return undefined;
+  return {
+    action: handwrittenIsReadOnly(command) ? 'allow' : 'review',
+    reason: handwrittenIsReadOnly(command)
+      ? '手写表：只读巡检命令'
+      : '手写表：非只读命令，保持申报风险',
+    source: 'handwritten'
+  };
+}
 
 /** 首词即整体只读的命令（参数任意；重定向已在上层排除）。 */
 const READ_ONLY_LEADING_COMMANDS = new Set([
@@ -230,28 +391,27 @@ function isReadOnlyCommandSegment(segment: string): boolean {
 
 /**
  * 按命令内容推断远程命令工具的有效风险：
- * run_remote_command / jumpserver_run_terminal_command 声明 risk=exec，
- * 但 `command` 是纯只读巡检命令（hostname / uptime / df / systemctl status /
- * journalctl / docker ps / kubectl get / iptables -L…）时按 read 处理——
- * 否则 investigator（read 硬顶）永远调不了只读巡检。管道/&&/; 组合要求
- * 每一段都只读；出现重定向、$()、反引号、rm / systemctl restart / apt /
- * docker run 等不认识或有副作用的命令一律维持申报风险（保守方向）。
- * 其它工具、或 declaredRisk 本就是 read 时原样返回。
+ * 优先 `@at-series/command-policy`（allow → read；review/deny → 保持申报风险）。
+ * 库 allow 仍须手写表也认为只读（只能加严：防 command substitution 等库误放）。
+ * 库不可用 → 手写只读表兜底。grafana_query 等非远程执行工具不分析。
  */
-export function inferEffectiveRisk(
+export async function inferEffectiveRisk(
   toolName: string,
   args: Record<string, unknown>,
   declaredRisk: RiskLevel
-): RiskLevel {
+): Promise<RiskLevel> {
   if (declaredRisk === 'read') return declaredRisk;
-  if (!REMOTE_COMMAND_TOOL_RE.test(toolName)) return declaredRisk;
+  if (!isRemoteExecTool(toolName)) return declaredRisk;
   const command = firstString(args.command);
-  if (command === undefined || SHELL_DANGER_RE.test(command)) return declaredRisk;
-  const segments = command
-    .split(/&&|\|\||[;|&\n]/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (segments.length > 0 && segments.every(isReadOnlyCommandSegment)) return 'read';
+  if (command === undefined) return declaredRisk;
+
+  const preview = await previewRemoteCommandPolicy(toolName, args);
+  if (preview === undefined) return declaredRisk;
+  const hwRead = handwrittenIsReadOnly(command);
+  if (preview.source === 'handwritten') {
+    return hwRead ? 'read' : declaredRisk;
+  }
+  if (preview.action === 'allow' && hwRead) return 'read';
   return declaredRisk;
 }
 
@@ -287,7 +447,7 @@ function deriveCommandSetHash(args: Record<string, unknown>): string | undefined
   return undefined;
 }
 
-export function evaluatePolicy(ctx: PolicyContext): PolicyDecision {
+export async function evaluatePolicy(ctx: PolicyContext): Promise<PolicyDecision> {
   // ── 规则 1：调查/选择/综合阶段禁止清除工具选择 ────────────────────────
   if (CLEAR_TOOLS.has(ctx.toolName)) {
     if (ctx.stage !== undefined && CLEAR_FORBIDDEN_STAGES.has(ctx.stage)) {
@@ -324,7 +484,7 @@ export function evaluatePolicy(ctx: PolicyContext): PolicyDecision {
   // 远程命令按内容推断有效风险（只读巡检命令 → read；见 inferEffectiveRisk）。
   // 后续 ceiling 与审批裁决一律用推断值——run_remote_command 声明 exec，
   // 但 `hostname` / `systemctl status` 这类只读命令不应被 read 硬顶挡住。
-  const risk = inferEffectiveRisk(ctx.toolName, ctx.args, ctx.risk);
+  const risk = await inferEffectiveRisk(ctx.toolName, ctx.args, ctx.risk);
 
   // ── 规则 3：Investigator / Writer / Verifier 默认 read 硬顶 ─────────
   if (ctx.role !== undefined && READ_CEILING_ROLES.has(ctx.role)) {

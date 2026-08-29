@@ -172,7 +172,7 @@ Agent 对未知 `pluginId` **默认启用**（热注册核心体验）。设置�
 
 ## 8. 能力视图数据
 
-Capabilities TreeView 数据源 = `HubHost.getProviders()` + `listAllTools()`，**不是** MCP `tools/list`（那是渐进后的暴露集）。
+Capabilities 数据源 = 发现层 `listProviders(hub)`（包装 `HubHost.getProviders()` + `listAllTools()` 的 live 注解），**不是** MCP `tools/list`（那是渐进后的暴露集）。settings/hydrate 的 `capabilities` 快照带 `liveToolCount` / `catalogLiveToolCount` / `connectedTargets?` / 每工具 `risk`；缺字段时旧 UI 仍渲染 displayName/healthy。
 
 节点：
 

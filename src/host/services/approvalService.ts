@@ -16,9 +16,11 @@ import type { PolicyContext, ToolCallOrigin } from '../../core';
 import {
   hashCommandSet,
   issueApprovalToken,
+  previewRemoteCommandPolicySync,
   verifyApprovalToken,
   type ApprovalRef
 } from '../../policy';
+import { resolveToolRisk } from '../../mcp-client/riskLookup';
 import { buildApprovalCommandSet, buildApprovalElements } from '../approvalGate';
 import type { ApprovalBriefLike } from '../hostTypes';
 import { postApprovalWebhook, toBriefView } from './approvalNotify';
@@ -98,8 +100,9 @@ export class ApprovalService {
     const ctx = this.ctx;
     try {
       const descriptor = ctx.hub.listAllTools().find((t) => t.name === toolName);
-      // ops_* 发现工具视为 read；未知业务工具 fail-closed 为 exec。
-      const risk = descriptor?.risk ?? (toolName.startsWith('ops_') ? 'read' : 'exec');
+      // ops_* 发现工具视为 read；mcp_list/search 为 read、mcp_call_tool 为 write；
+      // 未知业务工具 fail-closed 为 exec（proxy 名不在 Hub catalog）。
+      const risk = resolveToolRisk(toolName, descriptor);
       const config = vscode.workspace.getConfiguration('atOpsAgent');
       const stage = ctx.store.playbookOf(sessionId)?.stage;
       const policyCtx: PolicyContext = {
@@ -122,7 +125,7 @@ export class ApprovalService {
         selectCountThisTask: ctx.playbooks.selectCount(sessionId),
         sessionReadAllowlist: this.readToolAllowlist(sessionId)
       };
-      const decision = ctx.core.evaluatePolicy(policyCtx);
+      const decision = await ctx.core.evaluatePolicy(policyCtx);
       if (decision.block) {
         ctx.log(`[policy] ${toolName} 被拒: ${decision.code} ${decision.reason}`);
         return { block: true, reason: `${decision.code}: ${decision.reason}` };
@@ -224,13 +227,17 @@ export class ApprovalService {
     }
     const pluginId = this.pluginIdOf(input.toolName);
     const stage = ctx.store.playbookOf(sessionId)?.stage;
+    const commandPolicy = previewRemoteCommandPolicySync(input.toolName, input.args);
     const elements = buildApprovalElements({
       toolName: input.toolName,
       args: input.args,
       risk: input.risk,
       commandSet,
       ...(pluginId !== undefined ? { pluginId } : {}),
-      ...(stage !== undefined ? { stage } : {})
+      ...(stage !== undefined ? { stage } : {}),
+      ...(commandPolicy !== undefined
+        ? { commandPolicy: { action: commandPolicy.action, reason: commandPolicy.reason } }
+        : {})
     });
 
     let brief: ApprovalBriefLike | undefined;

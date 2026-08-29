@@ -173,15 +173,21 @@ describe('createPlaybookTools', () => {
     expect(explicit).toEqual({ ok: true, stage: 'verifying' });
     expect(advanceCalls).toEqual([undefined, 'verifying']);
 
-    // 非法迁移：host 返回 ok=false，原样透传（不 throw）
+    // 非法迁移：host 返回 ok=false + allowedNext，原样透传（不 throw）
     const { host: strict } = makeHost({
-      advance: () => ({ ok: false, error: '非法迁移：investigating 只能进入 mitigating/closed' })
+      advance: () => ({
+        ok: false,
+        stage: 'investigating',
+        error: '非法阶段迁移 investigating → closed；允许的下一步：synthesizing, escalated',
+        allowedNext: ['synthesizing', 'escalated']
+      })
     });
     const rejected = JSON.parse(
       await toolByName(createPlaybookTools(strict), ADVANCE_STAGE_TOOL_NAME).execute({ stage: 'closed' })
     ) as PlaybookStageResult;
     expect(rejected.ok).toBe(false);
-    expect(rejected.error).toContain('非法迁移');
+    expect(rejected.error).toContain('非法阶段迁移');
+    expect(rejected.allowedNext).toEqual(['synthesizing', 'escalated']);
   });
 
   it('P1-7 close：委托 host.close，结果透传', async () => {

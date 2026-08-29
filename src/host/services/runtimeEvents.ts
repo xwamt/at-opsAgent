@@ -4,6 +4,7 @@
  * 后台席位（sessions.maxParallel=2）切回时经 hydrate 恢复。
  */
 import { randomUUID } from 'node:crypto';
+import { resolveToolRisk } from '../../mcp-client/riskLookup';
 import type { ToolCallView, UsageView } from '../../protocol';
 import type { RuntimeEventLike } from '../hostTypes';
 import type { HostContext } from './context';
@@ -64,7 +65,7 @@ export class RuntimeEventRouter {
         const call: ToolCallView = {
           name: e.name,
           pluginId: descriptor?.pluginId,
-          risk: descriptor?.risk ?? (e.name.startsWith('ops_') ? 'read' : 'exec'),
+          risk: resolveToolRisk(e.name, descriptor),
           status: 'running',
           preview: e.preview
         };

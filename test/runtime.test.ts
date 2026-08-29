@@ -42,6 +42,7 @@ import {
 } from '../src/runtime/discovery-tools';
 import {
   COMPACTION_NEW_SESSION_MESSAGE,
+  CREDENTIAL_NOTICE,
   DEFAULT_SUBAGENT_BUDGET,
   DISPATCH_TOOL_NAME,
   FALLBACK_INIT_FAILURE_PREFIX,
@@ -52,6 +53,7 @@ import {
   OPEN_SETTINGS_NOTICE_ACTION,
   READ_SKILL_TOOL_NAME,
   READ_WORKSPACE_FILE_TOOL_NAME,
+  RETRY_NOTICE_ACTION,
   ROLE_PARALLEL_LIMITS,
   SKILL_FILE_CHAR_LIMIT,
   SUBAGENT_SUMMARY_CHAR_LIMIT,
@@ -62,6 +64,7 @@ import {
   buildSystemPrompt,
   buildTaskSpec,
   catalogGainedNewBusinessTool,
+  classifyPromptError,
   createFallbackRuntime,
   createOpsRuntime,
   createReadSkillTool,
@@ -71,6 +74,7 @@ import {
   dispatchToolSpec,
   executeBusinessTool,
   filterToolsForSubagent,
+  handleClassifiedPromptError,
   isCancelledInvocation,
   isPromptTooLongError,
   looksLikeMissingModelConfig,
@@ -80,6 +84,7 @@ import {
   readSkillFile,
   readWorkspaceFile,
   recoverFromPromptError,
+  runPromptWithRecovery,
   resolveUnderRoot,
   runDispatchToolCall,
   skillRootsFor,
@@ -482,15 +487,33 @@ describe('FallbackRuntime', () => {
     expect(events[2]).toEqual({ type: 'idle' });
   });
 
-  it('looksLikeMissingModelConfig：缺 key/无模型/401 → true；其它异常 → false', () => {
+  it('looksLikeMissingModelConfig：缺 key/无模型 → true；401/其它异常 → false', () => {
     expect(looksLikeMissingModelConfig(undefined)).toBe(true);
     expect(looksLikeMissingModelConfig('')).toBe(true);
     expect(looksLikeMissingModelConfig('未找到模型 openai/gpt-x')).toBe(true);
     expect(looksLikeMissingModelConfig('没有任何配置了有效凭证的模型')).toBe(true);
     expect(looksLikeMissingModelConfig('missing API key for anthropic')).toBe(true);
-    expect(looksLikeMissingModelConfig('HTTP 401 Unauthorized')).toBe(true);
+    expect(looksLikeMissingModelConfig('HTTP 401 Unauthorized')).toBe(false);
     expect(looksLikeMissingModelConfig('ENOENT: no such file or directory')).toBe(false);
     expect(looksLikeMissingModelConfig('SyntaxError: unexpected token')).toBe(false);
+  });
+
+  it('401 创建期失败：凭证通知 + 打开设置，不含「未配置模型」', async () => {
+    const { events, handlers } = collectEvents();
+    const runtime = createFallbackRuntime(handlers, 'HTTP 401 Unauthorized Bearer aabbccdd');
+    await runtime.prompt('hello');
+    const text = events
+      .filter((e): e is Extract<OpsRuntimeEvent, { type: 'text_delta' }> => e.type === 'text_delta')
+      .map((e) => e.text)
+      .join('\n');
+    expect(text).toContain(CREDENTIAL_NOTICE);
+    expect(text).not.toContain('未配置模型');
+    expect(text).not.toContain('aabbccdd');
+    const notice = events.find((e) => e.type === 'notice');
+    expect(notice?.type).toBe('notice');
+    if (notice?.type === 'notice') {
+      expect(notice.actions).toEqual([OPEN_SETTINGS_NOTICE_ACTION]);
+    }
   });
 
   it('createOpsRuntime 在模型无法解析时返回 Fallback 而不是抛错', async () => {
@@ -1877,6 +1900,86 @@ describe('compaction（prompt 过长时 compact 一次 + 重试一次）', () =>
       })
     ).rejects.toThrow(COMPACTION_NEW_SESSION_MESSAGE);
     expect(summaries.length).toBe(before);
+  });
+});
+
+describe('prompt 错误分类与 429 一次退避（Plan 06 T1–T2）', () => {
+  it('分类表：401/403 是 credential；429/5xx 是 transient；缺配置仍 missing_config', () => {
+    expect(classifyPromptError(new Error('HTTP 401 Unauthorized'))).toBe('credential');
+    expect(classifyPromptError(new Error('403 Forbidden'))).toBe('credential');
+    expect(classifyPromptError(new Error('HTTP 429 Too Many Requests'))).toBe('transient');
+    expect(classifyPromptError(new Error('HTTP 503 Service Unavailable'))).toBe('transient');
+    expect(classifyPromptError(new Error('ECONNRESET'))).toBe('transient');
+    expect(classifyPromptError(new Error('fetch failed'))).toBe('transient');
+    expect(classifyPromptError(new Error('missing API key for anthropic'))).toBe('missing_config');
+    expect(classifyPromptError(new Error('ENOENT: no such file'))).toBe('other');
+  });
+
+  it('401 + Bearer：notice 为凭证文案，不含未配置模型、Bearer 不上屏', async () => {
+    const events: OpsRuntimeEvent[] = [];
+    await handleClassifiedPromptError({
+      error: new Error('401 Unauthorized Bearer aabbccdd'),
+      retry: async () => {
+        throw new Error('retry should not run for 401');
+      },
+      onEvent: (e) => events.push(e),
+      retryDelayMs: 0
+    });
+    const text = events
+      .filter(
+        (e): e is Extract<OpsRuntimeEvent, { type: 'text_delta' | 'notice' }> =>
+          e.type === 'text_delta' || e.type === 'notice'
+      )
+      .map((e) => e.text)
+      .join('\n');
+    expect(text).toContain(CREDENTIAL_NOTICE);
+    expect(text).not.toContain('未配置模型');
+    expect(text).not.toContain('aabbccdd');
+    const notice = events.find((e) => e.type === 'notice');
+    expect(notice?.type).toBe('notice');
+    if (notice?.type === 'notice') {
+      expect(notice.actions).toEqual([OPEN_SETTINGS_NOTICE_ACTION]);
+    }
+    expect(events.at(-1)).toEqual({ type: 'idle' });
+  });
+
+  it('429 第一次失败第二次成功：只调用两次，无第三次', async () => {
+    let calls = 0;
+    const events: OpsRuntimeEvent[] = [];
+    await runPromptWithRecovery({
+      session: {},
+      retryDelayMs: 0,
+      onEvent: (e) => events.push(e),
+      run: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('HTTP 429 Too Many Requests');
+      }
+    });
+    expect(calls).toBe(2);
+    expect(events.some((e) => e.type === 'notice')).toBe(false);
+  });
+
+  it('两次 429：notice + Retry action，不第三次调用', async () => {
+    let calls = 0;
+    const events: OpsRuntimeEvent[] = [];
+    await runPromptWithRecovery({
+      session: {},
+      retryDelayMs: 0,
+      onEvent: (e) => events.push(e),
+      run: async () => {
+        calls += 1;
+        throw new Error('HTTP 429 Too Many Requests');
+      }
+    });
+    expect(calls).toBe(2);
+    const notice = events.find((e) => e.type === 'notice');
+    expect(notice?.type).toBe('notice');
+    if (notice?.type === 'notice') {
+      expect(notice.actions).toEqual([RETRY_NOTICE_ACTION]);
+      expect(notice.text).toContain('429');
+      expect(notice.text).not.toContain('未配置模型');
+    }
+    expect(events.at(-1)).toEqual({ type: 'idle' });
   });
 });
 

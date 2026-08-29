@@ -100,8 +100,8 @@ function createApprovalHarness(): {
 
 function requestExec(svc: ApprovalService, sessionId: string): Promise<'approved' | 'rejected'> {
   return svc.resolveSessionApproval(sessionId, {
-    toolName: 'terminal_run_command',
-    args: { command: 'systemctl restart nginx' },
+    toolName: 'k8s.rollback',
+    args: { deployment: 'nginx' },
     risk: 'exec'
   });
 }

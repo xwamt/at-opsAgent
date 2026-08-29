@@ -108,6 +108,18 @@ export interface OrchestratorLike {
   }): unknown;
   getRun?(id: string): PlaybookRunLike | undefined;
   advanceTo?(runOrId: PlaybookRunLike | string, stage: string): PlaybookRunLike;
+  /**
+   * 推进一步：stage 给定等价 advanceTo；缺省取 legalNextStages[0]。
+   * 非法迁移 throw（host 转成 ok=false + allowedNext，不让模型写 closed）。
+   */
+  advanceStage?(runOrId: PlaybookRunLike | string, stage?: string): PlaybookRunLike;
+  /** 当前阶段在该 playbook 内合法的下一步（全局迁移表 ∩ yaml 声明）。 */
+  legalNextStages?(runOrId: PlaybookRunLike | string): string[];
+  /**
+   * 沿迁移表 BFS 最短路推进到 closed，每步经 advanceTo 发阶段事件。
+   * 已 closed 幂等；不可达时 throw。
+   */
+  closeRun?(runOrId: PlaybookRunLike | string): PlaybookRunLike;
   /** runtime 实际执行了一轮 select 后登记（policy 的 selectCountThisTask）。 */
   recordSelect?(runOrId: PlaybookRunLike | string): number;
   abortSubagent?(taskId: string): void;
@@ -226,8 +238,8 @@ export interface RuntimeHandlers {
     advance?(
       stage?: string
     ):
-      | { ok: boolean; stage?: string; error?: string }
-      | Promise<{ ok: boolean; stage?: string; error?: string }>;
+      | { ok: boolean; stage?: string; error?: string; allowedNext?: string[] }
+      | Promise<{ ok: boolean; stage?: string; error?: string; allowedNext?: string[] }>;
     close?():
       | { ok: boolean; stage?: string; error?: string }
       | Promise<{ ok: boolean; stage?: string; error?: string }>;

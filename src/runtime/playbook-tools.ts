@@ -37,6 +37,8 @@ export interface PlaybookStageResult {
   ok: boolean;
   stage?: string;
   error?: string;
+  /** 非法迁移时的合法下一步（与工具描述「列出合法下一步」对齐）。 */
+  allowedNext?: string[];
 }
 
 /** host 注入；缺席时工具仍注册，返回中文说明而不是抛错。 */

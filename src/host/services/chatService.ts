@@ -24,6 +24,7 @@ import { readAgentSettings } from '../agentSettings';
 import { normalizeRoleModels } from '../modelsView';
 import type { RuntimeLike } from '../hostTypes';
 import { describeError, type HostContext } from './context';
+import { sanitizeErrorText } from '../../runtime/sanitize';
 import { ensureVisibleInspectionReport } from './inspectionSummary';
 import { RuntimeEventRouter } from './runtimeEvents';
 import { SessionPoolExhaustedError, SessionRuntimePool } from './runtimePool';
@@ -182,8 +183,9 @@ export class ChatService {
     await this.liveLayers.syncLivePrompt(sessionId);
     this.pool.markBusy(sessionId);
     void runtime.prompt(text, mode !== undefined ? { mode } : undefined).catch((err) => {
-      ctx.log(`[runtime] prompt 失败: ${describeError(err)}`);
-      ctx.emitAssistantNotice(`⚠ 模型调用失败：${describeError(err)}`, sessionId);
+      const msg = sanitizeErrorText(describeError(err));
+      ctx.log(`[runtime] prompt 失败: ${msg}`);
+      ctx.emitAssistantNotice(`⚠ 模型调用失败：${msg}`, sessionId);
       this.pool.markIdle(sessionId);
     });
     return { accepted: true };

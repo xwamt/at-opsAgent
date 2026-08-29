@@ -75,23 +75,23 @@ function testPlaybook(): Playbook {
 }
 
 describe('approvalGate · commandSet 推导与 policy 对齐', () => {
-  it('单条 command 字符串 → [command]，批准后同一调用放行', () => {
+  it('单条 command 字符串 → [command]，批准后同一调用放行', async () => {
     const args = { command: 'systemctl restart nginx' };
     const commandSet = buildApprovalCommandSet('terminal_run_command', args);
     expect(commandSet).toEqual(['systemctl restart nginx']);
 
-    const decision = evaluatePolicy(
+    const decision = await evaluatePolicy(
       execCtx({ args, approval: approvalFor('brief-1', commandSet) })
     );
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('sql / query 字符串同样对齐（含 LIMIT 通过 payload 闸）', () => {
+  it('sql / query 字符串同样对齐（含 LIMIT 通过 payload 闸）', async () => {
     const args = { sql: 'DELETE FROM t WHERE id = 1 LIMIT 1' };
     const commandSet = buildApprovalCommandSet('db_execute_sql', args);
     expect(commandSet).toEqual([args.sql]);
 
-    const decision = evaluatePolicy(
+    const decision = await evaluatePolicy(
       execCtx({
         toolName: 'db_execute_sql',
         risk: 'write',
@@ -102,23 +102,23 @@ describe('approvalGate · commandSet 推导与 policy 对齐', () => {
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('args.commands 数组原样成为命令集', () => {
+  it('args.commands 数组原样成为命令集', async () => {
     const args = { commands: ['cp a b', 'rm a'] };
     const commandSet = buildApprovalCommandSet('terminal_run_script', args);
     expect(commandSet).toEqual(args.commands);
 
-    const decision = evaluatePolicy(
+    const decision = await evaluatePolicy(
       execCtx({ toolName: 'terminal_run_script', args, approval: approvalFor('brief-2', commandSet) })
     );
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('结构化入参（无 command/sql/query）→ {tool,args}；policy 推导不出哈希也放行', () => {
+  it('结构化入参（无 command/sql/query）→ {tool,args}；policy 推导不出哈希也放行', async () => {
     const args = { dataId: 'app.yaml', content: 'a: 1' };
     const commandSet = buildApprovalCommandSet('nacos_publish_config', args);
     expect(commandSet).toEqual({ tool: 'nacos_publish_config', args });
 
-    const decision = evaluatePolicy(
+    const decision = await evaluatePolicy(
       execCtx({
         toolName: 'nacos_publish_config',
         risk: 'write',
@@ -129,11 +129,11 @@ describe('approvalGate · commandSet 推导与 policy 对齐', () => {
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('批准后篡改命令 → OPS_APPROVAL_STALE', () => {
+  it('批准后篡改命令 → OPS_APPROVAL_STALE', async () => {
     const approved = buildApprovalCommandSet('terminal_run_command', {
       command: 'systemctl restart nginx'
     });
-    const decision = evaluatePolicy(
+    const decision = await evaluatePolicy(
       execCtx({
         args: { command: 'rm -rf /data' },
         approval: approvalFor('brief-4', approved)
@@ -143,7 +143,7 @@ describe('approvalGate · commandSet 推导与 policy 对齐', () => {
     if (decision.block) expect(decision.code).toBe(OPS_ERROR.APPROVAL_STALE);
   });
 
-  it('9 要素齐全且非空；commands 含确切命令', () => {
+  it('9 要素齐全且非空；commands 含确切命令', async () => {
     const args = { command: 'systemctl restart nginx' };
     const commandSet = buildApprovalCommandSet('terminal_run_command', args);
     const elements = buildApprovalElements({
@@ -164,7 +164,7 @@ describe('approvalGate · commandSet 推导与 policy 对齐', () => {
 });
 
 describe('approval loop · policy + orchestrator 集成', () => {
-  it('needSessionApproval → 简报 → 批准 → 令牌 → 同一调用放行；executor spec 可合并审批引用', () => {
+  it('needSessionApproval → 简报 → 批准 → 令牌 → 同一调用放行；executor spec 可合并审批引用', async () => {
     const events: OrchestratorEvent[] = [];
     const orch = createOrchestrator({
       playbooks: [testPlaybook()],
@@ -176,7 +176,7 @@ describe('approval loop · policy + orchestrator 集成', () => {
     orch.advanceTo(run, 'synthesizing');
 
     // 1. 无审批时 exec 工具要求会话审批（host 闸门此时应发简报并 block）。
-    const before = evaluatePolicy(execCtx({ approval: null }));
+    const before = await evaluatePolicy(execCtx({ approval: null }));
     expect(before).toMatchObject({ block: false, needSessionApproval: true });
 
     // 2. host 装配命令集与 9 要素并请求简报 → awaitingApproval。
@@ -217,7 +217,7 @@ describe('approval loop · policy + orchestrator 集成', () => {
       commandSetSha256: brief.commandSetSha256,
       token
     };
-    expect(evaluatePolicy(execCtx({ args, approval }))).toEqual({
+    expect(await evaluatePolicy(execCtx({ args, approval }))).toEqual({
       block: false,
       needSessionApproval: false
     });
@@ -235,7 +235,7 @@ describe('approval loop · policy + orchestrator 集成', () => {
     expect(merged.approvalToken).not.toHaveProperty('token');
   });
 
-  it('拒绝路径：executing 中的回滚简报被拒 → reporting，且 executor 无令牌一律被拒', () => {
+  it('拒绝路径：executing 中的回滚简报被拒 → reporting，且 executor 无令牌一律被拒', async () => {
     const events: OrchestratorEvent[] = [];
     const orch = createOrchestrator({
       playbooks: [testPlaybook()],
@@ -267,14 +267,14 @@ describe('approval loop · policy + orchestrator 集成', () => {
     ).toEqual(['approved', 'rejected']);
 
     // 拒绝后（host 清空 currentApproval）：executor 无 approval 一律拒 write/exec。
-    const denied = evaluatePolicy(execCtx({ role: 'executor', approval: null }));
+    const denied = await evaluatePolicy(execCtx({ role: 'executor', approval: null }));
     expect(denied.block).toBe(true);
     if (denied.block) expect(denied.code).toBe(OPS_ERROR.APPROVAL_REQUIRED);
   });
 });
 
 describe('approval timeout · 配置默认', () => {
-  it('package.json 生产默认 900000ms（15min），测试不得改此默认', () => {
+  it('package.json 生产默认 900000ms（15min），测试不得改此默认', async () => {
     const pkg = JSON.parse(
       readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8')
     ) as {

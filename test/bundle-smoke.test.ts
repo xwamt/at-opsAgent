@@ -110,7 +110,7 @@ describe('bundle smoke（P0-A：CJS 产物里 pi runtime 可用）', () => {
       entryPoints: [join(__dirname, 'helpers', 'bundle-harness.ts')],
       outfile: harnessFile,
       sourcemap: false,
-      minify: false,
+      minify: true,
       logLevel: 'silent'
     });
   }, BUILD_TIMEOUT_MS);

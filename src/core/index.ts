@@ -72,7 +72,7 @@ export interface OpsCore {
   /** 打包 playbook yaml 加载（校验失败抛错，调用方决定降级）。 */
   loadPlaybooks(rootDir: string): Playbook[];
   /** 策略闸（纯函数；host 在 beforeToolCall 装配）。 */
-  evaluatePolicy(ctx: PolicyContext): PolicyDecision;
+  evaluatePolicy(ctx: PolicyContext): Promise<PolicyDecision>;
   /** L0–L3（+可选 L-env 现场层 +可选 L4）系统提示词合成。 */
   buildSystemPrompt(opts?: { playbookLayer?: string; envLayer?: string }): string;
   /** AT 系列 MCP server 去重判定（诊断 / mcp.json 扫描用）。 */

@@ -15,9 +15,9 @@ export const STAGE_TRANSITIONS: Readonly<Record<StageId, readonly StageId[]>> = 
   awaitingApproval: ['executing', 'reporting'],
   executing: ['verifying', 'awaitingApproval'],
   verifying: ['reporting'],
-  // mermaid 只画了 GuidedManual → Reporting；docs/04 §2.2 要求「用户完成后
-  // → Verifying（只读确认）」。两条都合法，pb.release 的 verifying 才可达。
-  guidedManual: ['reporting', 'verifying'],
+  // docs/04 §2.2：用户完成后 → Verifying（只读确认）是缺省下一步；
+  // GuidedManual → Reporting 仍合法（跳过核验）。缺省 advance 取 [0]。
+  guidedManual: ['verifying', 'reporting'],
   reporting: ['closed'],
   escalated: ['closed'],
   closed: []
@@ -25,20 +25,30 @@ export const STAGE_TRANSITIONS: Readonly<Record<StageId, readonly StageId[]>> = 
 
 export class IllegalStageTransitionError extends Error {
   readonly code = 'OPS_ILLEGAL_TRANSITION';
+  readonly allowedNext: readonly StageId[];
 
   constructor(
     readonly from: StageId,
     readonly to: StageId,
-    allowedNext?: readonly StageId[]
+    allowed?: readonly StageId[]
   ) {
-    const next = allowedNext ?? STAGE_TRANSITIONS[from];
+    const next = allowed ?? STAGE_TRANSITIONS[from];
     super(
       `非法阶段迁移 ${from} → ${to}；允许的下一步：${
         next.length > 0 ? next.join(', ') : '（终态）'
       }`
     );
     this.name = 'IllegalStageTransitionError';
+    this.allowedNext = next;
   }
+}
+
+/** host 用 name/code 识别，避免 import engine 破坏分层。 */
+export function isIllegalStageTransitionError(err: unknown): err is IllegalStageTransitionError {
+  if (err instanceof IllegalStageTransitionError) return true;
+  if (typeof err !== 'object' || err === null) return false;
+  const rec = err as { name?: unknown; code?: unknown };
+  return rec.name === 'IllegalStageTransitionError' || rec.code === 'OPS_ILLEGAL_TRANSITION';
 }
 
 export function canTransition(from: StageId, to: StageId): boolean {

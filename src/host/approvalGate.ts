@@ -43,6 +43,7 @@ export const APPROVAL_ELEMENT_KEYS = [
 ] as const;
 
 const COMMANDS_PREVIEW_MAX = 2000;
+const COMMAND_POLICY_REASON_MAX = 200;
 
 function previewJson(value: unknown): string {
   let text: string;
@@ -61,7 +62,19 @@ function previewJson(value: unknown): string {
  * 由被拒工具调用尽力装配 9 要素简报文案（goal/evidence/impact/prechecks/
  * backup/commands/successCriteria/rollback/unknowns）。不替代人工判断：
  * unknowns 明示这是自动装配，插件确认弹窗（第三道闸）仍独立生效。
+ * 远程命令可附 commandPolicy 要素（allow|review|deny + reason 截断）。
  */
+function formatCommandPolicyLine(preview: { action: string; reason?: string }): string {
+  const reason = (preview.reason ?? '').trim();
+  const clipped =
+    reason.length > COMMAND_POLICY_REASON_MAX
+      ? `${reason.slice(0, COMMAND_POLICY_REASON_MAX)}…`
+      : reason;
+  return clipped.length > 0
+    ? `命令策略：${preview.action}（${clipped}）`
+    : `命令策略：${preview.action}`;
+}
+
 export function buildApprovalElements(input: {
   toolName: string;
   args: Record<string, unknown>;
@@ -69,11 +82,17 @@ export function buildApprovalElements(input: {
   commandSet: unknown;
   pluginId?: string;
   stage?: string;
+  /** 远程命令的 command-policy 预判（allow|review|deny）；非远程工具可缺省。 */
+  commandPolicy?: { action: string; reason?: string };
 }): Record<string, string> {
   const target =
     input.pluginId !== undefined ? `${input.pluginId} 的 ${input.toolName}` : input.toolName;
   const riskLabel = input.risk === 'exec' ? '命令执行（exec）' : '写操作（write）';
   const stageNote = input.stage !== undefined ? `当前 playbook 阶段 ${input.stage}；` : '';
+  const commandPolicyLine =
+    input.commandPolicy !== undefined ? formatCommandPolicyLine(input.commandPolicy) : undefined;
+  const unknowns =
+    '本简报由被拦截的工具调用自动装配，参数未经人工整理；批准仅放行该确切命令集，插件确认弹窗仍会独立生效。';
   return {
     goal: `执行${riskLabel}：${target}`,
     evidence: `${stageNote}模型在会话内请求调用 ${input.toolName}，调查证据见上方对话与证据便签。`,
@@ -85,7 +104,7 @@ export function buildApprovalElements(input: {
     commands: previewJson(input.commandSet),
     successCriteria: '工具返回成功，且读回/监控验证结果符合预期。',
     rollback: '如结果异常，按回滚指引撤销本次变更；无回滚手段时请勿批准。',
-    unknowns:
-      '本简报由被拦截的工具调用自动装配，参数未经人工整理；批准仅放行该确切命令集，插件确认弹窗仍会独立生效。'
+    unknowns: commandPolicyLine !== undefined ? `${commandPolicyLine}。${unknowns}` : unknowns,
+    ...(commandPolicyLine !== undefined ? { commandPolicy: commandPolicyLine } : {})
   };
 }

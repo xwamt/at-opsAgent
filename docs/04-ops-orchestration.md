@@ -18,7 +18,8 @@ stateDiagram-v2
     Executing --> Verifying
     Executing --> AwaitingApproval: 回滚简报
     Verifying --> Reporting
-    GuidedManual --> Reporting: 用户完成或跳过
+    GuidedManual --> Verifying: 用户完成
+    GuidedManual --> Reporting: 跳过
     Reporting --> Closed
     Investigating --> Escalated: 疑入侵 / 全组失败
     Escalated --> Closed

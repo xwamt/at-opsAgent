@@ -85,7 +85,8 @@ export class GuidedManualFlow {
     }
     const run = this.playbooks.runOf(sid);
     if (!run || !this.playbooks.canAdvance()) return { ok: false };
-    for (const next of ['verifying', 'reporting']) {
+    const nextStages = this.playbooks.legalNextStages(run);
+    for (const next of nextStages) {
       const stage = this.playbooks.tryAdvance(run, next);
       if (stage) return { ok: true, stage };
     }

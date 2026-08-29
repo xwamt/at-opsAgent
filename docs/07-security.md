@@ -43,7 +43,14 @@
 
 ## 5. 命令策略
 
-`@at-series/command-policy` 在 Agent 侧只做 **预判**（审批简报里展示 allow/review/deny + 证据坐标）。Terminal Bridge 内的分析仍是权威。聚合「只能加严」：Agent 预判 deny → 直接不 invoke；review → 必须进简报；allow 仍要过 ①③。
+Agent 侧对远程执行类工具（`run_remote_command` / `jumpserver_run_terminal_command` 等白名单；**不对** `grafana_query` 跑 shell 分析器）用 `@at-series/command-policy` **0.1.1** 做预判（精确锁定，禁用 `^`）：
+
+- `allow` → 有效风险 read（仍须手写表也认为只读：聚合只能加严，防 command substitution 等库误放）
+- `review` / `deny` → 保持申报风险（write/exec），走 ① 会话审批
+- 库不可用（import 失败）→ 手写只读表兜底，log 一次
+- 解析/判定失败 → 保持申报风险，**不加严为 allow**
+
+审批简报展示「命令策略：allow|review|deny」+ reason 截断（`unknowns` / `commandPolicy` 要素）。Terminal Bridge 内的分析仍是权威。allow 仍要过 ①③。
 
 ## 6. 文件系统与 registry 攻击面
 

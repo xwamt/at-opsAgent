@@ -7,10 +7,13 @@ import {
   inferEffectiveRisk,
   issueApprovalToken,
   PolicyError,
+  previewRemoteCommandPolicy,
   verifyApprovalToken,
-  type PolicyContext
+  type PolicyContext,
+  type PolicyDecision
 } from '../src/policy';
 import { OPS_ERROR } from '../src/protocol';
+import { buildApprovalElements } from '../src/host/approvalGate';
 
 function ctx(overrides: Partial<PolicyContext>): PolicyContext {
   return {
@@ -23,7 +26,7 @@ function ctx(overrides: Partial<PolicyContext>): PolicyContext {
   };
 }
 
-function expectBlocked(decision: ReturnType<typeof evaluatePolicy>, code: string): void {
+function expectBlocked(decision: PolicyDecision, code: string): void {
   expect(decision.block).toBe(true);
   if (decision.block) {
     expect(decision.code).toBe(code);
@@ -32,31 +35,31 @@ function expectBlocked(decision: ReturnType<typeof evaluatePolicy>, code: string
 }
 
 describe('policy · 工具选择纪律', () => {
-  it('investigating 阶段 clear 被拒（OPS_SELECTION_FORBIDDEN）', () => {
-    const decision = evaluatePolicy(
+  it('investigating 阶段 clear 被拒（OPS_SELECTION_FORBIDDEN）', async () => {
+    const decision = await evaluatePolicy(
       ctx({ toolName: 'ops_clear_tool_selection', stage: 'investigating' })
     );
     expectBlocked(decision, OPS_ERROR.SELECTION_FORBIDDEN);
   });
 
-  it('selecting / synthesizing 阶段 clear 同样被拒，at_ 前缀等价', () => {
+  it('selecting / synthesizing 阶段 clear 同样被拒，at_ 前缀等价', async () => {
     for (const stage of ['selecting', 'synthesizing']) {
       expectBlocked(
-        evaluatePolicy(ctx({ toolName: 'at_clear_tool_selection', stage })),
+        await evaluatePolicy(ctx({ toolName: 'at_clear_tool_selection', stage })),
         OPS_ERROR.SELECTION_FORBIDDEN
       );
     }
   });
 
-  it('reporting / closed 阶段 clear 放行', () => {
+  it('reporting / closed 阶段 clear 放行', async () => {
     for (const stage of ['reporting', 'closed', undefined]) {
-      const decision = evaluatePolicy(ctx({ toolName: 'ops_clear_tool_selection', stage }));
+      const decision = await evaluatePolicy(ctx({ toolName: 'ops_clear_tool_selection', stage }));
       expect(decision).toEqual({ block: false, needSessionApproval: false });
     }
   });
 
-  it('selecting 阶段第一次 replace 放行', () => {
-    const decision = evaluatePolicy(
+  it('selecting 阶段第一次 replace 放行', async () => {
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'ops_select_tools',
         args: { mode: 'replace', pluginIds: ['at.grafana'] },
@@ -67,8 +70,8 @@ describe('policy · 工具选择纪律', () => {
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('调查中二次 replace 被拒（OPS_SELECTION_FORBIDDEN）', () => {
-    const decision = evaluatePolicy(
+  it('调查中二次 replace 被拒（OPS_SELECTION_FORBIDDEN）', async () => {
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'ops_select_tools',
         args: { mode: 'replace', pluginIds: ['at.terminal'] },
@@ -79,8 +82,8 @@ describe('policy · 工具选择纪律', () => {
     expectBlocked(decision, OPS_ERROR.SELECTION_FORBIDDEN);
   });
 
-  it('调查中 mode=add 扩面放行', () => {
-    const decision = evaluatePolicy(
+  it('调查中 mode=add 扩面放行', async () => {
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'at_select_tools',
         args: { mode: 'add', pluginIds: ['at.jumpserver'] },
@@ -91,9 +94,9 @@ describe('policy · 工具选择纪律', () => {
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('任务边界（triage / closed）允许重新 replace', () => {
+  it('任务边界（triage / closed）允许重新 replace', async () => {
     for (const stage of ['triage', 'closed']) {
-      const decision = evaluatePolicy(
+      const decision = await evaluatePolicy(
         ctx({
           toolName: 'ops_select_tools',
           args: { mode: 'replace', pluginIds: ['at.jenkins'] },
@@ -107,36 +110,36 @@ describe('policy · 工具选择纪律', () => {
 });
 
 describe('policy · 角色风险顶', () => {
-  it('read 放行且不需会话审批', () => {
-    const decision = evaluatePolicy(ctx({ role: 'investigator', risk: 'read' }));
+  it('read 放行且不需会话审批', async () => {
+    const decision = await evaluatePolicy(ctx({ role: 'investigator', risk: 'read' }));
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('investigator exec 被拒（OPS_RISK_CEILING，默认 read 硬顶）', () => {
-    const decision = evaluatePolicy(
+  it('investigator exec 被拒（OPS_RISK_CEILING，默认 read 硬顶）', async () => {
+    const decision = await evaluatePolicy(
       ctx({ toolName: 'terminal_run_command', role: 'investigator', risk: 'exec' })
     );
     expectBlocked(decision, OPS_ERROR.RISK_CEILING);
   });
 
-  it('investigator / verifier write 也被拒', () => {
+  it('investigator / verifier write 也被拒', async () => {
     for (const role of ['investigator', 'verifier'] as const) {
       expectBlocked(
-        evaluatePolicy(ctx({ toolName: 'nacos_publish_config', role, risk: 'write' })),
+        await evaluatePolicy(ctx({ toolName: 'nacos_publish_config', role, risk: 'write' })),
         OPS_ERROR.RISK_CEILING
       );
     }
   });
 
-  it('writer 调用任何业务工具（哪怕 read）被拒', () => {
-    const decision = evaluatePolicy(
+  it('writer 调用任何业务工具（哪怕 read）被拒', async () => {
+    const decision = await evaluatePolicy(
       ctx({ toolName: 'grafana_list_dashboards', role: 'writer', risk: 'read' })
     );
     expectBlocked(decision, OPS_ERROR.RISK_CEILING);
   });
 
-  it('子代理不能靠上抬 riskCeiling 绕过 writer 业务工具禁令', () => {
-    const decision = evaluatePolicy(
+  it('子代理不能靠上抬 riskCeiling 绕过 writer 业务工具禁令', async () => {
+    const decision = await evaluatePolicy(
       ctx({ toolName: 'terminal_run_command', role: 'writer', risk: 'exec', riskCeiling: 'exec' })
     );
     expectBlocked(decision, OPS_ERROR.RISK_CEILING);
@@ -144,7 +147,7 @@ describe('policy · 角色风险顶', () => {
 });
 
 describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）', () => {
-  it('只读巡检命令推断为 read', () => {
+  it('只读巡检命令推断为 read', async () => {
     const readOnly = [
       'hostname',
       'whoami',
@@ -170,11 +173,11 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       'iptables -L -n'
     ];
     for (const command of readOnly) {
-      expect(inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('read');
+      expect(await inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('read');
     }
   });
 
-  it('写/执行/维护类命令维持申报风险（保守方向）', () => {
+  it('写/执行/维护类命令维持申报风险（保守方向）', async () => {
     const notReadOnly = [
       'rm -rf /data',
       'systemctl restart nginx',
@@ -195,11 +198,11 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       'top'
     ];
     for (const command of notReadOnly) {
-      expect(inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('exec');
+      expect(await inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('exec');
     }
   });
 
-  it('扩充的只读巡检命令与管道滤镜推断为 read（docs/14 P0-read）', () => {
+  it('扩充的只读巡检命令与管道滤镜推断为 read（docs/14 P0-read）', async () => {
     const readOnly = [
       'w',
       'hostname && uptime && w',
@@ -207,13 +210,8 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       'last -n 5',
       'id',
       'date',
-      'timedatectl',
       'lsblk',
       'lscpu',
-      'lsmem',
-      'findmnt',
-      'mount',
-      'mount -l',
       'vmstat 1 5',
       'iostat -x 1 3',
       'netstat -tlnp',
@@ -240,16 +238,29 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       'grep -c error /var/log/syslog',
       'egrep -i "warn" /var/log/messages | tail -n 20',
       'fgrep OOM /var/log/kern.log',
-      'cut -d: -f1 /etc/passwd | sort | uniq | column',
-      'cat /etc/passwd | tr a-z A-Z',
       'sed -n 1,10p /etc/hosts'
     ];
     for (const command of readOnly) {
-      expect(inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('read');
+      expect(await inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('read');
     }
   });
 
-  it('扩充命令的变更/交互形态维持申报风险', () => {
+  it('command-policy review 的命令保持申报风险（只能加严，不放宽）', async () => {
+    const reviewed = [
+      'timedatectl',
+      'lsmem',
+      'findmnt',
+      'mount',
+      'mount -l',
+      'cut -d: -f1 /etc/passwd | sort | uniq | column',
+      'cat /etc/passwd | tr a-z A-Z'
+    ];
+    for (const command of reviewed) {
+      expect(await inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('exec');
+    }
+  });
+
+  it('扩充命令的变更/交互形态维持申报风险', async () => {
     const notReadOnly = [
       'docker stats',
       'docker run -d nginx',
@@ -267,33 +278,74 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       'systemctl restart nginx'
     ];
     for (const command of notReadOnly) {
-      expect(inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('exec');
+      expect(await inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('exec');
     }
   });
 
-  it('组合命令要求每段只读；重定向/命令替换一律不推断', () => {
-    expect(inferEffectiveRisk('run_remote_command', { command: 'ps aux | head -n 20' }, 'exec')).toBe('read');
-    expect(inferEffectiveRisk('run_remote_command', { command: 'df -h; free -m' }, 'exec')).toBe('read');
-    expect(inferEffectiveRisk('run_remote_command', { command: 'cat /tmp/a | sh' }, 'exec')).toBe('exec');
-    expect(inferEffectiveRisk('run_remote_command', { command: 'cat $(find / -name x)' }, 'exec')).toBe('exec');
-    expect(inferEffectiveRisk('run_remote_command', { command: 'cat `which sh`' }, 'exec')).toBe('exec');
+  it('组合命令要求每段只读；重定向/命令替换一律不推断', async () => {
+    expect(await inferEffectiveRisk('run_remote_command', { command: 'ps aux | head -n 20' }, 'exec')).toBe('read');
+    expect(await inferEffectiveRisk('run_remote_command', { command: 'df -h; free -m' }, 'exec')).toBe('read');
+    expect(await inferEffectiveRisk('run_remote_command', { command: 'cat /tmp/a | sh' }, 'exec')).toBe('exec');
+    expect(await inferEffectiveRisk('run_remote_command', { command: 'cat $(find / -name x)' }, 'exec')).toBe('exec');
+    expect(await inferEffectiveRisk('run_remote_command', { command: 'cat `which sh`' }, 'exec')).toBe('exec');
   });
 
-  it('只对远程命令工具生效；缺 command / read 声明原样返回', () => {
-    expect(inferEffectiveRisk('jumpserver_run_terminal_command', { command: 'docker ps' }, 'exec')).toBe('read');
-    expect(inferEffectiveRisk('at.terminal/run_remote_command', { command: 'uptime' }, 'exec')).toBe('read');
+  it('只对远程命令工具生效；缺 command / read 声明原样返回', async () => {
+    expect(await inferEffectiveRisk('jumpserver_run_terminal_command', { command: 'docker ps' }, 'exec')).toBe('read');
+    expect(await inferEffectiveRisk('at.terminal/run_remote_command', { command: 'uptime' }, 'exec')).toBe('read');
     // 其它工具不做内容推断
-    expect(inferEffectiveRisk('nacos_publish_config', { command: 'hostname' }, 'write')).toBe('write');
-    expect(inferEffectiveRisk('terminal_run_command', { command: 'hostname' }, 'exec')).toBe('exec');
+    expect(await inferEffectiveRisk('nacos_publish_config', { command: 'hostname' }, 'write')).toBe('write');
+    expect(await inferEffectiveRisk('terminal_run_command', { command: 'hostname' }, 'exec')).toBe('exec');
     // 缺 command / 空串 → 维持申报风险
-    expect(inferEffectiveRisk('run_remote_command', {}, 'exec')).toBe('exec');
-    expect(inferEffectiveRisk('run_remote_command', { command: '' }, 'exec')).toBe('exec');
+    expect(await inferEffectiveRisk('run_remote_command', {}, 'exec')).toBe('exec');
+    expect(await inferEffectiveRisk('run_remote_command', { command: '' }, 'exec')).toBe('exec');
     // 声明本就是 read 时原样返回
-    expect(inferEffectiveRisk('run_remote_command', { command: 'anything' }, 'read')).toBe('read');
+    expect(await inferEffectiveRisk('run_remote_command', { command: 'anything' }, 'read')).toBe('read');
   });
 
-  it('evaluatePolicy：investigator 用 run_remote_command 跑只读命令过 read 硬顶且免审', () => {
-    const decision = evaluatePolicy(
+  it('grafana_query 即使 args.command=ls 也不跑 shell 分析器', async () => {
+    expect(await previewRemoteCommandPolicy('grafana_query', { command: 'ls -lah /data' })).toBeUndefined();
+    expect(await inferEffectiveRisk('grafana_query', { command: 'ls -lah /data' }, 'write')).toBe('write');
+  });
+
+  it('command-policy：ls → allow/read；rm -rf → review 且仍需会话审批', async () => {
+    const ls = await previewRemoteCommandPolicy('run_remote_command', { command: 'ls -lah /data' });
+    expect(ls?.action).toBe('allow');
+    expect(ls?.source).toBe('command-policy');
+    expect(await inferEffectiveRisk('run_remote_command', { command: 'ls -lah /data' }, 'exec')).toBe('read');
+
+    const rm = await previewRemoteCommandPolicy('run_remote_command', { command: 'rm -rf /data' });
+    expect(rm?.action).toBe('review');
+    expect(await inferEffectiveRisk('run_remote_command', { command: 'rm -rf /data' }, 'exec')).toBe('exec');
+    const rmDecision = await evaluatePolicy(
+      ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'rm -rf /data' } })
+    );
+    expect(rmDecision.block).toBe(false);
+    if (!rmDecision.block) expect(rmDecision.needSessionApproval).toBe(true);
+
+    const lsElements = buildApprovalElements({
+      toolName: 'run_remote_command',
+      args: { command: 'ls -lah /data' },
+      risk: 'exec',
+      commandSet: ['ls -lah /data'],
+      commandPolicy: { action: ls!.action, reason: ls!.reason }
+    });
+    expect(lsElements.commandPolicy).toMatch(/^命令策略：allow/);
+    expect(lsElements.unknowns).toContain('命令策略：allow');
+
+    const rmElements = buildApprovalElements({
+      toolName: 'run_remote_command',
+      args: { command: 'rm -rf /data' },
+      risk: 'exec',
+      commandSet: ['rm -rf /data'],
+      commandPolicy: { action: rm!.action, reason: rm!.reason }
+    });
+    expect(rmElements.commandPolicy).toMatch(/^命令策略：review/);
+    expect(rmElements.unknowns).toContain('命令策略：review');
+  });
+
+  it('evaluatePolicy：investigator 用 run_remote_command 跑只读命令过 read 硬顶且免审', async () => {
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'run_remote_command',
         role: 'investigator',
@@ -304,9 +356,9 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('evaluatePolicy：investigator 跑写命令仍被 read 硬顶拒绝（OPS_RISK_CEILING）', () => {
+  it('evaluatePolicy：investigator 跑写命令仍被 read 硬顶拒绝（OPS_RISK_CEILING）', async () => {
     expectBlocked(
-      evaluatePolicy(
+      await evaluatePolicy(
         ctx({
           toolName: 'run_remote_command',
           role: 'investigator',
@@ -318,12 +370,12 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
     );
   });
 
-  it('evaluatePolicy：主会话只读远程命令免 9 要素审批；写命令照常需要', () => {
+  it('evaluatePolicy：主会话只读远程命令免 9 要素审批；写命令照常需要', async () => {
     expect(
-      evaluatePolicy(ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'df -h' } }))
+      await evaluatePolicy(ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'df -h' } }))
     ).toEqual({ block: false, needSessionApproval: false });
 
-    const write = evaluatePolicy(
+    const write = await evaluatePolicy(
       ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'rm -rf /tmp/x' } })
     );
     expect(write.block).toBe(false);
@@ -332,8 +384,8 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
 });
 
 describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () => {
-  it('read 工具命中名单 → 直接放行（needSessionApproval=false）', () => {
-    const decision = evaluatePolicy(
+  it('read 工具命中名单 → 直接放行（needSessionApproval=false）', async () => {
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'grafana_query_prometheus',
         risk: 'read',
@@ -343,9 +395,9 @@ describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () 
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('名单只对 read 生效：write/exec 双闸不受影响', () => {
+  it('名单只对 read 生效：write/exec 双闸不受影响', async () => {
     // write 命中名单也照常需要会话审批
-    const write = evaluatePolicy(
+    const write = await evaluatePolicy(
       ctx({
         toolName: 'nacos_publish_config',
         pluginId: 'at.nacos',
@@ -358,7 +410,7 @@ describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () 
 
     // exec 的执行闸（executor 无 approval）同样照常拒绝
     expectBlocked(
-      evaluatePolicy(
+      await evaluatePolicy(
         ctx({
           toolName: 'terminal_run_command',
           role: 'executor',
@@ -371,10 +423,10 @@ describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () 
     );
   });
 
-  it('名单不影响角色硬顶与选择纪律（先于名单检查）', () => {
+  it('名单不影响角色硬顶与选择纪律（先于名单检查）', async () => {
     // writer 的业务工具禁令不因名单放行
     expectBlocked(
-      evaluatePolicy(
+      await evaluatePolicy(
         ctx({
           toolName: 'grafana_list_dashboards',
           role: 'writer',
@@ -386,7 +438,7 @@ describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () 
     );
     // payload 上限同样先于名单
     expectBlocked(
-      evaluatePolicy(
+      await evaluatePolicy(
         ctx({
           toolName: 'grafana_query_loki',
           args: { limit: 500 },
@@ -397,18 +449,18 @@ describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () 
     );
   });
 
-  it('未命中名单 / 名单缺省时 read 仍照常放行（现状 read 免审）', () => {
-    expect(evaluatePolicy(ctx({ sessionReadAllowlist: [] }))).toEqual({
+  it('未命中名单 / 名单缺省时 read 仍照常放行（现状 read 免审）', async () => {
+    expect(await evaluatePolicy(ctx({ sessionReadAllowlist: [] }))).toEqual({
       block: false,
       needSessionApproval: false
     });
-    expect(evaluatePolicy(ctx({}))).toEqual({ block: false, needSessionApproval: false });
+    expect(await evaluatePolicy(ctx({}))).toEqual({ block: false, needSessionApproval: false });
   });
 });
 
 describe('policy · 会话审批', () => {
-  it('at.database write 即使 sessionRequiredFor=exec-only 也强制会话审批', () => {
-    const decision = evaluatePolicy(
+  it('at.database write 即使 sessionRequiredFor=exec-only 也强制会话审批', async () => {
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'database_update_rows',
         pluginId: 'at.database',
@@ -423,28 +475,28 @@ describe('policy · 会话审批', () => {
     }
   });
 
-  it('write-exec 策略下主会话 write 需要审批；exec-only 下普通 write 不需要', () => {
+  it('write-exec 策略下主会话 write 需要审批；exec-only 下普通 write 不需要', async () => {
     const write = ctx({ toolName: 'nacos_publish_config', pluginId: 'at.nacos', risk: 'write' });
-    const underWriteExec = evaluatePolicy(write);
+    const underWriteExec = await evaluatePolicy(write);
     expect(!underWriteExec.block && underWriteExec.needSessionApproval).toBe(true);
 
-    const underExecOnly = evaluatePolicy({ ...write, sessionRequiredFor: 'exec-only' });
+    const underExecOnly = await evaluatePolicy({ ...write, sessionRequiredFor: 'exec-only' });
     expect(underExecOnly).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('exec-only 下 exec 仍需审批；never 下不需要', () => {
+  it('exec-only 下 exec 仍需审批；never 下不需要', async () => {
     const exec = ctx({ toolName: 'terminal_run_command', risk: 'exec' });
-    const underExecOnly = evaluatePolicy({ ...exec, sessionRequiredFor: 'exec-only' });
+    const underExecOnly = await evaluatePolicy({ ...exec, sessionRequiredFor: 'exec-only' });
     expect(!underExecOnly.block && underExecOnly.needSessionApproval).toBe(true);
 
-    const underNever = evaluatePolicy({ ...exec, sessionRequiredFor: 'never' });
+    const underNever = await evaluatePolicy({ ...exec, sessionRequiredFor: 'never' });
     expect(underNever).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('executor 无 approval 调 write/exec → OPS_APPROVAL_REQUIRED', () => {
+  it('executor 无 approval 调 write/exec → OPS_APPROVAL_REQUIRED', async () => {
     for (const risk of ['write', 'exec'] as const) {
       expectBlocked(
-        evaluatePolicy(
+        await evaluatePolicy(
           ctx({ toolName: 'terminal_run_command', role: 'executor', risk, approval: null })
         ),
         OPS_ERROR.APPROVAL_REQUIRED
@@ -452,9 +504,9 @@ describe('policy · 会话审批', () => {
     }
   });
 
-  it('executor 携带的 approval 与命令哈希不一致 → OPS_APPROVAL_STALE', () => {
+  it('executor 携带的 approval 与命令哈希不一致 → OPS_APPROVAL_STALE', async () => {
     const approved = hashCommandSet(['systemctl restart app']);
-    const decision = evaluatePolicy(
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'terminal_run_command',
         role: 'executor',
@@ -466,9 +518,9 @@ describe('policy · 会话审批', () => {
     expectBlocked(decision, OPS_ERROR.APPROVAL_STALE);
   });
 
-  it('executor 携带匹配的 approval 放行，且不再要求会话审批', () => {
+  it('executor 携带匹配的 approval 放行，且不再要求会话审批', async () => {
     const command = 'systemctl restart app';
-    const decision = evaluatePolicy(
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'terminal_run_command',
         role: 'executor',
@@ -484,8 +536,8 @@ describe('policy · 会话审批', () => {
     expect(decision).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('空 token 的 approval 视为无效 → OPS_APPROVAL_REQUIRED', () => {
-    const decision = evaluatePolicy(
+  it('空 token 的 approval 视为无效 → OPS_APPROVAL_REQUIRED', async () => {
+    const decision = await evaluatePolicy(
       ctx({
         toolName: 'terminal_run_command',
         role: 'executor',
@@ -498,39 +550,39 @@ describe('policy · 会话审批', () => {
 });
 
 describe('policy · payload 上限', () => {
-  it('loki limit>100 → OPS_PAYLOAD_CAP；≤100 放行', () => {
+  it('loki limit>100 → OPS_PAYLOAD_CAP；≤100 放行', async () => {
     expectBlocked(
-      evaluatePolicy(ctx({ toolName: 'grafana_query_loki', args: { limit: 500 } })),
+      await evaluatePolicy(ctx({ toolName: 'grafana_query_loki', args: { limit: 500 } })),
       OPS_ERROR.PAYLOAD_CAP
     );
     expect(
-      evaluatePolicy(ctx({ toolName: 'grafana_query_loki', args: { limit: 100 } }))
+      await evaluatePolicy(ctx({ toolName: 'grafana_query_loki', args: { limit: 100 } }))
     ).toEqual({ block: false, needSessionApproval: false });
   });
 
-  it('SQL 类无 LIMIT 且无 limit 字段 → OPS_PAYLOAD_CAP', () => {
+  it('SQL 类无 LIMIT 且无 limit 字段 → OPS_PAYLOAD_CAP', async () => {
     expectBlocked(
-      evaluatePolicy(
+      await evaluatePolicy(
         ctx({ toolName: 'database_execute_sql', args: { sql: 'SELECT * FROM orders' } })
       ),
       OPS_ERROR.PAYLOAD_CAP
     );
     expectBlocked(
-      evaluatePolicy(
+      await evaluatePolicy(
         ctx({ toolName: 'jumpserver_execute_query', args: { query: 'SELECT 1 FROM dual' } })
       ),
       OPS_ERROR.PAYLOAD_CAP
     );
   });
 
-  it('带 LIMIT 子句或 limit 字段的 SQL 放行', () => {
+  it('带 LIMIT 子句或 limit 字段的 SQL 放行', async () => {
     expect(
-      evaluatePolicy(
+      await evaluatePolicy(
         ctx({ toolName: 'database_execute_sql', args: { sql: 'SELECT * FROM orders LIMIT 50' } })
       )
     ).toEqual({ block: false, needSessionApproval: false });
     expect(
-      evaluatePolicy(
+      await evaluatePolicy(
         ctx({ toolName: 'database_execute_sql', args: { sql: 'SELECT * FROM orders', limit: 50 } })
       )
     ).toEqual({ block: false, needSessionApproval: false });
@@ -538,7 +590,7 @@ describe('policy · payload 上限', () => {
 });
 
 describe('policy · 哈希与令牌', () => {
-  it('hashCommandSet 是 canonical 的：对象 key 顺序无关，数组顺序有关', () => {
+  it('hashCommandSet 是 canonical 的：对象 key 顺序无关，数组顺序有关', async () => {
     const a = hashCommandSet([{ cmd: 'restart', target: 'app' }]);
     const b = hashCommandSet([{ target: 'app', cmd: 'restart' }]);
     expect(a).toBe(b);
@@ -546,7 +598,7 @@ describe('policy · 哈希与令牌', () => {
     expect(hashCommandSet(['x', 'y'])).not.toBe(hashCommandSet(['y', 'x']));
   });
 
-  it('issueApprovalToken / verifyApprovalToken 往返成立，篡改任一要素失败', () => {
+  it('issueApprovalToken / verifyApprovalToken 往返成立，篡改任一要素失败', async () => {
     const sha = hashCommandSet(['systemctl restart app']);
     const token = issueApprovalToken('brief-9', sha, 'sess-1', 'top-secret');
     expect(verifyApprovalToken(token, 'brief-9', sha, 'sess-1', 'top-secret')).toBe(true);
@@ -556,7 +608,7 @@ describe('policy · 哈希与令牌', () => {
     expect(verifyApprovalToken(`${token}00`, 'brief-9', sha, 'sess-1', 'top-secret')).toBe(false);
   });
 
-  it('assertApproval：命令集一致通过，不一致抛 OPS_APPROVAL_STALE，缺失抛 OPS_APPROVAL_REQUIRED', () => {
+  it('assertApproval：命令集一致通过，不一致抛 OPS_APPROVAL_STALE，缺失抛 OPS_APPROVAL_REQUIRED', async () => {
     const plan = ['systemctl restart app', 'systemctl status app'];
     const approval = {
       briefId: 'brief-1',

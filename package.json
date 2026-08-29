@@ -322,6 +322,7 @@
     "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies"
   },
   "dependencies": {
+    "@at-series/command-policy": "0.1.1",
     "@at-series/mcp-hub": "^0.3.3",
     "@earendil-works/pi-agent-core": "0.84.3",
     "@earendil-works/pi-ai": "0.84.3",

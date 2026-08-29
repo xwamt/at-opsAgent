@@ -758,31 +758,79 @@ export function resolveOauthProvider(form: ModelsForm): string {
 
 // ── hydrate 快照归一（settings/hydrate 或 hydrate 兜底） ───────────────────
 
+export type ProviderToolRisk = 'read' | 'write' | 'exec';
+
+export interface ProviderToolRow {
+  name: string;
+  risk?: ProviderToolRisk;
+  live?: boolean;
+}
+
 export interface ProviderRow {
   pluginId: string;
   displayName: string;
   healthy: boolean;
   toolCount: number;
   bridgeCount: number;
+  /** 声明名 ∩ live catalog（host listProviders 注解；缺席时旧 UI 仍渲染）。 */
+  liveToolCount?: number;
+  connectedTargets?: number;
+  toolNames?: string[];
+  tools?: ProviderToolRow[];
+}
+
+function toToolRisk(value: unknown): ProviderToolRisk | undefined {
+  return value === 'read' || value === 'write' || value === 'exec' ? value : undefined;
 }
 
 export function normalizeProviders(raw: unknown): ProviderRow[] {
+  const envelope = asRecord(raw);
   const list = Array.isArray(raw)
     ? raw
-    : Array.isArray(asRecord(raw).providers)
-      ? (asRecord(raw).providers as unknown[])
+    : Array.isArray(envelope.providers)
+      ? (envelope.providers as unknown[])
       : [];
   return list.map((entry, i) => {
     const rec = asRecord(entry);
     const pluginId = String(rec.pluginId ?? rec.id ?? `provider-${i}`);
+    const toolNames = Array.isArray(rec.toolNames)
+      ? rec.toolNames.filter((n): n is string => typeof n === 'string' && n.length > 0)
+      : undefined;
+    const parsedTools = Array.isArray(rec.tools)
+      ? rec.tools.flatMap((item) => {
+          const t = asRecord(item);
+          const name = String(t.name ?? t.toolName ?? '');
+          if (!name) return [];
+          const risk = toToolRisk(t.risk);
+          const live = typeof t.live === 'boolean' ? t.live : undefined;
+          return [
+            {
+              name,
+              ...(risk !== undefined ? { risk } : {}),
+              ...(live !== undefined ? { live } : {})
+            }
+          ];
+        })
+      : undefined;
+    const tools =
+      parsedTools !== undefined && parsedTools.length > 0
+        ? parsedTools
+        : toolNames !== undefined
+          ? toolNames.map((name) => ({ name }))
+          : undefined;
     const toolCount =
       typeof rec.toolCount === 'number'
         ? rec.toolCount
-        : Array.isArray(rec.toolNames)
-          ? rec.toolNames.length
-          : Array.isArray(rec.tools)
-            ? rec.tools.length
-            : 0;
+        : toolNames !== undefined
+          ? toolNames.length
+          : tools !== undefined
+            ? tools.length
+            : Array.isArray(rec.tools)
+              ? rec.tools.length
+              : 0;
+    const liveToolCount = typeof rec.liveToolCount === 'number' ? rec.liveToolCount : undefined;
+    const connectedTargets =
+      typeof rec.connectedTargets === 'number' ? rec.connectedTargets : undefined;
     return {
       pluginId,
       displayName: String(rec.displayName ?? rec.label ?? rec.name ?? pluginId),
@@ -791,7 +839,11 @@ export function normalizeProviders(raw: unknown): ProviderRow[] {
           ? rec.healthy
           : rec.connected !== false && rec.ok !== false && rec.state !== 'error',
       toolCount,
-      bridgeCount: typeof rec.bridgeCount === 'number' ? rec.bridgeCount : 0
+      bridgeCount: typeof rec.bridgeCount === 'number' ? rec.bridgeCount : 0,
+      ...(liveToolCount !== undefined ? { liveToolCount } : {}),
+      ...(connectedTargets !== undefined ? { connectedTargets } : {}),
+      ...(toolNames !== undefined ? { toolNames } : {}),
+      ...(tools !== undefined ? { tools } : {})
     };
   });
 }

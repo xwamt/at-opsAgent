@@ -105,6 +105,24 @@ export type HydrateEvt = {
   hasApiKey?: boolean;
 };
 
+/** settings/hydrate capabilities 载荷（与发现层 listProviders 同形；缺字段旧 UI 仍渲染）。 */
+export type SettingsCapabilitiesView = {
+  hostApp?: string;
+  providers: Array<{
+    pluginId: string;
+    displayName: string;
+    healthy: boolean;
+    bridgeCount: number;
+    toolNames: string[];
+    toolCount?: number;
+    liveToolCount?: number;
+    connectedTargets?: number;
+    tools?: Array<{ name: string; risk: 'read' | 'write' | 'exec'; live?: boolean }>;
+  }>;
+  catalogLiveToolCount?: number;
+  hint?: string;
+};
+
 export type HostRequestType =
   | 'chat/prompt'
   | 'chat/abort'

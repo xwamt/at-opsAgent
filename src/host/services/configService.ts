@@ -7,7 +7,9 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { resolveToolRisk } from '../../mcp-client/riskLookup';
 import type { SessionSummary, SettingsOpenJsonReq, SettingsPatchConfigReq } from '../../protocol';
+import { listProviders, type DiscoveryHub } from '../../runtime/discovery-tools';
 import { diagnoseHub } from '../diagnose';
 import { listSkills, type SkillInfo } from '../skillsScan';
 import { describeError, isPlainRecord, type HostContext } from './context';
@@ -40,13 +42,41 @@ const MCP_TEMPLATE = `{
 }
 `;
 
+/**
+ * settings/hydrate 与 chat hydrate 共用的能力快照：发现层 listProviders
+ * 注解（liveToolCount / catalogLiveToolCount / connectedTargets）再加上
+ * 每条声明工具的 risk / live。缺字段的旧 webview 仍按 displayName/healthy 渲染。
+ */
+export function annotateCapabilities(hub: DiscoveryHub): unknown {
+  const annotated = listProviders(hub);
+  const liveByName = new Map(hub.listAllTools().map((t) => [t.name, t] as const));
+  return {
+    ...annotated,
+    providers: annotated.providers.map((p) => ({
+      ...p,
+      toolCount: p.toolNames.length,
+      tools: p.toolNames.map((name) => {
+        const descriptor = liveByName.get(name);
+        return {
+          name,
+          risk: resolveToolRisk(name, descriptor),
+          live: descriptor !== undefined
+        };
+      })
+    }))
+  };
+}
+
 /** settings/hydrate 的载荷（设置页 webview 全量快照）。 */
 export interface SettingsSnapshot {
   /** atOpsAgent.* 已知键的当前值。 */
   config: Record<string, unknown>;
   modelsPath: string;
   agentDir: string;
-  /** hub.getProviders() 结果（能力插件清单）。 */
+  /**
+   * 发现层 listProviders 注解后的能力插件清单（含 liveToolCount /
+   * catalogLiveToolCount / connectedTargets / 每工具 risk）。缺字段旧 UI 仍能渲染。
+   */
   capabilities: unknown;
   /**
    * 恒为空：内置技能是 Agent 内部资源（OpsResourceLoader / ops_read_skill
@@ -73,9 +103,9 @@ export class ConfigService {
 
   safeProviders(): unknown {
     try {
-      return this.ctx.hub.getProviders();
+      return annotateCapabilities(this.ctx.hub);
     } catch {
-      return { hostApp: this.ctx.hub.hostApp, providers: [] };
+      return { hostApp: this.ctx.hub.hostApp, providers: [], catalogLiveToolCount: 0 };
     }
   }
 

@@ -130,6 +130,11 @@ const zhCN = {
   capBridges: 'bridges',
   capEmpty:
     '尚未发现能力插件。安装 AT 系列插件（AT Terminal / AT Grafana / AT Jenkins…）即可自动接入，无需任何 MCP 配置。',
+  capEmptyInstall: '安装 AT Terminal / Grafana 等能力插件后会出现在这里',
+  capDiagnoseRun: '运行诊断',
+  capLive: '已接入',
+  capConnected: '已连接',
+  capToolList: '工具列表',
 
   mcpTitle: '第三方 MCP',
   mcpHint: '第三方 MCP 服务器接入（AT 系列插件无需在此配置）。',
@@ -284,6 +289,11 @@ const en: Record<SettingsMessageKey, string> = {
   capBridges: 'bridges',
   capEmpty:
     'No capability plugins found. Install AT Series plugins (AT Terminal / AT Grafana / AT Jenkins…) and they connect automatically — no MCP configuration needed.',
+  capEmptyInstall: 'Install AT Terminal / Grafana (or other capability plugins) and they will show up here.',
+  capDiagnoseRun: 'Run diagnostics',
+  capLive: 'live',
+  capConnected: 'connected',
+  capToolList: 'Tools',
 
   mcpTitle: 'Third-party MCP',
   mcpHint: 'Third-party MCP servers (AT Series plugins never need an entry here).',

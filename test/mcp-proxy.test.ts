@@ -21,6 +21,7 @@ import {
   type McpServerEntry,
   type ProxyToolSource
 } from '../src/mcp-client/external';
+import { resolveToolRisk } from '../src/mcp-client/riskLookup';
 
 async function writeConfig(config: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'at-ops-mcp-proxy-'));
@@ -360,5 +361,15 @@ describe('idle disconnect', () => {
     }
     expect(fake.closes).toEqual([]);
     expect(fake.connects).toEqual(['alpha']);
+  });
+});
+
+describe('resolveToolRisk · proxy names used by the policy gate', () => {
+  it('list/search are read, call_tool is write, unknown is exec', () => {
+    expect(resolveToolRisk('mcp_list_servers')).toBe('read');
+    expect(resolveToolRisk('mcp_search_tools')).toBe('read');
+    expect(resolveToolRisk('mcp_call_tool')).toBe('write');
+    expect(resolveToolRisk('unknown_tool')).toBe('exec');
+    expect(resolveToolRisk('ops_search_tools')).toBe('read');
   });
 });

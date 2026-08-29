@@ -5,6 +5,7 @@ import {
   createOrchestrator,
   IllegalStageTransitionError,
   injectPayloadCaps,
+  isIllegalStageTransitionError,
   loadPlaybooks,
   mergeEvidence,
   type EvidenceNote,
@@ -91,7 +92,15 @@ describe('orchestrator · 状态机与下发', () => {
     const run = orch.startPlaybook('pb.incident', 'sess-1');
     orch.advanceTo(run, 'selecting');
     orch.advanceTo(run, 'investigating');
-    expect(() => orch.advanceTo(run, 'closed')).toThrow(IllegalStageTransitionError);
+    try {
+      orch.advanceTo(run, 'closed');
+      expect.unreachable('should throw');
+    } catch (err) {
+      expect(isIllegalStageTransitionError(err)).toBe(true);
+      expect(err).toBeInstanceOf(IllegalStageTransitionError);
+      expect((err as IllegalStageTransitionError).allowedNext).toContain('synthesizing');
+      expect((err as IllegalStageTransitionError).code).toBe('OPS_ILLEGAL_TRANSITION');
+    }
     expect(run.stage).toBe('investigating');
     expect(() => orch.advanceTo(run, 'triage')).toThrow(/非法阶段迁移/);
   });
@@ -262,17 +271,27 @@ describe('orchestrator · 状态机与下发', () => {
     expect(specs[0].goal).toContain('troubleshooting-report');
   });
 
-  it('pb.release：guidedManual → verifying 合法（docs/04 §2.2），verifying → reporting 收尾', () => {
+  it('pb.release：guidedManual 缺省下一步是 verifying；显式 reporting 仍合法', () => {
     const run = orch.startPlaybook('pb.release', 'sess-1');
     orch.advanceTo(run, 'selecting');
     orch.advanceTo(run, 'investigating');
     orch.advanceTo(run, 'synthesizing');
     orch.advanceTo(run, 'guidedManual');
-    orch.advanceTo(run, 'verifying');
-    expect(run.stage).toBe('verifying');
+    expect(orch.legalNextStages(run)[0]).toBe('verifying');
+    expect(orch.legalNextStages(run)).toContain('reporting');
+    expect(orch.advanceStage(run).stage).toBe('verifying');
     orch.advanceTo(run, 'reporting');
     orch.advanceTo(run, 'closed');
     expect(run.stage).toBe('closed');
+
+    // 显式跳过 verifying：guidedManual → reporting 仍合法
+    const skip = orch.startPlaybook('pb.release', 'sess-skip');
+    orch.advanceTo(skip, 'selecting');
+    orch.advanceTo(skip, 'investigating');
+    orch.advanceTo(skip, 'synthesizing');
+    orch.advanceTo(skip, 'guidedManual');
+    orch.advanceTo(skip, 'reporting');
+    expect(skip.stage).toBe('reporting');
   });
 
   it('pb.config-change：guidedManual → reporting（mermaid 原边）保留；verifying 未声明则锁死', () => {
@@ -376,6 +395,7 @@ describe('orchestrator · 状态机与下发', () => {
       .map((e) => e.stage);
     // 每一步都经 advanceTo（状态机不被跳过），最后一步是 closed
     expect(stages.length).toBeGreaterThanOrEqual(2);
+    expect(stages).toEqual(expect.arrayContaining(['synthesizing', 'reporting', 'closed']));
     expect(stages.at(-1)).toBe('closed');
 
     // 已 closed → 幂等返回，不再发事件

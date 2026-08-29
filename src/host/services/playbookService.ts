@@ -11,6 +11,7 @@
 import * as vscode from 'vscode';
 import type { Playbook } from '../../core';
 import { clearHubSelection } from '../../hub-host';
+import { isIllegalStageTransitionError } from '../../orchestrator';
 import type {
   OrchestratorEventLike,
   OrchestratorLike,
@@ -22,17 +23,11 @@ import { GuidedManualFlow } from './guidedManualFlow';
 import { ensureVisibleInspectionReport } from './inspectionSummary';
 import { StageLayerInjector } from './stageLayers';
 
-/** ops_advance_stage 未显式给目标阶段时的默认推进（合法迁移表的主线）。 */
-const DEFAULT_NEXT_STAGE: Readonly<Record<string, string>> = {
-  triage: 'selecting',
-  selecting: 'investigating',
-  investigating: 'synthesizing',
-  synthesizing: 'reporting',
-  executing: 'verifying',
-  verifying: 'reporting',
-  guidedManual: 'verifying',
-  reporting: 'closed',
-  escalated: 'closed'
+export type PlaybookAdvanceResult = {
+  ok: boolean;
+  stage?: string;
+  error?: string;
+  allowedNext?: string[];
 };
 
 export class PlaybookService {
@@ -208,25 +203,38 @@ export class PlaybookService {
     return { ok: true, stage: ctx.store.playbookOf(sid)?.stage ?? stage };
   }
 
-  /** ops_advance_stage / playbook/advance：显式推进阶段（缺省走主线迁移）。 */
-  async advancePlaybook(
-    stage?: string,
-    sessionId?: string
-  ): Promise<{ ok: boolean; stage?: string; error?: string }> {
+  /** ops_advance_stage / playbook/advance：显式推进阶段（缺省走 orchestrator 主线）。 */
+  async advancePlaybook(stage?: string, sessionId?: string): Promise<PlaybookAdvanceResult> {
     const sid = sessionId ?? this.ctx.store.activeSessionId;
     const run = this.runs.get(sid);
     if (!run) return { ok: false, error: '没有进行中的 playbook run' };
-    await this.ensureOrchestrator();
+    const orchestrator = await this.ensureOrchestrator();
     const current = this.currentStage(run, sid);
-    const target = typeof stage === 'string' && stage.length > 0 ? stage : DEFAULT_NEXT_STAGE[current];
-    if (target === undefined) {
-      return { ok: false, stage: current, error: `阶段 ${current} 没有默认下一步，请显式指定目标阶段` };
+    const target = typeof stage === 'string' && stage.length > 0 ? stage : undefined;
+    try {
+      const updated = orchestrator.advanceStage
+        ? orchestrator.advanceStage(run, target)
+        : undefined;
+      if (!updated) {
+        return {
+          ok: false,
+          stage: current,
+          error: `无法从 ${current} 推进`,
+          allowedNext: this.legalNextStages(run)
+        };
+      }
+      return { ok: true, stage: updated.stage };
+    } catch (err) {
+      const allowedNext = isIllegalStageTransitionError(err)
+        ? [...(err.allowedNext ?? orchestrator.legalNextStages?.(run) ?? [])]
+        : this.legalNextStages(run);
+      return {
+        ok: false,
+        stage: this.currentStage(run, sid),
+        error: describeError(err),
+        allowedNext
+      };
     }
-    const next = this.tryAdvance(run, target);
-    if (next === undefined) {
-      return { ok: false, stage: current, error: `无法从 ${current} 迁移到 ${target}` };
-    }
-    return { ok: true, stage: next };
   }
 
   /** ops_close_playbook / playbook/close：收尾到 closed 并解除该席 run。 */
@@ -239,24 +247,19 @@ export class PlaybookService {
     ensureVisibleInspectionReport(this.ctx, sid);
     await this.ensureOrchestrator();
     let stage = this.currentStage(run, sid);
+    try {
+      const updated = this.orchestrator?.closeRun?.(run);
+      stage = updated?.stage ?? this.currentStage(run, sid);
+    } catch (err) {
+      return { ok: false, stage: this.currentStage(run, sid), error: describeError(err) };
+    }
     if (stage !== 'closed') {
-      // 主线收尾：非 reporting 时先尽力推进到 reporting，再 closed。
-      if (stage !== 'reporting' && stage !== 'escalated') {
-        const toReporting = this.tryAdvance(run, 'reporting');
-        if (toReporting !== undefined) stage = toReporting;
-      }
-      const closed = this.tryAdvance(run, 'closed');
-      if (closed === undefined) {
-        return { ok: false, stage, error: `无法从 ${stage} 收尾到 closed` };
-      }
-      stage = closed;
+      return { ok: false, stage, error: `无法从 ${stage} 收尾到 closed` };
     }
     this.runs.delete(sid);
     this.runSessions.delete(run.id);
     this.selectCounts.set(sid, 0);
     // Plan 01 T4: clear Hub selection only on the successful closed path.
-    // Failure branches above return without touching selection (investigating
-    // close that cannot advance stays selected; Plan 03 owns tryAdvance).
     await clearHubSelection(this.ctx.hub, (m) => this.ctx.log(m), 'playbook-closed');
     return { ok: true, stage };
   }
@@ -332,6 +335,15 @@ export class PlaybookService {
       this.ctx.store.playbookOf(sessionId)?.stage ??
       run.stage
     );
+  }
+
+  /** 当前阶段合法下一步（guidedManual/complete 等；失败返回空数组）。 */
+  legalNextStages(run: PlaybookRunLike): string[] {
+    try {
+      return this.orchestrator?.legalNextStages?.(run) ?? [];
+    } catch {
+      return [];
+    }
   }
 
   /** advanceTo 包一层：成功返回新阶段，失败（非法迁移等）记日志返回 undefined。 */

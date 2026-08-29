@@ -92,13 +92,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     100
   );
   statusBar.name = 'AT Ops Agent';
+  /** HubHost 无 setDiscovery：discovery.mode/threshold 改了只提示重载，禁止静默 no-op。 */
+  let discoveryReloadNeeded = false;
   const updateStatusBar = () => {
     const pending = store.pendingBriefs.length;
     if (!controller.hasModelApiKey) {
       // P1-11：未配置 API key → 黄色警示，点击直达 Models 设置页。
       statusBar.text = '$(warning) AT Ops 未配置';
-      statusBar.tooltip = 'AT Ops Agent：尚未配置模型 API Key（点击打开 Models 设置）';
+      statusBar.tooltip = discoveryReloadNeeded
+        ? 'AT Ops Agent：尚未配置模型 API Key。发现设置将在重载窗口后生效。'
+        : 'AT Ops Agent：尚未配置模型 API Key（点击打开 Models 设置）';
       statusBar.command = 'atOpsAgent.openModels';
+      statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    } else if (discoveryReloadNeeded) {
+      statusBar.text = '$(warning) AT Ops 需重载';
+      statusBar.tooltip = 'AT Ops Agent：发现设置将在重载窗口后生效（点击重载窗口）';
+      statusBar.command = 'workbench.action.reloadWindow';
       statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
       statusBar.text = pending > 0 ? `$(shield) AT Ops ${pending}` : '$(shield) AT Ops';
@@ -116,7 +125,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     statusBar,
     store.onDidChangeApprovals(() => updateStatusBar()),
-    controller.onDidChangeStatus(() => updateStatusBar())
+    controller.onDidChangeStatus(() => updateStatusBar()),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration('atOpsAgent.discovery')) return;
+      // HubHost 构造后不支持 setDiscovery；销毁重建会拆掉 controller 已持有的 hub。
+      discoveryReloadNeeded = true;
+      log('[hub] discovery.mode/threshold 已更改，将在重载窗口后生效（HubHost 无 setDiscovery）');
+      updateStatusBar();
+      void vscode.window
+        .showInformationMessage('AT Ops Agent：发现设置将在重载窗口后生效', '重载窗口')
+        .then((choice) => {
+          if (choice === '重载窗口') {
+            void vscode.commands.executeCommand('workbench.action.reloadWindow');
+          }
+        });
+    })
   );
 
   // ── 命令 ───────────────────────────────────────────────────────────────

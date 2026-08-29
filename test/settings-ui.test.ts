@@ -759,10 +759,20 @@ describe('settings/hydrate 快照归一（host settingsSnapshot 真实形状）'
     expect(snapshot.config['discovery.mode']).toBe('always');
     expect(snapshot.config['subagent.maxParallel']).toBe(2);
     expect(snapshot.modelsPath).toContain('models.json');
-    expect(snapshot.providers).toEqual([
-      { pluginId: 'at.grafana', displayName: 'AT Grafana', healthy: true, toolCount: 3, bridgeCount: 1 },
-      { pluginId: 'at.jenkins', displayName: 'at.jenkins', healthy: false, toolCount: 5, bridgeCount: 2 }
-    ]);
+    expect(snapshot.providers[0]).toMatchObject({
+      pluginId: 'at.grafana',
+      displayName: 'AT Grafana',
+      healthy: true,
+      toolCount: 3,
+      bridgeCount: 1
+    });
+    expect(snapshot.providers[1]).toEqual({
+      pluginId: 'at.jenkins',
+      displayName: 'at.jenkins',
+      healthy: false,
+      toolCount: 5,
+      bridgeCount: 2
+    });
     expect(snapshot.skills).toEqual([
       { name: 'ops-agent-core', description: '核心', path: '/ext/skills/SKILL.md' }
     ]);
@@ -770,6 +780,59 @@ describe('settings/hydrate 快照归一（host settingsSnapshot 真实形状）'
       { id: 's1', title: '会话 1', updatedAt: 1700000000000, active: false }
     ]);
     expect(snapshot.models).toBeNull();
+  });
+
+  it('capabilities 快照保留 liveToolCount / connectedTargets / tools.risk（缺字段旧 UI 仍能渲染）', () => {
+    const snapshot = normalizeSettingsSnapshot({
+      capabilities: {
+        catalogLiveToolCount: 1,
+        providers: [
+          {
+            pluginId: 'at.grafana',
+            displayName: 'AT Grafana',
+            healthy: true,
+            toolNames: ['grafana_query_prometheus', 'grafana_query_loki'],
+            liveToolCount: 1,
+            connectedTargets: 2,
+            bridgeCount: 1,
+            tools: [
+              { name: 'grafana_query_prometheus', risk: 'read', live: true },
+              { name: 'grafana_query_loki', risk: 'read', live: false }
+            ]
+          }
+        ]
+      }
+    });
+    expect(snapshot.providers).toHaveLength(1);
+    expect(snapshot.providers[0]?.liveToolCount).toBe(1);
+    expect(snapshot.providers[0]?.connectedTargets).toBe(2);
+    expect(snapshot.providers[0]?.toolNames).toEqual([
+      'grafana_query_prometheus',
+      'grafana_query_loki'
+    ]);
+    expect(snapshot.providers[0]?.tools).toEqual([
+      { name: 'grafana_query_prometheus', risk: 'read', live: true },
+      { name: 'grafana_query_loki', risk: 'read', live: false }
+    ]);
+  });
+
+  it('缺 live 字段的旧 capabilities 载荷仍能渲染', () => {
+    const snapshot = normalizeSettingsSnapshot({
+      capabilities: {
+        providers: [
+          { pluginId: 'at.nacos', displayName: 'AT Nacos', healthy: true, toolCount: 4, bridgeCount: 1 }
+        ]
+      }
+    });
+    expect(snapshot.providers[0]).toEqual({
+      pluginId: 'at.nacos',
+      displayName: 'AT Nacos',
+      healthy: true,
+      toolCount: 4,
+      bridgeCount: 1
+    });
+    expect(snapshot.providers[0]?.liveToolCount).toBeUndefined();
+    expect(snapshot.providers[0]?.tools).toBeUndefined();
   });
 
   it('chat hydrate 兜底：sessionId 标记当前会话', () => {
@@ -868,7 +931,12 @@ describe('settings i18n（本地包，独立于 chat i18n）', () => {
       'mcpEmpty',
       'mcpAdvanced',
       'cfgSessionReadAllowlist',
-      'cfgSessionReadAllowlistDesc'
+      'cfgSessionReadAllowlistDesc',
+      'capEmptyInstall',
+      'capDiagnoseRun',
+      'capLive',
+      'capConnected',
+      'capToolList'
     ] as const;
     for (const key of keys) {
       setLocale('zh-CN');

@@ -50,7 +50,10 @@ export function redactSecrets(text: string): { text: string; hits: number } {
   return { text: out, hits };
 }
 
-/** Plan 06 实现体入口；本 plan 先别名 redactSecrets，避免 host/runtime 两套规则。 */
+/**
+ * Prompt / 探测错误上屏入口（Plan 06）。与 redactSecrets 同一套规则
+ * （Bearer / sk- / PEM / 连接串），避免 host 与 runtime 两套刮密。
+ */
 export function sanitizeErrorText(text: string): string {
   return redactSecrets(text).text;
 }

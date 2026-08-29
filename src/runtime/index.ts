@@ -36,8 +36,8 @@ import type {
 } from '../protocol';
 import { composeSystemPrompt } from '../prompts/layers';
 import { composeSubagentPrompt } from '../prompts/roles';
-import { recoverFromPromptError } from './compaction';
-import { redactSecrets } from './sanitize';
+import { recoverFromPromptError, type CompactableSessionLike } from './compaction';
+import { redactSecrets, sanitizeErrorText } from './sanitize';
 import { applyDiscoveryNudge, createDiscoveryNudgeState } from './discovery-nudge';
 import {
   discoveryToolSpecs,
@@ -358,6 +358,11 @@ export interface CreateOpsRuntimeOptions {
    * ops_read_workspace_file（限 cwd、64KB、禁 ..），绝不注入不受限 bash。
    */
   workspaceShellEnabled?: boolean;
+  /**
+   * prompt 期 429/5xx 退避毫秒。仅测试注入；生产默认
+   * {@link TRANSIENT_PROMPT_RETRY_MS}（500）。0 = 不睡立刻重试一次。
+   */
+  retryDelayMs?: number;
 }
 
 /** 组装主代理系统提示词：L0+L1+L2+L3（+可选 L-env 现场层 +可选 L4 playbook 注入层）。 */
@@ -577,11 +582,24 @@ export const FALLBACK_NOTICE = '未配置模型：请打开设置，填写 provi
 /** 其它创建期失败（pi 加载失败、会话创建失败等）的文案前缀。 */
 export const FALLBACK_INIT_FAILURE_PREFIX = '模型运行时初始化失败：';
 
+/** 运行期 401/403：凭证失效，不要说成「未配置模型」。 */
+export const CREDENTIAL_NOTICE = '凭证失效或无权限，请打开设置检查 API key';
+
+/** prompt 期 429/5xx 一次退避的生产默认（测试经 retryDelayMs 注入）。 */
+export const TRANSIENT_PROMPT_RETRY_MS = 500;
+
 /** notice 事件的「打开设置」动作（host/webview 映射到 atOpsAgent.openModels）。 */
 export const OPEN_SETTINGS_NOTICE_ACTION: NoticeAction = {
   id: 'open-settings',
   label: '打开设置',
   command: 'atOpsAgent.openModels'
+};
+
+/** notice 事件的「重试」动作（webview 已有 retryable / chat/retry）。 */
+export const RETRY_NOTICE_ACTION: NoticeAction = {
+  id: 'retry',
+  label: '重试',
+  request: 'chat/retry'
 };
 
 const MISSING_MODEL_CONFIG_PATTERN = new RegExp(
@@ -591,23 +609,134 @@ const MISSING_MODEL_CONFIG_PATTERN = new RegExp(
     '没有任何配置了有效凭证的模型',
     '缺少 API key',
     '未配置模型',
-    // 常见凭证/配置类错误关键词
+    // 常见配置类错误关键词（不含 401/unauthorized：吊销 key 不是「没配」）
     'api[ _-]?key',
     'credential',
-    'unauthorized',
     'no models? (are )?(available|configured)',
     'not configured',
     'missing (api )?key',
-    '\\b401\\b',
     '凭证'
   ].join('|'),
   'i'
 );
 
+const CREDENTIAL_ERROR_PATTERN = /\b401\b|\b403\b|unauthorized|forbidden/i;
+
+const TRANSIENT_ERROR_PATTERN =
+  /\b429\b|\b5\d{2}\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|fetch failed|socket hang up/i;
+
 /** 失败原因是否属于「缺 key / 无可用模型」这类配置缺失（P0-A 文案分流）。 */
 export function looksLikeMissingModelConfig(reason?: string): boolean {
   if (reason === undefined || reason.trim().length === 0) return true; // 无原因 = 从未配置
   return MISSING_MODEL_CONFIG_PATTERN.test(reason);
+}
+
+/** prompt / 创建期错误分类（先刮密再匹配，避免 Bearer 干扰）。 */
+export type PromptErrorClass = 'missing_config' | 'credential' | 'transient' | 'other';
+
+export function classifyPromptError(error: unknown): PromptErrorClass {
+  const message = sanitizeErrorText(describeError(error));
+  if (looksLikeMissingModelConfig(message)) return 'missing_config';
+  if (CREDENTIAL_ERROR_PATTERN.test(message)) return 'credential';
+  if (TRANSIENT_ERROR_PATTERN.test(message)) return 'transient';
+  return 'other';
+}
+
+function emitPromptErrorNotice(
+  error: unknown,
+  kind: PromptErrorClass,
+  onEvent?: (e: OpsRuntimeEvent) => void
+): void {
+  const sanitized = sanitizeErrorText(describeError(error));
+  let text: string;
+  let actions: NoticeAction[] | undefined;
+  switch (kind) {
+    case 'credential':
+      text = CREDENTIAL_NOTICE;
+      actions = [OPEN_SETTINGS_NOTICE_ACTION];
+      break;
+    case 'missing_config':
+      text = FALLBACK_NOTICE;
+      actions = [OPEN_SETTINGS_NOTICE_ACTION];
+      break;
+    case 'transient':
+      text = `模型调用失败：${sanitized}`;
+      actions = [RETRY_NOTICE_ACTION];
+      break;
+    default:
+      text = `模型调用失败：${sanitized}`;
+      break;
+  }
+  onEvent?.({ type: 'text_delta', id: randomUUID(), text });
+  onEvent?.({
+    type: 'notice',
+    variant: 'error',
+    text,
+    ...(actions !== undefined ? { actions } : {})
+  });
+  onEvent?.({ type: 'idle' });
+}
+
+/**
+ * compact 恢复之后的分类 + 429/5xx **严格一次**退避。
+ * 从不抛错：失败一律转 notice + idle。闭包 flag 与 compact 同一纪律。
+ */
+export async function handleClassifiedPromptError(input: {
+  error: unknown;
+  retry: () => Promise<void>;
+  onEvent?: (e: OpsRuntimeEvent) => void;
+  retryDelayMs?: number;
+}): Promise<void> {
+  let retried = false;
+  const kind = classifyPromptError(input.error);
+  if (kind === 'transient' && !retried) {
+    retried = true;
+    const delay = input.retryDelayMs ?? TRANSIENT_PROMPT_RETRY_MS;
+    if (delay > 0) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delay);
+      });
+    }
+    try {
+      await input.retry();
+      return;
+    } catch (retryError) {
+      emitPromptErrorNotice(retryError, classifyPromptError(retryError), input.onEvent);
+      return;
+    }
+  }
+  emitPromptErrorNotice(input.error, kind, input.onEvent);
+}
+
+/**
+ * prompt() catch 装配：先 compact 一次，再分类/一次退避。供单测直接驱动。
+ */
+export async function runPromptWithRecovery(input: {
+  run: () => Promise<void>;
+  session: CompactableSessionLike;
+  onEvent?: (e: OpsRuntimeEvent) => void;
+  onCompaction?: (summary: string) => void;
+  retryDelayMs?: number;
+}): Promise<void> {
+  try {
+    await input.run();
+  } catch (error) {
+    try {
+      await recoverFromPromptError({
+        session: input.session,
+        error,
+        retry: input.run,
+        ...(input.onCompaction !== undefined ? { onCompaction: input.onCompaction } : {})
+      });
+    } catch (finalError) {
+      await handleClassifiedPromptError({
+        error: finalError,
+        retry: input.run,
+        ...(input.onEvent !== undefined ? { onEvent: input.onEvent } : {}),
+        retryDelayMs: input.retryDelayMs ?? TRANSIENT_PROMPT_RETRY_MS
+      });
+    }
+  }
 }
 
 /**
@@ -619,11 +748,15 @@ export function looksLikeMissingModelConfig(reason?: string): boolean {
  */
 export function createFallbackRuntime(handlers: OpsRuntimeHandlers, reason?: string): OpsRuntime {
   const missingConfig = looksLikeMissingModelConfig(reason);
+  const credential =
+    !missingConfig && reason !== undefined && classifyPromptError(reason) === 'credential';
   const message = missingConfig
     ? reason !== undefined && reason.length > 0
       ? `${FALLBACK_NOTICE}\n（原因：${reason}）`
       : FALLBACK_NOTICE
-    : `${FALLBACK_INIT_FAILURE_PREFIX}${reason}`;
+    : credential
+      ? CREDENTIAL_NOTICE
+      : `${FALLBACK_INIT_FAILURE_PREFIX}${reason}`;
   return {
     async prompt(): Promise<void> {
       handlers.onEvent?.({ type: 'text_delta', id: `fallback-${randomUUID()}`, text: message });
@@ -631,7 +764,7 @@ export function createFallbackRuntime(handlers: OpsRuntimeHandlers, reason?: str
         type: 'notice',
         variant: 'error',
         text: message,
-        ...(missingConfig ? { actions: [OPEN_SETTINGS_NOTICE_ACTION] } : {})
+        ...(missingConfig || credential ? { actions: [OPEN_SETTINGS_NOTICE_ACTION] } : {})
       });
       handlers.onEvent?.({ type: 'idle' });
     },
@@ -1415,30 +1548,13 @@ async function createPiRuntime(
           await session.prompt(text);
         }
       };
-      try {
-        await run();
-      } catch (error) {
-        try {
-          // Compaction 第 2–3 层：prompt 过长时 session.compact() 一次并
-          // 重试同一条 prompt 一次（严格一次，绝不无限重试）；仍失败抛中文
-          // 「请开新会话」提示。非溢出错误原样 rethrow，走下面的统一上报。
-          // compact 成功即发 compaction 事件（P1-4，UI 时间线插系统事件）。
-          await recoverFromPromptError({
-            session,
-            error,
-            retry: run,
-            onCompaction: (summary) => handlers.onEvent?.({ type: 'compaction', summary })
-          });
-        } catch (finalError) {
-          // prompt 期错误（如凭证被吊销）不往上抛：给 UI 一条事件并回 idle。
-          handlers.onEvent?.({
-            type: 'text_delta',
-            id: randomUUID(),
-            text: `模型调用失败：${describeError(finalError)}`
-          });
-          handlers.onEvent?.({ type: 'idle' });
-        }
-      }
+      await runPromptWithRecovery({
+        run,
+        session,
+        onEvent: handlers.onEvent,
+        onCompaction: (summary) => handlers.onEvent?.({ type: 'compaction', summary }),
+        retryDelayMs: options.retryDelayMs ?? TRANSIENT_PROMPT_RETRY_MS
+      });
     },
     abort(mode?: 'cancel' | 'stop'): void {
       if (mode === 'cancel' && inflightToolCalls.size > 0) {
