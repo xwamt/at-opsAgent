@@ -25,7 +25,6 @@ import {
   endSubagentTool,
   finalizeSubagentAssistant,
   finalizeSubagentThinking,
-  getLastAssistantText,
   startSubagentAssistant,
   startSubagentThinking,
   startSubagentTool,
