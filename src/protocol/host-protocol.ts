@@ -136,6 +136,8 @@ export type TranscriptItem =
       kind: 'approval';
       id: string;
       briefId: string;
+      targetLabel?: string;
+      risk?: 'write' | 'exec';
       decision?: 'approved' | 'rejected' | 'timeout' | 'pending';
       ts?: number;
     }
@@ -154,6 +156,8 @@ export type ToolCallView = {
   pluginId?: string;
   risk: 'read' | 'write' | 'exec';
   status: 'running' | 'ok' | 'error' | 'cancelled' | 'interrupted';
+  /** 工具开始执行的墙钟时间（host 在 tool/start 写入）。 */
+  startedAt?: number;
   durationMs?: number;
   truncated?: boolean;
   preview?: string;
@@ -161,6 +165,11 @@ export type ToolCallView = {
   errorCode?: string;
   errorMessage?: string;
 };
+
+export type SubagentTranscriptItem =
+  | { kind: 'assistant'; id: string; text: string; streaming?: boolean; ts?: number }
+  | { kind: 'thinking'; id: string; steps: string[]; durationMs?: number; streaming?: boolean }
+  | { kind: 'tool'; id: string; call: ToolCallView };
 
 export type SubagentStep = {
   id: string;
@@ -191,14 +200,32 @@ export type SubagentCard = {
   logs?: string[];
   /** 当前动作状态描述 */
   currentActivity?: string;
+  /** Inspector「对话」Tab：与主 agent 同构的 mini-transcript */
+  transcript?: SubagentTranscriptItem[];
+};
+
+export type EvidenceRefView = {
+  kind: string;
+  preview: string;
+  artifactUri?: string;
+  /** metric ref：结构化时序点（优先于 preview 正则推断）。 */
+  points?: number[];
+  /** metric ref：时间窗起点（ISO-8601 或可读标签）。 */
+  from?: string;
+  /** metric ref：时间窗终点。 */
+  to?: string;
 };
 
 export type EvidenceNoteView = {
   taskId: string;
   confidence: 'confirmed' | 'hypothesis' | 'pending';
   summary: string;
-  refs: Array<{ kind: string; preview: string; artifactUri?: string }>;
+  refs: EvidenceRefView[];
+  /** 用户置顶标记（evidence/pin）；导出报告与时间线条带优先展示。 */
+  pinned?: boolean;
 };
+
+export type EvidencePinReq = { taskId: string; pinned: boolean };
 
 export type ApprovalBriefView = {
   id: string;
@@ -265,9 +292,11 @@ export type HostRequestType =
   | 'models/openFile'
   | 'models/openAuth'
   | 'asset/pick'
+  | 'evidence/pin'
   | 'capabilities/refresh'
   | 'diagnose'
-  | 'skill/open';
+  | 'skill/open'
+  | 'opsDoc/save';
 
 export type HostEventType =
   | 'hydrate'

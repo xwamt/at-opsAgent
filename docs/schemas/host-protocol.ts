@@ -60,6 +60,8 @@ export type TranscriptItem =
       kind: 'approval';
       id: string;
       briefId: string;
+      targetLabel?: string;
+      risk?: 'write' | 'exec';
       decision?: 'approved' | 'rejected' | 'timeout' | 'pending';
       ts?: number;
     };
@@ -69,6 +71,7 @@ export type ToolCallView = {
   pluginId?: string;
   risk: 'read' | 'write' | 'exec';
   status: 'running' | 'ok' | 'error' | 'cancelled' | 'interrupted';
+  startedAt?: number;
   durationMs?: number;
   truncated?: boolean;
   preview?: string;
@@ -76,6 +79,11 @@ export type ToolCallView = {
   errorCode?: string;
   errorMessage?: string;
 };
+
+export type SubagentTranscriptItem =
+  | { kind: 'assistant'; id: string; text: string; streaming?: boolean; ts?: number }
+  | { kind: 'thinking'; id: string; steps: string[]; durationMs?: number; streaming?: boolean }
+  | { kind: 'tool'; id: string; call: ToolCallView };
 
 export type SubagentCard = {
   taskId: string;
@@ -87,13 +95,23 @@ export type SubagentCard = {
   toolCalls: { used: number; max: number };
   wallMs: { used: number; max: number };
   latest?: string;
+  transcript?: SubagentTranscriptItem[];
+};
+
+export type EvidenceRefView = {
+  kind: string;
+  preview: string;
+  artifactUri?: string;
+  points?: number[];
+  from?: string;
+  to?: string;
 };
 
 export type EvidenceNoteView = {
   taskId: string;
   confidence: 'confirmed' | 'hypothesis' | 'pending';
   summary: string;
-  refs: Array<{ kind: string; preview: string; artifactUri?: string }>;
+  refs: EvidenceRefView[];
 };
 
 export type ApprovalBriefView = {

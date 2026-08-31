@@ -11,6 +11,7 @@ import type {
   ListProvidersResult,
   NoticeAction,
   SelectionController,
+  SubagentTranscriptItem,
   ToolInvocation,
   ToolInvocationResult,
   UsageView
@@ -155,6 +156,7 @@ export type OpsSubagentEvent = {
   currentActivity?: string;
   toolCalls?: { used: number; max: number };
   wallMs?: { used: number; max: number };
+  transcript?: SubagentTranscriptItem[];
 };
 
 export type OpsRuntimeEvent =
