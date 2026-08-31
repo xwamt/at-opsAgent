@@ -200,7 +200,7 @@ function onKeydown(event: KeyboardEvent): void {
           >
             <span class="codicon codicon-filter" aria-hidden="true"></span>
           </button>
-          <!-- context 水位细条（P1-4）：hover 显示 token 详情 -->
+          <!-- context 水位细条（P1-4）：hover 显示 token 详情，高水位染色 -->
           <div
             v-if="contextPct !== null"
             class="composer__usage"
@@ -211,7 +211,14 @@ function onKeydown(event: KeyboardEvent): void {
             aria-valuemax="100"
             :title="usageTitle"
           >
-            <span class="composer__usage-fill" :style="{ width: contextPct + '%' }"></span>
+            <span
+              class="composer__usage-fill"
+              :class="{
+                'composer__usage-fill--warn': contextPct >= 80 && contextPct < 95,
+                'composer__usage-fill--crit': contextPct >= 95
+              }"
+              :style="{ width: contextPct + '%' }"
+            ></span>
           </div>
         </div>
         <div class="composer__actions">
@@ -372,6 +379,7 @@ function onKeydown(event: KeyboardEvent): void {
   justify-content: space-between;
   gap: var(--ops-space-1);
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .composer__tools {
@@ -379,7 +387,6 @@ function onKeydown(event: KeyboardEvent): void {
   align-items: center;
   gap: var(--ops-space-1);
   min-width: 0;
-  overflow: hidden;
   flex: 1 1 auto;
 }
 
@@ -413,7 +420,7 @@ function onKeydown(event: KeyboardEvent): void {
   background: var(--ops-toolbar-hover-bg);
 }
 
-/* context 水位细条：4px 高，accent 填充 */
+/* context 水位细条：4px 高，accent/warn/crit 动态填充 */
 .composer__usage {
   flex: 0 1 72px;
   min-width: 32px;
@@ -429,6 +436,15 @@ function onKeydown(event: KeyboardEvent): void {
   height: 100%;
   background: var(--ops-accent);
   border-radius: 2px;
+  transition: width 200ms ease, background 200ms ease;
+}
+
+.composer__usage-fill--warn {
+  background: var(--ops-warn);
+}
+
+.composer__usage-fill--crit {
+  background: var(--ops-crit);
 }
 
 .composer__actions {
@@ -436,6 +452,7 @@ function onKeydown(event: KeyboardEvent): void {
   align-items: center;
   gap: var(--ops-space-1);
   flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .composer__actions .ops-btn {

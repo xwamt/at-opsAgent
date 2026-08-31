@@ -68,6 +68,9 @@ export class RuntimeEventRouter {
         break;
       }
       case 'tool_start': {
+        for (const tid of [...this.thinkingStartedAt.keys()]) {
+          this.finalizeThinking(sid, tid);
+        }
         const descriptor = ctx.hub.listAllTools().find((t) => t.name === e.name);
         const call: ToolCallView = {
           name: e.name,

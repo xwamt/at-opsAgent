@@ -1,12 +1,44 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { annotateLogLine, stripAnsi } from '../src/webview-chat/lib/ansi';
+import { annotateLogLine, parseAnsiToLines, stripAnsi } from '../src/webview-chat/lib/ansi';
 
 describe('stripAnsi', () => {
   it('剥 CSI SGR，保留正文', () => {
     expect(stripAnsi('\x1b[31mERROR\x1b[0m boom')).toBe('ERROR boom');
     expect(stripAnsi('plain')).toBe('plain');
+  });
+});
+
+describe('parseAnsiToLines', () => {
+  it('解析基础 ANSI 16 色与样式', () => {
+    const input = '\x1b[31mError message\x1b[0m and \x1b[32;1mGreen Bold\x1b[0m';
+    const lines = parseAnsiToLines(input);
+    expect(lines.length).toBe(1);
+    expect(lines[0].spans).toEqual([
+      { text: 'Error message', color: 'ansi-red', tone: 'error' },
+      { text: ' and ' },
+      { text: 'Green Bold', color: 'ansi-green', bold: true }
+    ]);
+    expect(lines[0].level).toBe('error');
+  });
+
+  it('支持多行文本与行状态重置', () => {
+    const input = '\x1b[33mLine 1 WARNING\nLine 2 normal\x1b[0m';
+    const lines = parseAnsiToLines(input);
+    expect(lines.length).toBe(2);
+    expect(lines[0].spans[0].color).toBe('ansi-yellow');
+    expect(lines[0].spans[0].tone).toBe('warn');
+    expect(lines[0].level).toBe('warn');
+    expect(lines[1].spans[0].text).toBe('Line 2 normal');
+  });
+
+  it('普通文本正确分行', () => {
+    const input = 'hello\nworld';
+    const lines = parseAnsiToLines(input);
+    expect(lines.length).toBe(2);
+    expect(lines[0].spans[0].text).toBe('hello');
+    expect(lines[1].spans[0].text).toBe('world');
   });
 });
 

@@ -8,9 +8,14 @@
  */
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
+import diff from 'highlight.js/lib/languages/diff';
+import dockerfile from 'highlight.js/lib/languages/dockerfile';
+import ini from 'highlight.js/lib/languages/ini';
 import javascript from 'highlight.js/lib/languages/javascript';
 import json from 'highlight.js/lib/languages/json';
+import nginx from 'highlight.js/lib/languages/nginx';
 import python from 'highlight.js/lib/languages/python';
+import sql from 'highlight.js/lib/languages/sql';
 import yaml from 'highlight.js/lib/languages/yaml';
 import MarkdownIt from 'markdown-it';
 
@@ -19,6 +24,17 @@ hljs.registerLanguage('json', json);
 hljs.registerLanguage('bash', bash);
 hljs.registerLanguage('yaml', yaml);
 hljs.registerLanguage('python', python);
+hljs.registerLanguage('sql', sql);
+hljs.registerLanguage('diff', diff);
+hljs.registerLanguage('dockerfile', dockerfile);
+hljs.registerLanguage('ini', ini);
+hljs.registerLanguage('nginx', nginx);
+
+hljs.registerAliases(['sh', 'shell', 'zsh'], { languageName: 'bash' });
+hljs.registerAliases(['docker'], { languageName: 'dockerfile' });
+hljs.registerAliases(['js', 'mjs', 'cjs'], { languageName: 'javascript' });
+hljs.registerAliases(['py'], { languageName: 'python' });
+hljs.registerAliases(['yml'], { languageName: 'yaml' });
 
 function highlightCode(str: string, lang: string): string {
   const name = lang.trim();

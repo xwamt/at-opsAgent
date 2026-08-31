@@ -169,4 +169,18 @@ onUpdated(bindCopyButtons);
 .ops-md .hljs-class {
   color: var(--vscode-symbolIcon-classForeground, #4ec9b0);
 }
+.ops-md .hljs-section {
+  color: var(--vscode-symbolIcon-classForeground, #4ec9b0);
+  font-weight: 600;
+}
+.ops-md .hljs-addition {
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--ops-healthy, #3fb950));
+}
+.ops-md .hljs-deletion {
+  color: var(--vscode-gitDecoration-deletedResourceForeground, var(--ops-crit, #f85149));
+}
+.ops-md .hljs-variable,
+.ops-md .hljs-template-variable {
+  color: var(--vscode-symbolIcon-variableForeground, #9cdcfe);
+}
 </style>

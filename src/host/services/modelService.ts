@@ -17,7 +17,13 @@ import { normalizeThinkingLevel, patchAgentSettings, readAgentSettings } from '.
 import type { ThinkingLevel } from '../hostTypes';
 import { listConfiguredModels, pickSelectedModel, readLastModel } from '../modelsCatalog';
 import { fetchModelCatalog, probeOpenAiCompatible } from '../modelsProbe';
-import { openModelsJson, readModelsFormState, saveModelsForm } from '../modelsView';
+import {
+  deleteModelEntry,
+  deleteProviderEntry,
+  openModelsJson,
+  readFullModelsConfig,
+  saveModelsForm
+} from '../modelsView';
 import { loginOAuthViaPi, openAuthJson } from '../oauthLogin';
 import { describeError, isPlainRecord, type HostContext } from './context';
 
@@ -103,12 +109,46 @@ export class ModelService {
   }
 
   async modelsFormState(): Promise<Record<string, unknown>> {
-    const state = await readModelsFormState({
+    const full = await readFullModelsConfig({
       modelsPath: this.ctx.modelsPath,
       agentDir: this.ctx.agentDir,
       secrets: this.ctx.secrets
     });
-    return { ...state };
+    return {
+      ...full.currentForm,
+      providerGroups: full.providers,
+      modelList: full.models,
+      defaultModel: full.defaultModel
+    };
+  }
+
+  async deleteModel(payload: { providerId: string; modelId: string }): Promise<{ ok: boolean; error?: string; state?: Record<string, unknown> }> {
+    const result = await deleteModelEntry(
+      { modelsPath: this.ctx.modelsPath, agentDir: this.ctx.agentDir, secrets: this.ctx.secrets },
+      payload.providerId,
+      payload.modelId
+    );
+    if (!result.ok) {
+      return result;
+    }
+    await this.refreshModelKeyFlag();
+    this.ctx.broadcast('capabilities/snapshot', this.ctx.chat.chatCapabilitiesPayload());
+    this.ctx.broadcast('hydrate', this.ctx.chat.snapshot());
+    return { ok: true, state: await this.modelsFormState() };
+  }
+
+  async deleteProvider(payload: { providerId: string }): Promise<{ ok: boolean; error?: string; state?: Record<string, unknown> }> {
+    const result = await deleteProviderEntry(
+      { modelsPath: this.ctx.modelsPath, agentDir: this.ctx.agentDir, secrets: this.ctx.secrets },
+      payload.providerId
+    );
+    if (!result.ok) {
+      return result;
+    }
+    await this.refreshModelKeyFlag();
+    this.ctx.broadcast('capabilities/snapshot', this.ctx.chat.chatCapabilitiesPayload());
+    this.ctx.broadcast('hydrate', this.ctx.chat.snapshot());
+    return { ok: true, state: await this.modelsFormState() };
   }
 
   async saveModelsFromSettings(payload: unknown): Promise<{
@@ -163,7 +203,11 @@ export class ModelService {
         (result.latencyMs !== undefined ? `（${result.latencyMs}ms）` : '') +
         (result.error !== undefined ? `：${result.error}` : '')
     );
-    return result;
+    return {
+      ...result,
+      modelId: req.modelId,
+      provider: req.provider
+    };
   }
 
   /** models/fetch（P1-1）：GET /models 拉模型目录，供设置页下拉选择。 */

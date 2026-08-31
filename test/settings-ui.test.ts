@@ -26,7 +26,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MODELS_TEMPLATE,
+  deleteModelEntry,
+  deleteProviderEntry,
   keyMissingWarning,
+  readFullModelsConfig,
   readModelsFormState,
   saveModelsForm
 } from '../src/host/modelsView';
@@ -55,6 +58,7 @@ import {
   emptyModelsForm,
   modelsKeyMissing,
   normalizeConfig,
+  normalizeConfiguredModels,
   normalizeFetchedModels,
   normalizeModelsState,
   normalizeSettingsSnapshot,
@@ -1007,5 +1011,152 @@ describe('settings i18n（本地包，独立于 chat i18n）', () => {
       expect(en.length, key).toBeGreaterThan(0);
       expect(zh, key).not.toBe(en);
     }
+  });
+
+  describe('readFullModelsConfig & CRUD', () => {
+    let tmpDir: string;
+    let modelsPath: string;
+    let agentDir: string;
+    let secretsStore: Map<string, string>;
+    let secrets: OpsSecrets;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'models-crud-test-'));
+      modelsPath = join(tmpDir, 'models.json');
+      agentDir = join(tmpDir, 'agent');
+      secretsStore = new Map();
+      secrets = new OpsSecrets({
+        get: (k: string) => Promise.resolve(secretsStore.get(k)),
+        store: (k: string, v: string) => {
+          secretsStore.set(k, v);
+          return Promise.resolve();
+        },
+        delete: (k: string) => {
+          secretsStore.delete(k);
+          return Promise.resolve();
+        },
+        keys: () => Promise.resolve(Array.from(secretsStore.keys())),
+        onDidChange: () => ({ dispose: () => {} })
+      } as unknown as import('vscode').SecretStorage);
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('readFullModelsConfig 返回所有 providers 下的完整模型卡片列表', async () => {
+      await saveModelsForm(
+        { modelsPath, agentDir, secrets },
+        {
+          providerId: 'prov-a',
+          baseUrl: 'https://api.a.com/v1',
+          modelId: 'model-a1',
+          modelName: 'Model A1',
+          reasoning: true,
+          apiKey: 'key-a'
+        }
+      );
+      await saveModelsForm(
+        { modelsPath, agentDir, secrets },
+        {
+          providerId: 'prov-a',
+          baseUrl: 'https://api.a.com/v1',
+          modelId: 'model-a2',
+          modelName: 'Model A2',
+          reasoning: false
+        }
+      );
+      await saveModelsForm(
+        { modelsPath, agentDir, secrets },
+        {
+          providerId: 'prov-b',
+          baseUrl: 'https://api.b.com/v1',
+          modelId: 'model-b1',
+          modelName: 'Model B1',
+          reasoning: false,
+          apiKey: 'key-b'
+        }
+      );
+
+      const full = await readFullModelsConfig({ modelsPath, agentDir, secrets });
+      expect(full.models).toHaveLength(3);
+      expect(full.models[0].providerId).toBe('prov-a');
+      expect(full.models[0].modelId).toBe('model-a1');
+      expect(full.models[0].hasKey).toBe(true);
+      expect(full.models[0].reasoning).toBe(true);
+
+      expect(full.models[1].providerId).toBe('prov-a');
+      expect(full.models[1].modelId).toBe('model-a2');
+
+      expect(full.models[2].providerId).toBe('prov-b');
+      expect(full.models[2].modelId).toBe('model-b1');
+    });
+
+    it('deleteModelEntry 删除指定模型，其余模型与 provider 保留', async () => {
+      await saveModelsForm(
+        { modelsPath, agentDir, secrets },
+        {
+          providerId: 'prov-a',
+          baseUrl: 'https://api.a.com/v1',
+          modelId: 'model-1',
+          apiKey: 'key-1'
+        }
+      );
+      await saveModelsForm(
+        { modelsPath, agentDir, secrets },
+        {
+          providerId: 'prov-a',
+          baseUrl: 'https://api.a.com/v1',
+          modelId: 'model-2'
+        }
+      );
+
+      const delRes = await deleteModelEntry({ modelsPath, agentDir, secrets }, 'prov-a', 'model-1');
+      expect(delRes.ok).toBe(true);
+
+      const full = await readFullModelsConfig({ modelsPath, agentDir, secrets });
+      expect(full.models).toHaveLength(1);
+      expect(full.models[0].modelId).toBe('model-2');
+    });
+
+    it('deleteProviderEntry 删除整个 Provider 并清理 secret', async () => {
+      await saveModelsForm(
+        { modelsPath, agentDir, secrets },
+        {
+          providerId: 'prov-del',
+          baseUrl: 'https://api.del.com/v1',
+          modelId: 'model-del',
+          apiKey: 'key-to-del'
+        }
+      );
+
+      expect(await secrets.getLlmApiKey('prov-del')).toBe('key-to-del');
+
+      const delRes = await deleteProviderEntry({ modelsPath, agentDir, secrets }, 'prov-del');
+      expect(delRes.ok).toBe(true);
+
+      const full = await readFullModelsConfig({ modelsPath, agentDir, secrets });
+      expect(full.models.find((m) => m.providerId === 'prov-del')).toBeUndefined();
+      expect(await secrets.get(providerApiKeySecret('prov-del'))).toBeUndefined();
+    });
+
+    it('normalizeConfiguredModels 格式化模型列表', () => {
+      const raw = [
+        {
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          modelName: 'GPT 4o',
+          baseUrl: 'https://api.openai.com/v1',
+          reasoning: true,
+          hasKey: true,
+          isDefault: true
+        }
+      ];
+      const items = normalizeConfiguredModels(raw);
+      expect(items).toHaveLength(1);
+      expect(items[0].modelId).toBe('gpt-4o');
+      expect(items[0].isDefault).toBe(true);
+      expect(items[0].testStatus).toBe('idle');
+    });
   });
 });

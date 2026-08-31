@@ -719,6 +719,87 @@ export function normalizeModelsState(raw: unknown, previous?: ModelsForm): Model
   };
 }
 
+export interface ConfiguredModelItem {
+  providerId: string;
+  modelId: string;
+  modelName: string;
+  baseUrl: string;
+  api: string;
+  reasoning: boolean;
+  hasKey: boolean;
+  isDefault: boolean;
+  thinkingFormat?: ThinkingFormat;
+  supportsDeveloperRole?: boolean;
+  latencyMs?: number;
+  testStatus?: 'idle' | 'testing' | 'ok' | 'error';
+  testError?: string;
+}
+
+export interface ConfiguredProviderGroup {
+  providerId: string;
+  baseUrl: string;
+  api: string;
+  hasKey: boolean;
+  thinkingFormat?: ThinkingFormat;
+  supportsDeveloperRole?: boolean;
+  models: Array<{
+    id: string;
+    name: string;
+    reasoning: boolean;
+    isDefault: boolean;
+    latencyMs?: number;
+    testStatus?: 'idle' | 'testing' | 'ok' | 'error';
+    testError?: string;
+  }>;
+}
+
+export function normalizeConfiguredProviders(raw: unknown): ConfiguredProviderGroup[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((entry) => {
+    const rec = asRecord(entry);
+    const rawModels = Array.isArray(rec.models) ? rec.models : [];
+    return {
+      providerId: String(rec.providerId ?? ''),
+      baseUrl: String(rec.baseUrl ?? ''),
+      api: String(rec.api ?? 'openai-completions'),
+      hasKey: rec.hasKey === true,
+      thinkingFormat: toEnum(rec.thinkingFormat, THINKING_FORMATS, 'default'),
+      supportsDeveloperRole: rec.supportsDeveloperRole !== false,
+      models: rawModels.map((m) => {
+        const mRec = asRecord(m);
+        const id = String(mRec.id ?? '');
+        return {
+          id,
+          name: String(mRec.name ?? id),
+          reasoning: mRec.reasoning === true || mRec.thinking === true,
+          isDefault: mRec.isDefault === true,
+          testStatus: 'idle'
+        };
+      })
+    };
+  });
+}
+
+export function normalizeConfiguredModels(raw: unknown): ConfiguredModelItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => {
+    const rec = asRecord(item);
+    return {
+      providerId: String(rec.providerId ?? ''),
+      modelId: String(rec.modelId ?? ''),
+      modelName: String(rec.modelName ?? rec.modelId ?? ''),
+      baseUrl: String(rec.baseUrl ?? ''),
+      api: String(rec.api ?? 'openai-completions'),
+      reasoning: rec.reasoning === true || rec.thinking === true,
+      hasKey: rec.hasKey === true,
+      isDefault: rec.isDefault === true,
+      thinkingFormat: toEnum(rec.thinkingFormat, THINKING_FORMATS, 'default'),
+      supportsDeveloperRole: rec.supportsDeveloperRole !== false,
+      testStatus: 'idle'
+    };
+  });
+}
+
 /**
  * 应用 provider 预设（返回新表单，不改入参）：
  * - 预设 id 写入 providerId；baseUrl / api / thinkingFormat 按预设覆盖；

@@ -21,13 +21,16 @@ import {
   filterTranscriptForView,
   canFollowUpFrom,
   collectSubagentCards,
+  findAdjacentSubagent,
   modelsConfigured,
+  parseToolOutputPreview,
   resolveInspectedSubagent,
   normalizeSessions,
   normalizeTimelineEvent,
   normalizeUsage,
   type ChatModelOption,
   type ChatTimelineEvent,
+  type ParsedToolPreview,
   type PromptAttachment,
   type SessionMeta,
   type TimelineStripEntry,
@@ -37,6 +40,7 @@ import { getVsCodeApi, isMockHost } from './vscode-api';
 
 export type {
   ChatTimelineEvent,
+  ParsedToolPreview,
   PromptAttachment,
   SessionMeta,
   TimelineStripEntry,
@@ -684,11 +688,15 @@ export const useOpsStore = defineStore('ops-chat', {
       }
       const stepIndex = typeof rec.step === 'number' ? rec.step : -1;
       if (stepIndex >= 0) {
-        item.steps[stepIndex] = (item.steps[stepIndex] ?? '') + text;
+        const next = [...item.steps];
+        next[stepIndex] = (next[stepIndex] ?? '') + text;
+        item.steps = next;
       } else if (rec.newStep === true || item.steps.length === 0) {
-        item.steps.push(text);
+        item.steps = [...item.steps, text];
       } else {
-        item.steps[item.steps.length - 1] += text;
+        const next = [...item.steps];
+        next[next.length - 1] = (next[next.length - 1] ?? '') + text;
+        item.steps = next;
       }
       if (Array.isArray(rec.untrustedQuotes)) {
         item.untrustedQuotes = rec.untrustedQuotes.map((quote) => String(quote));

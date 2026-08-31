@@ -41,13 +41,18 @@ import {
   canFollowUpFrom,
   collectSubagentCards,
   filterTranscriptForView,
+  findAdjacentSubagent,
+  formatDataOutputPreview,
   formatThinkingDurationMs,
+  isCommandToolCall,
   isConclusionItem,
+  isSubagentToolCall,
   modelsConfigured,
   normalizeChatModels,
   normalizeSessions,
   normalizeTimelineEvent,
   normalizeUsage,
+  parseToolOutputPreview,
   resolveInspectedSubagent,
   subagentTitle,
   thinkingMetaVisible,
@@ -624,6 +629,17 @@ describe('SubagentBoard/ChatApp 子代理 inspector（docs/12 §3）', () => {
     expect(resolveInspectedSubagent([], 't1')).toBeNull();
   });
 
+  it('findAdjacentSubagent：环状翻页导航（<=1 张返回 null；>1 张 prev/next 循环）', () => {
+    const cards = [card('t1', 'running'), card('t2', 'running'), card('t3', 'ok')];
+    expect(findAdjacentSubagent(cards, 't1', 'next')).toBe('t2');
+    expect(findAdjacentSubagent(cards, 't2', 'next')).toBe('t3');
+    expect(findAdjacentSubagent(cards, 't3', 'next')).toBe('t1');
+    expect(findAdjacentSubagent(cards, 't1', 'prev')).toBe('t3');
+    expect(findAdjacentSubagent(cards, 't3', 'prev')).toBe('t2');
+    expect(findAdjacentSubagent([card('t1', 'running')], 't1', 'next')).toBeNull();
+    expect(findAdjacentSubagent(cards, 'not-exist', 'next')).toBeNull();
+  });
+
   it('inspector 新增文案 zh/en 双语齐备（含空输出与顶栏条）', () => {
     expect(t('subagentNoOutput')).toBe('尚无输出');
     expect(tf('subagentStripCount', { count: 2 })).toBe('2 个子代理进行中');
@@ -685,6 +701,27 @@ describe('ToolCallCard 标题意图（toolCallHeadline，docs/14 P1-ui）', () =
     expect(toolCallHeadline({ name: 'run_remote_command', preview: 'cat /etc/os-release' })).toBe(
       'run_remote_command · cat /etc/os-release'
     );
+  });
+
+  it('parseToolOutputPreview：JSON 解析提取 command / exitCode / stdout / stderr，回退纯文本', () => {
+    const jsonStr = JSON.stringify({
+      command: 'systemctl status nginx',
+      exitCode: 0,
+      stdout: 'Active: active (running)'
+    });
+    expect(parseToolOutputPreview(jsonStr)).toEqual({
+      command: 'systemctl status nginx',
+      exitCode: 0,
+      stdout: 'Active: active (running)',
+      stderr: undefined,
+      rawText: jsonStr
+    });
+    expect(parseToolOutputPreview('plain string output')).toEqual({
+      rawText: 'plain string output'
+    });
+    expect(parseToolOutputPreview(undefined)).toEqual({
+      rawText: ''
+    });
   });
 });
 
@@ -994,15 +1031,13 @@ describe('思考时长 + Focus/showThinking（Plan 12 T11）', () => {
     expect(thinkingMetaVisible(false, true)).toBe(false);
   });
 
-  it('ChatTranscript：时长行可见但 CoT steps 永不展开；保留 Plan 10 Markdown 与 Plan 11 存档 hover', () => {
+  it('ChatTranscript：集成 ThinkingBlock 组件呈现思考链；保留 Plan 10 Markdown 与 Plan 11 存档 hover', () => {
     const transcript = readFileSync(
       path.join(process.cwd(), 'src/webview-chat/components/ChatTranscript.vue'),
       'utf8'
     );
-    expect(transcript).toContain('thinkingLabel(entry.item)');
+    expect(transcript).toContain('<ThinkingBlock');
     expect(transcript).toContain('thinkingMetaVisible(store.showThinking, store.conclusionMode)');
-    expect(transcript).not.toContain('entry.item.steps');
-    expect(transcript).not.toMatch(/thinking-expander|showThinkingBlock/);
     expect(transcript).toContain(
       '<MarkdownBlock :source="entry.item.text" :streaming="!!entry.item.streaming" />'
     );
@@ -1019,5 +1054,60 @@ describe('思考时长 + Focus/showThinking（Plan 12 T11）', () => {
     expect(t('thinkingInProgress')).toBe('Thinking…');
     expect(tf('thinkingDuration', { duration: '1.2s' })).toBe('Thought 1.2s');
     expect(t('conclusionModeAria')).toContain('Conclusion');
+  });
+});
+
+describe('终端命令执行组件（Kilo / Cursor 终端解耦，2026-08-31）', () => {
+  it('ToolCallCard：分离命令卡与 TerminalViewer 终端视窗', () => {
+    const card = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ToolCallCard.vue'),
+      'utf8'
+    );
+    expect(card).toContain('TerminalViewer');
+    expect(card).toContain('tool__cmd-bar');
+    expect(card).toContain('tool__cmd-prompt');
+    expect(card).toContain('tool__cmd-copy');
+    expect(card).toContain('tool__term-viewer');
+  });
+
+  it('TerminalViewer：具备终端顶栏、退出码徽标、自动贴底开关与呼吸光标', () => {
+    const term = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/TerminalViewer.vue'),
+      'utf8'
+    );
+    expect(term).toContain('terminal-win');
+    expect(term).toContain('terminal-win__header');
+    expect(term).toContain('terminal-win__exit-badge');
+    expect(term).toContain('toggleAutoScroll');
+    expect(term).toContain('terminal-win__cursor');
+    expect(term).toContain('parseAnsiToLines');
+  });
+
+  it('终端 i18n zh/en 齐备', () => {
+    setLocale('zh-cn');
+    expect(t('terminalTitle')).toBe('终端输出');
+    expect(t('terminalAutoScroll')).toBe('自动贴底');
+    expect(t('terminalCopyOutput')).toBe('复制输出');
+    expect(t('terminalCopiedOutput')).toBe('已复制输出');
+    expect(t('terminalNoOutput')).toBe('（终端无输出）');
+    setLocale('en');
+    expect(t('terminalTitle')).toBe('Terminal Output');
+    expect(t('terminalAutoScroll')).toBe('Auto-scroll');
+    expect(t('terminalCopyOutput')).toBe('Copy Output');
+    expect(t('terminalCopiedOutput')).toBe('Output Copied');
+    expect(t('terminalNoOutput')).toBe('(No output recorded)');
+  });
+
+  it('工具分类与子代理隔离（isCommandToolCall / isSubagentToolCall）', () => {
+    expect(isCommandToolCall({ name: 'run_remote_command', preview: '{"command":"df -h"}' })).toBe(true);
+    expect(isCommandToolCall({ name: 'terminal_run_command', preview: '' })).toBe(true);
+    expect(isCommandToolCall({ name: 'ops_dispatch_subagent', preview: '{"role":"investigator"}' })).toBe(false);
+    expect(isCommandToolCall({ name: 'ops_list_playbooks', preview: '{"playbooks":[]}' })).toBe(false);
+    expect(isCommandToolCall({ name: 'ops_read_skill', preview: '{"content":"# Title"}' })).toBe(false);
+
+    expect(isSubagentToolCall({ name: 'ops_dispatch_subagent' })).toBe(true);
+    expect(isSubagentToolCall({ name: 'run_remote_command' })).toBe(false);
+
+    expect(formatDataOutputPreview('{"a":1}')).toBe('{\n  "a": 1\n}');
   });
 });

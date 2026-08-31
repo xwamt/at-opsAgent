@@ -77,6 +77,8 @@ export type ModelsTestRes = {
   latencyMs?: number;
   error?: string;
   httpStatus?: number;
+  modelId?: string;
+  provider?: string;
 };
 
 export type ModelsFetchReq = { baseUrl: string; apiKey?: string; provider?: string };
@@ -160,6 +162,15 @@ export type ToolCallView = {
   errorMessage?: string;
 };
 
+export type SubagentStep = {
+  id: string;
+  title: string;
+  type: 'thinking' | 'tool' | 'output';
+  status: 'running' | 'ok' | 'error';
+  detail?: string;
+  durationMs?: number;
+};
+
 export type SubagentCard = {
   taskId: string;
   role: 'investigator' | 'executor' | 'writer' | 'verifier';
@@ -174,6 +185,12 @@ export type SubagentCard = {
   goal?: string;
   /** 可见工具名（子会话实际注入的业务工具）。 */
   visibleTools?: string[];
+  /** 实时执行步骤轨迹 */
+  steps?: SubagentStep[];
+  /** 实时日志输出 */
+  logs?: string[];
+  /** 当前动作状态描述 */
+  currentActivity?: string;
 };
 
 export type EvidenceNoteView = {

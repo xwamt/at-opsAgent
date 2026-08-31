@@ -359,6 +359,46 @@ function extractPreviewCommand(preview: string | undefined | null): string {
   return raw.split('\n')[0].trim();
 }
 
+export interface ParsedToolPreview {
+  command?: string;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  rawText: string;
+}
+
+export function parseToolOutputPreview(preview: string | undefined | null): ParsedToolPreview {
+  const raw = String(preview ?? '').trim();
+  if (!raw) {
+    return { rawText: '' };
+  }
+  if (raw.startsWith('{') || raw.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const command = typeof parsed.command === 'string' ? parsed.command : undefined;
+      const exitCode =
+        typeof parsed.exitCode === 'number'
+          ? parsed.exitCode
+          : typeof parsed.code === 'number'
+            ? parsed.code
+            : undefined;
+      const stdout =
+        typeof parsed.stdout === 'string'
+          ? parsed.stdout
+          : typeof parsed.output === 'string'
+            ? parsed.output
+            : typeof parsed.result === 'string'
+              ? parsed.result
+              : undefined;
+      const stderr = typeof parsed.stderr === 'string' ? parsed.stderr : undefined;
+      return { command, exitCode, stdout, stderr, rawText: raw };
+    } catch {
+      // fallback to plain text
+    }
+  }
+  return { rawText: raw };
+}
+
 /** 命令首词（跳过 sudo / 环境变量赋值，剥路径前缀），用于意图映射。 */
 function leadingCommandWord(command: string): string {
   for (const token of command.split(/\s+/)) {
@@ -388,6 +428,44 @@ export function toolCallHeadline(call: Pick<ToolCallView, 'name' | 'preview'>): 
     return shortCommand ? `${call.name} · ${shortCommand}` : call.name;
   }
   return `${intent} · ${shortCommand || call.name}`;
+}
+
+export function isCommandToolCall(call: Pick<ToolCallView, 'name' | 'preview'>): boolean {
+  const name = call.name || '';
+  if (
+    name === 'run_remote_command' ||
+    name === 'terminal_run_command' ||
+    name === 'jumpserver_run_terminal_command' ||
+    name === 'terminal_run_script' ||
+    name === 'bash' ||
+    name.includes('exec_command') ||
+    name.includes('terminal_command')
+  ) {
+    return true;
+  }
+  if (name === 'ops_dispatch_subagent' || name === 'ops_check_subagent') {
+    return false;
+  }
+  const parsed = parseToolOutputPreview(call.preview);
+  return Boolean(parsed.command && parsed.command.trim());
+}
+
+export function isSubagentToolCall(call: Pick<ToolCallView, 'name'>): boolean {
+  return call.name === 'ops_dispatch_subagent' || call.name === 'ops_check_subagent';
+}
+
+export function formatDataOutputPreview(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const obj = JSON.parse(trimmed);
+      return JSON.stringify(obj, null, 2);
+    } catch {
+      // ignore
+    }
+  }
+  return trimmed;
 }
 
 export type AssistantDisplay = 'skip' | 'progress' | 'content';
@@ -506,6 +584,29 @@ export function resolveInspectedSubagent(
     return null;
   }
   return collectSubagentCards(items).find((card) => card.taskId === inspectorId) ?? null;
+}
+
+/**
+ * Inspector 内上一个/下一个子代理导航：
+ * cards 中环状查找相邻卡片；无卡或只有 1 张返回 null。
+ */
+export function findAdjacentSubagent(
+  cards: readonly SubagentCard[],
+  currentTaskId: string,
+  direction: 'prev' | 'next'
+): string | null {
+  if (cards.length <= 1) {
+    return null;
+  }
+  const idx = cards.findIndex((card) => card.taskId === currentTaskId);
+  if (idx < 0) {
+    return null;
+  }
+  const targetIdx =
+    direction === 'next'
+      ? (idx + 1) % cards.length
+      : (idx - 1 + cards.length) % cards.length;
+  return cards[targetIdx].taskId;
 }
 
 /** 卡片主标题：goal 首行优先，缺省回退 label（标题不倒 latest 全文）。 */

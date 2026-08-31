@@ -121,6 +121,30 @@ button {
   white-space: nowrap;
 }
 
+.ops-badge--primary {
+  color: var(--ops-accent);
+  background: color-mix(in srgb, var(--ops-accent) 15%, transparent);
+  border-color: color-mix(in srgb, var(--ops-accent) 30%, transparent);
+}
+
+.ops-badge--success {
+  color: var(--ops-healthy);
+  background: color-mix(in srgb, var(--ops-healthy) 15%, transparent);
+  border-color: color-mix(in srgb, var(--ops-healthy) 30%, transparent);
+}
+
+.ops-badge--info {
+  color: #a855f7;
+  background: rgba(168, 85, 247, 0.12);
+  border-color: rgba(168, 85, 247, 0.3);
+}
+
+.ops-badge--secondary {
+  color: var(--ops-muted);
+  background: color-mix(in srgb, var(--ops-fg) 10%, transparent);
+  border-color: var(--ops-border);
+}
+
 /* 风险三色：只用于风险/健康，不做装饰 */
 .ops-risk-read {
   color: var(--ops-read);
@@ -322,3 +346,37 @@ button {
 .ops-md img {
   max-width: 100%;
 }
+
+/* ANSI 16 色与终端样式映射（对标 VS Code Terminal / Theme） */
+.ansi-black { color: var(--vscode-terminal-ansiBlack, #000000); }
+.ansi-red { color: var(--vscode-terminal-ansiRed, #cd3131); }
+.ansi-green { color: var(--vscode-terminal-ansiGreen, #0dbc79); }
+.ansi-yellow { color: var(--vscode-terminal-ansiYellow, #e5e510); }
+.ansi-blue { color: var(--vscode-terminal-ansiBlue, #2472c8); }
+.ansi-magenta { color: var(--vscode-terminal-ansiMagenta, #bc3fbc); }
+.ansi-cyan { color: var(--vscode-terminal-ansiCyan, #11a8cd); }
+.ansi-white { color: var(--vscode-terminal-ansiWhite, #e5e5e5); }
+
+.ansi-bright-black { color: var(--vscode-terminal-ansiBrightBlack, #666666); }
+.ansi-bright-red { color: var(--vscode-terminal-ansiBrightRed, #f14c4c); }
+.ansi-bright-green { color: var(--vscode-terminal-ansiBrightGreen, #23d18b); }
+.ansi-bright-yellow { color: var(--vscode-terminal-ansiBrightYellow, #f5f543); }
+.ansi-bright-blue { color: var(--vscode-terminal-ansiBrightBlue, #3b8eea); }
+.ansi-bright-magenta { color: var(--vscode-terminal-ansiBrightMagenta, #d670d6); }
+.ansi-bright-cyan { color: var(--vscode-terminal-ansiBrightCyan, #29b8db); }
+.ansi-bright-white { color: var(--vscode-terminal-ansiBrightWhite, #ffffff); }
+
+.ansi-bg-black { background-color: var(--vscode-terminal-ansiBlack, #000000); }
+.ansi-bg-red { background-color: var(--vscode-terminal-ansiRed, #cd3131); }
+.ansi-bg-green { background-color: var(--vscode-terminal-ansiGreen, #0dbc79); }
+.ansi-bg-yellow { background-color: var(--vscode-terminal-ansiYellow, #e5e510); }
+.ansi-bg-blue { background-color: var(--vscode-terminal-ansiBlue, #2472c8); }
+.ansi-bg-magenta { background-color: var(--vscode-terminal-ansiMagenta, #bc3fbc); }
+.ansi-bg-cyan { background-color: var(--vscode-terminal-ansiCyan, #11a8cd); }
+.ansi-bg-white { background-color: var(--vscode-terminal-ansiWhite, #e5e5e5); }
+
+.ansi-bold { font-weight: 700; }
+.ansi-dim { opacity: 0.7; }
+.ansi-italic { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+

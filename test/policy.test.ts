@@ -244,10 +244,18 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       'grep -c error /var/log/syslog',
       'egrep -i "warn" /var/log/messages | tail -n 20',
       'fgrep OOM /var/log/kern.log',
-      'sed -n 1,10p /etc/hosts'
+      'sed -n 1,10p /etc/hosts',
+      'du -sh /var',
+      'du -d 1 /var',
+      'du -h --max-depth=1 /root',
+      'find /var/log -type f -name "*.log"',
+      'lsof -i :80',
+      'pgrep nginx',
+      'pidof nginx'
     ];
     for (const command of readOnly) {
-      expect(await inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('read');
+      const risk = await inferEffectiveRisk('run_remote_command', { command }, 'exec');
+      expect(risk, `Command "${command}" should be read`).toBe('read');
     }
   });
 
@@ -281,7 +289,9 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       'sysctl net.ipv4.ip_forward=1',
       'sed -i s/a/b/ /etc/nginx/nginx.conf',
       'sort -o /tmp/out /tmp/in',
-      'systemctl restart nginx'
+      'systemctl restart nginx',
+      'find /tmp -delete',
+      'find /tmp -name "*.tmp" -exec rm {} \\;'
     ];
     for (const command of notReadOnly) {
       expect(await inferEffectiveRisk('run_remote_command', { command }, 'exec')).toBe('exec');

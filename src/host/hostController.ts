@@ -250,6 +250,12 @@ export class HostController {
         return this.models.modelsFormState();
       case 'models/save':
         return this.models.saveModelsFromSettings(payload);
+      case 'models/deleteModel':
+        return this.models.deleteModel(payload as { providerId: string; modelId: string });
+      case 'models/deleteProvider':
+        return this.models.deleteProvider(payload as { providerId: string });
+      case 'models/setDefault':
+        return this.models.setModel(payload as ModelSetReq);
       case 'models/test':
         return this.models.testModel(payload as ModelsTestReq);
       case 'models/fetch':

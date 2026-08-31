@@ -110,7 +110,11 @@ function onCardKey(event: KeyboardEvent, taskId: string): void {
           <span>tools {{ agent.toolCalls.used }}/{{ agent.toolCalls.max }}</span>
           <span>wall {{ secs(agent.wallMs.used) }}/{{ secs(agent.wallMs.max) }}</span>
         </div>
-        <div v-if="agent.latest" class="sa__latest">{{ agent.latest }}</div>
+        <div v-if="agent.status === 'running' && agent.currentActivity" class="sa__latest sa__latest--running ops-accent">
+          <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
+          {{ agent.currentActivity }}
+        </div>
+        <div v-else-if="agent.latest" class="sa__latest">{{ agent.latest }}</div>
       </article>
     </div>
   </section>
@@ -118,6 +122,9 @@ function onCardKey(event: KeyboardEvent, taskId: string): void {
 
 <style scoped>
 .sa {
+  flex-shrink: 0;
+  width: 100%;
+  box-sizing: border-box;
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
   padding: var(--ops-space-2) var(--ops-space-2);

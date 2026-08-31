@@ -447,10 +447,15 @@ export class ChatService {
       onSubagentEvent: (e: OpsSubagentEvent & { goal?: string; visibleTools?: string[] }) => {
         this.upsertSubagentCard(sessionId, e.taskId, {
           status: e.status,
-          latest: e.summary ?? e.error,
+          latest: e.summary ?? e.error ?? e.currentActivity,
           role: e.role,
           goal: e.goal,
-          visibleTools: e.visibleTools
+          visibleTools: e.visibleTools,
+          steps: e.steps,
+          logs: e.logs,
+          currentActivity: e.currentActivity,
+          toolCalls: e.toolCalls,
+          wallMs: e.wallMs
         });
         if (e.evidenceNote) appendEvidenceNote(ctx, sessionId, e.evidenceNote);
         const terminal = new Set(['ok', 'degraded', 'failed', 'aborted']);

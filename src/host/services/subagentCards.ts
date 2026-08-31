@@ -16,6 +16,11 @@ export interface SubagentCardPatch {
   goal?: string;
   /** 子会话实际注入的业务工具名。 */
   visibleTools?: string[];
+  steps?: SubagentCard['steps'];
+  logs?: SubagentCard['logs'];
+  currentActivity?: string;
+  toolCalls?: { used: number; max: number };
+  wallMs?: { used: number; max: number };
 }
 
 /** 更新或创建子代理卡片并广播；返回卡片是否处于 live（queued/running）态。 */
@@ -42,7 +47,12 @@ export function patchSubagentCard(
         label: goal ?? existing.label,
         ...(goal !== undefined ? { goal } : {}),
         ...(visibleTools !== undefined ? { visibleTools } : {}),
-        ...(patch.latest !== undefined ? { latest: patch.latest } : {})
+        ...(patch.latest !== undefined ? { latest: patch.latest } : {}),
+        ...(patch.steps !== undefined ? { steps: patch.steps } : {}),
+        ...(patch.logs !== undefined ? { logs: patch.logs } : {}),
+        ...(patch.currentActivity !== undefined ? { currentActivity: patch.currentActivity } : {}),
+        ...(patch.toolCalls !== undefined ? { toolCalls: patch.toolCalls } : {}),
+        ...(patch.wallMs !== undefined ? { wallMs: patch.wallMs } : {})
       }
     : {
         taskId,
@@ -51,11 +61,14 @@ export function patchSubagentCard(
         label: goal ?? nextRole,
         status: isSubagentStatus(patch.status) ? patch.status : 'queued',
         riskCeiling: nextRole === 'executor' ? 'exec' : 'read',
-        toolCalls: { used: 0, max: 15 },
-        wallMs: { used: 0, max: 180_000 },
+        toolCalls: patch.toolCalls ?? { used: 0, max: 15 },
+        wallMs: patch.wallMs ?? { used: 0, max: 180_000 },
         ...(goal !== undefined ? { goal } : {}),
         ...(visibleTools !== undefined ? { visibleTools } : {}),
-        ...(patch.latest !== undefined ? { latest: patch.latest } : {})
+        ...(patch.latest !== undefined ? { latest: patch.latest } : {}),
+        ...(patch.steps !== undefined ? { steps: patch.steps } : {}),
+        ...(patch.logs !== undefined ? { logs: patch.logs } : {}),
+        ...(patch.currentActivity !== undefined ? { currentActivity: patch.currentActivity } : {})
       };
   ctx.store.upsertSubagent(next, sessionId);
   ctx.broadcastToSession(sessionId, 'subagent/upsert', next);

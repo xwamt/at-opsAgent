@@ -112,10 +112,12 @@ export function subscribeSessionEvents(
         break;
       }
       case 'tool_execution_start':
+        currentMessageId = randomUUID();
         emit({ type: 'tool_start', id: event.toolCallId, name: event.toolName });
         hooks.onToolActivity?.('start', event.toolCallId);
         break;
       case 'tool_execution_end': {
+        currentMessageId = randomUUID();
         const preview = truncatePreview(extractResultText(event.result));
         emit({
           type: 'tool_end',

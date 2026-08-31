@@ -14,6 +14,7 @@ import * as vscode from 'vscode';
 import type { ApprovalRespondReq } from '../../protocol';
 import type { PolicyContext, ToolCallOrigin } from '../../core';
 import {
+  deriveCommandSetHash,
   effectiveSessionRequiredFor,
   hashCommandSet,
   issueApprovalToken,
@@ -120,7 +121,7 @@ export class ApprovalService {
         ...(origin?.kind === 'subagent' && RISK_LEVELS.has(origin.riskCeiling)
           ? { riskCeiling: origin.riskCeiling as PolicyContext['riskCeiling'] }
           : {}),
-        approval: this.approvalForOrigin(sessionId, origin),
+        approval: this.approvalForOrigin(sessionId, origin, args, toolName),
         sessionRequiredFor: effectiveSessionRequiredFor(
           parseSessionRequiredFor(config.get('policy.floor'), 'write-exec'),
           parseSessionRequiredFor(config.get('approval.sessionRequiredFor'), 'write-exec')
@@ -218,13 +219,23 @@ export class ApprovalService {
   /** 调用方的审批引用：主会话用该席 currentApproval；子代理按 briefId 对齐。 */
   private approvalForOrigin(
     sessionId: string,
-    origin: ToolCallOrigin | undefined
+    origin: ToolCallOrigin | undefined,
+    args?: Record<string, unknown>,
+    toolName?: string
   ): ApprovalRef | null {
     const approval = this.validApproval(sessionId);
     if (!approval) return null;
     if (origin?.kind === 'subagent') {
       // origin.approvalToken = TaskSpec.approvalToken.briefId（简报 id 引用）。
       return origin.approvalToken === approval.briefId ? approval : null;
+    }
+    // 主会话：只有当前调用的命令集哈希与已批简报一致时才附加该审批；
+    // 不一致说明这是新一轮不同的工具调用，不应附加旧令牌导致 OPS_APPROVAL_STALE 误报。
+    if (args !== undefined) {
+      const derived = deriveCommandSetHash(args, toolName);
+      if (derived !== undefined && derived !== approval.commandSetSha256) {
+        return null;
+      }
     }
     return approval;
   }

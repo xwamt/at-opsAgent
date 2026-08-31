@@ -397,6 +397,18 @@ export interface SubagentStatusEvent {
   error?: string;
   /** output.contract=evidence-note@1 且解析成功时附上结构化便签。 */
   evidenceNote?: EvidenceNote;
+  steps?: Array<{
+    id: string;
+    title: string;
+    type: 'thinking' | 'tool' | 'output';
+    status: 'running' | 'ok' | 'error';
+    detail?: string;
+    durationMs?: number;
+  }>;
+  logs?: string[];
+  currentActivity?: string;
+  toolCalls?: { used: number; max: number };
+  wallMs?: { used: number; max: number };
 }
 
 export interface SubagentRunOutcome {

@@ -17,18 +17,35 @@ const store = useOpsStore();
 <template>
   <div class="chat-app">
     <PlaybookHeader />
-    <!-- Kilo 式后台代理运行条：有 queued/running 子代理时常驻一行，点击打开 inspector -->
-    <button
+    <!-- Kilo 式后台代理运行条：有 queued/running 子代理时常驻一行，支持点击任意子代理打开 inspector -->
+    <div
       v-if="store.activeSubagents.length > 0"
-      type="button"
       class="chat-app__agents"
       :aria-label="t('subagentStripAria')"
-      @click="store.inspectSubagent(store.activeSubagents[0].taskId)"
     >
       <span class="codicon codicon-loading codicon-modifier-spin chat-app__agents-icon" aria-hidden="true"></span>
       <span class="chat-app__agents-count">{{ tf('subagentStripCount', { count: store.activeSubagents.length }) }}</span>
-      <span class="chat-app__agents-goal ops-muted">{{ subagentTitle(store.activeSubagents[0]) }}</span>
-    </button>
+      <div v-if="store.activeSubagents.length > 1" class="chat-app__agents-chips">
+        <button
+          v-for="sa in store.activeSubagents"
+          :key="sa.taskId"
+          type="button"
+          class="chat-app__agent-chip"
+          :title="subagentTitle(sa)"
+          @click="store.inspectSubagent(sa.taskId)"
+        >
+          <span class="chat-app__agent-chip-text">{{ subagentTitle(sa) }}</span>
+        </button>
+      </div>
+      <button
+        v-else
+        type="button"
+        class="chat-app__agents-goal ops-muted"
+        @click="store.inspectSubagent(store.activeSubagents[0].taskId)"
+      >
+        {{ subagentTitle(store.activeSubagents[0]) }}
+      </button>
+    </div>
     <!-- 空态走欢迎页（标题 + 建议卡），transcript 不再渲染自己的空提示 -->
     <WelcomeState v-if="store.items.length === 0" class="chat-app__transcript" />
     <ChatTranscript v-else class="chat-app__transcript" />
@@ -84,7 +101,7 @@ const store = useOpsStore();
   min-height: 0;
 }
 
-/* 后台代理运行条：不随 transcript 滚走，一行 = 数量 + 首个目标 */
+/* 后台代理运行条：不随 transcript 滚走，支持多子代理并列显示 */
 .chat-app__agents {
   display: flex;
   align-items: center;
@@ -93,21 +110,10 @@ const store = useOpsStore();
   min-width: 0;
   padding: var(--ops-space-1) var(--ops-space-3);
   background: transparent;
-  border: none;
   border-bottom: 1px solid var(--ops-border);
   color: var(--ops-fg);
-  cursor: pointer;
   font-size: var(--ops-font-sm);
   text-align: left;
-}
-
-.chat-app__agents:hover {
-  background: var(--ops-hover-bg);
-}
-
-.chat-app__agents:focus-visible {
-  outline: 1px solid var(--ops-accent);
-  outline-offset: -1px;
 }
 
 .chat-app__agents-icon {
@@ -121,12 +127,62 @@ const store = useOpsStore();
   flex: 0 0 auto;
 }
 
+.chat-app__agents-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-1);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-app__agents-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-app__agent-chip {
+  background: color-mix(in srgb, var(--ops-fg) 8%, transparent);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius-ctl);
+  padding: 1px 6px;
+  color: var(--ops-fg);
+  cursor: pointer;
+  font-size: var(--ops-font-xs);
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-app__agent-chip:hover {
+  background: var(--ops-hover-bg);
+  border-color: var(--ops-accent);
+}
+
+.chat-app__agent-chip:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: 1px;
+}
+
 .chat-app__agents-goal {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  background: transparent;
+  border: none;
+  color: var(--ops-muted);
+  cursor: pointer;
+  font-size: var(--ops-font-sm);
+  text-align: left;
+  padding: 0;
+}
+
+.chat-app__agents-goal:hover {
+  color: var(--ops-fg);
+  text-decoration: underline;
 }
 
 .chat-app__dock {

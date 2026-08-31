@@ -41,7 +41,11 @@ import {
   type OpsConfig,
   type ProviderRow,
   type SessionRow,
-  type SettingsTabId
+  type SettingsTabId,
+  type ConfiguredModelItem,
+  type ConfiguredProviderGroup,
+  normalizeConfiguredModels,
+  normalizeConfiguredProviders
 } from './helpers';
 import { setLocale, t } from './i18n';
 
@@ -95,6 +99,11 @@ export const useSettingsStore = defineStore('ops-settings', {
     /** 本次保存因组织下限收紧了 sessionRequiredFor。 */
     pendingFloorClampNotice: false,
     models: emptyModelsForm() as ModelsForm,
+    providerGroups: [] as ConfiguredProviderGroup[],
+    modelList: [] as ConfiguredModelItem[],
+    defaultModelId: '' as string,
+    defaultProviderId: '' as string,
+    editingModelId: '' as string,
     /** 收到过 models/state（evt 或合法 res）⇒ host 支持 models/* 家族。 */
     modelsChannel: false,
     /** 「保存并测试」链路状态：save 回执 ok 后自动发 models/test。 */
@@ -294,6 +303,25 @@ export const useSettingsStore = defineStore('ops-settings', {
         case 'models/test': {
           this.testingModel = false;
           const rec = asRecord(payload);
+          const modelId = typeof rec.modelId === 'string' ? rec.modelId : this.models.modelId;
+          const provider = typeof rec.provider === 'string' ? rec.provider : this.models.providerId;
+          const target = this.modelList.find(
+            (m) => m.providerId === provider && m.modelId === modelId
+          );
+          if (target) {
+            target.testStatus = rec.ok === true ? 'ok' : 'error';
+            target.latencyMs = typeof rec.latencyMs === 'number' ? rec.latencyMs : undefined;
+            target.testError = typeof rec.error === 'string' ? rec.error : undefined;
+          }
+          const pGroup = this.providerGroups.find((p) => p.providerId === provider);
+          if (pGroup) {
+            const mTarget = pGroup.models.find((m) => m.id === modelId);
+            if (mTarget) {
+              mTarget.testStatus = rec.ok === true ? 'ok' : 'error';
+              mTarget.latencyMs = typeof rec.latencyMs === 'number' ? rec.latencyMs : undefined;
+              mTarget.testError = typeof rec.error === 'string' ? rec.error : undefined;
+            }
+          }
           if (rec.ok === true) {
             const latency =
               typeof rec.latencyMs === 'number' ? `（${Math.round(rec.latencyMs)} ms）` : '';
@@ -304,6 +332,17 @@ export const useSettingsStore = defineStore('ops-settings', {
                 ? t('mTest401')
                 : `${t('mTestFail')}${typeof rec.error === 'string' && rec.error ? rec.error : t('saveFailed')}`;
             this.setStatus('models', false, message);
+          }
+          break;
+        }
+        case 'models/deleteModel':
+        case 'models/deleteProvider': {
+          const rec = asRecord(payload);
+          if (rec.ok !== false && rec.state) {
+            this.applyModels(rec.state);
+            this.setStatus('models', true, t('saved'));
+          } else if (rec.error) {
+            this.setStatus('models', false, String(rec.error));
           }
           break;
         }
@@ -417,6 +456,92 @@ export const useSettingsStore = defineStore('ops-settings', {
 
     applyModels(payload: unknown): void {
       this.models = normalizeModelsState(payload, this.models);
+      const rec = asRecord(payload);
+      if (Array.isArray(rec.providerGroups)) {
+        this.providerGroups = normalizeConfiguredProviders(rec.providerGroups);
+      } else if (Array.isArray(rec.providers)) {
+        this.providerGroups = normalizeConfiguredProviders(rec.providers);
+      }
+      if (Array.isArray(rec.modelList)) {
+        this.modelList = normalizeConfiguredModels(rec.modelList);
+      } else if (Array.isArray(rec.models)) {
+        this.modelList = normalizeConfiguredModels(rec.models);
+      }
+      if (typeof rec.defaultModel === 'object' && rec.defaultModel !== null) {
+        const def = asRecord(rec.defaultModel);
+        this.defaultProviderId = String(def.provider ?? '');
+        this.defaultModelId = String(def.model ?? '');
+      }
+    },
+
+    deleteModel(providerId: string, modelId: string): void {
+      this.post('models/deleteModel', { providerId, modelId });
+      this.modelList = this.modelList.filter(
+        (m) => !(m.providerId === providerId && m.modelId === modelId)
+      );
+      const group = this.providerGroups.find((p) => p.providerId === providerId);
+      if (group) {
+        group.models = group.models.filter((m) => m.id !== modelId);
+      }
+    },
+
+    deleteProvider(providerId: string): void {
+      this.post('models/deleteProvider', { providerId });
+      this.modelList = this.modelList.filter((m) => m.providerId !== providerId);
+      this.providerGroups = this.providerGroups.filter((p) => p.providerId !== providerId);
+    },
+
+    batchAddFetchedModels(providerId: string, baseUrl: string, modelIds: string[]): void {
+      const models = modelIds.map((id) => ({ id, name: id, reasoning: false }));
+      this.post('models/save', {
+        providerId,
+        baseUrl,
+        models
+      });
+    },
+
+    setDefaultModel(providerId: string, modelId: string): void {
+      this.defaultProviderId = providerId;
+      this.defaultModelId = modelId;
+      for (const m of this.modelList) {
+        m.isDefault = m.providerId === providerId && m.modelId === modelId;
+      }
+      for (const p of this.providerGroups) {
+        for (const m of p.models) {
+          m.isDefault = p.providerId === providerId && m.id === modelId;
+        }
+      }
+      this.post('models/setDefault', { provider: providerId, model: modelId });
+    },
+
+    loadModelIntoForm(item: ConfiguredModelItem | { providerId: string; modelId: string; modelName?: string; baseUrl?: string; api?: string; reasoning?: boolean; hasKey?: boolean; thinkingFormat?: ThinkingFormat; supportsDeveloperRole?: boolean }): void {
+      this.editingModelId = `${item.providerId}::${item.modelId}`;
+      this.models.providerId = item.providerId;
+      if (item.baseUrl) this.models.baseUrl = item.baseUrl;
+      if (item.api) this.models.api = item.api;
+      this.models.modelId = item.modelId;
+      this.models.modelName = item.modelName ?? item.modelId;
+      this.models.reasoning = item.reasoning === true;
+      if (item.hasKey !== undefined) this.models.hasKey = item.hasKey;
+      if (item.thinkingFormat) {
+        this.models.thinkingFormat = item.thinkingFormat;
+      }
+      this.models.supportsDeveloperRole = item.supportsDeveloperRole !== false;
+      this.models.apiKey = '';
+    },
+
+    testSingleModel(item: { providerId: string; modelId: string; baseUrl: string; testStatus?: string }): void {
+      item.testStatus = 'testing';
+      const inList = this.modelList.find((m) => m.providerId === item.providerId && m.modelId === item.modelId);
+      if (inList) inList.testStatus = 'testing';
+      const inGroup = this.providerGroups.find((p) => p.providerId === item.providerId)?.models.find((m) => m.id === item.modelId);
+      if (inGroup) inGroup.testStatus = 'testing';
+
+      this.post('models/test', {
+        baseUrl: item.baseUrl,
+        modelId: item.modelId,
+        provider: item.providerId
+      });
     },
 
     applyOauthStatus(payload: unknown): void {

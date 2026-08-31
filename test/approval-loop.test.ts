@@ -271,6 +271,44 @@ describe('approval loop · policy + orchestrator 集成', () => {
     expect(denied.block).toBe(true);
     if (denied.block) expect(denied.code).toBe(OPS_ERROR.APPROVAL_REQUIRED);
   });
+
+  it('主会话上一条审批通过后，后续执行只读巡检（如 du）或新命令不被误报 OPS_APPROVAL_STALE', async () => {
+    const approvedCommand = 'systemctl restart nginx';
+    const approvedToken = approvalFor('brief-local-1', [approvedCommand]);
+
+    // 1. 已批命令自身：放行
+    const matched = await evaluatePolicy(
+      execCtx({
+        toolName: 'run_remote_command',
+        args: { command: approvedCommand },
+        approval: approvedToken
+      })
+    );
+    expect(matched).toEqual({ block: false, needSessionApproval: false });
+
+    // 2. 后续只读命令（如 du / find / lsof）：无论是否附带旧审批，均推断为 read 并直接放行
+    const readCmd = await evaluatePolicy(
+      execCtx({
+        toolName: 'run_remote_command',
+        args: { command: 'du -sh /var' },
+        approval: null
+      })
+    );
+    expect(readCmd).toEqual({ block: false, needSessionApproval: false });
+
+    // 3. 后续新的 exec 命令（非 Executor 角色）：在无对应审批时正常触发新一轮 needSessionApproval，而不是误报 OPS_APPROVAL_STALE 错误
+    const newExecCmd = await evaluatePolicy(
+      execCtx({
+        toolName: 'run_remote_command',
+        args: { command: 'systemctl reload app' },
+        approval: null
+      })
+    );
+    expect(newExecCmd.block).toBe(false);
+    if (!newExecCmd.block) {
+      expect(newExecCmd.needSessionApproval).toBe(true);
+    }
+  });
 });
 
 describe('approval timeout · 配置默认', () => {

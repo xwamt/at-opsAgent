@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import {
   CUSTOM_PROVIDER_ID,
   OAUTH_PROVIDER_IDS,
@@ -11,28 +11,42 @@ import {
   presetIdForProvider,
   providerPresetById,
   resolveOauthProvider,
+  type ConfiguredModelItem,
+  type ConfiguredProviderGroup,
   type RoleModelRole
 } from '../helpers';
-import { t, type SettingsMessageKey } from '../i18n';
+import { t, tf, type SettingsMessageKey } from '../i18n';
 import { useSettingsStore } from '../store';
 
 const store = useSettingsStore();
+
+const isEditing = ref(false);
+const formCardRef = ref<HTMLElement | null>(null);
+
+// 确认删除状态管理（解决 VS Code Webview 屏蔽 window.confirm 问题）
+const deletingKey = ref<string | null>(null);
+const deletingProviderId = ref<string | null>(null);
+
+// 快速添加单模型到指定 Provider
+const quickAddingProviderId = ref<string | null>(null);
+const quickModelId = ref('');
+const quickModelName = ref('');
+const quickModelReasoning = ref(false);
+
+// 批量拉取导入模态状态
+const batchImportProviderId = ref<string | null>(null);
+const selectedBatchModels = ref<string[]>([]);
 
 const status = computed(() => store.status.models);
 const oauthStatus = computed(() => store.status.oauth);
 const oauthNote = computed(() => store.models.oauthNote || t('mOauthNote'));
 
-/** 首跑态：还没有任何已存 key（docs/12 §5：一条 muted 提示，不再是三大段）。 */
-const firstRun = computed(() => !store.models.hasKey);
-
-/** provider 下拉的双向绑定：未知 providerId 归到「自定义」。 */
 const presetModel = computed({
   get: () => presetIdForProvider(store.models.providerId),
   set: (value: string) => store.selectProviderPreset(value)
 });
 const isCustom = computed(() => presetModel.value === CUSTOM_PROVIDER_ID);
 
-/** 首跑绝不显示「留空 = 保持现有 key」（此时没有可保持的 key）。 */
 const apiKeyPlaceholder = computed(() =>
   store.models.hasKey ? t('mApiKeyPlaceholder') : t('mApiKeyPlaceholderFirstRun')
 );
@@ -43,10 +57,8 @@ const keyState = computed(() =>
     : t('mKeyMissing')
 );
 
-/** 保存前的内联黄字预警：既无已存 key 又没填（OAuth 预设豁免）。 */
 const keyWarn = computed(() => modelsKeyMissing(store.models));
 
-/** 模型 id 建议：models/fetch 拉回的真实目录优先，预设常见值补底。 */
 const modelSuggestions = computed(() => {
   const preset = providerPresetById(store.models.providerId);
   const merged = [...store.modelSuggestions];
@@ -64,361 +76,1029 @@ const ROLE_LABEL_KEYS: Record<RoleModelRole, SettingsMessageKey> = {
 };
 
 const oauthProviderResolved = computed(() => resolveOauthProvider(store.models));
+
+// 统一 Provider 分组视图：优先使用 store.providerGroups，若无则从 store.modelList 自动聚合成组
+const displayProviderGroups = computed<ConfiguredProviderGroup[]>(() => {
+  if (store.providerGroups.length > 0) {
+    return store.providerGroups;
+  }
+  const map = new Map<string, ConfiguredProviderGroup>();
+  for (const m of store.modelList) {
+    let group = map.get(m.providerId);
+    if (!group) {
+      group = {
+        providerId: m.providerId,
+        baseUrl: m.baseUrl,
+        api: m.api,
+        hasKey: m.hasKey,
+        thinkingFormat: m.thinkingFormat,
+        supportsDeveloperRole: m.supportsDeveloperRole,
+        models: []
+      };
+      map.set(m.providerId, group);
+    }
+    group.models.push({
+      id: m.modelId,
+      name: m.modelName,
+      reasoning: m.reasoning,
+      isDefault: m.isDefault,
+      latencyMs: m.latencyMs,
+      testStatus: m.testStatus,
+      testError: m.testError
+    });
+  }
+  return Array.from(map.values());
+});
+
+function startAddProvider(): void {
+  store.selectProviderPreset('openai');
+  store.models.modelId = '';
+  store.models.modelName = '';
+  store.models.apiKey = '';
+  isEditing.value = true;
+  formCardRef.value?.scrollIntoView({ behavior: 'smooth' });
+}
+
+function editProvider(group: ConfiguredProviderGroup): void {
+  store.models.providerId = group.providerId;
+  store.models.baseUrl = group.baseUrl;
+  store.models.api = group.api;
+  store.models.hasKey = group.hasKey;
+  if (group.models.length > 0) {
+    const first = group.models[0];
+    store.models.modelId = first.id;
+    store.models.modelName = first.name;
+    store.models.reasoning = first.reasoning;
+  } else {
+    store.models.modelId = '';
+    store.models.modelName = '';
+  }
+  store.models.apiKey = '';
+  isEditing.value = true;
+  formCardRef.value?.scrollIntoView({ behavior: 'smooth' });
+}
+
+function editModel(provider: ConfiguredProviderGroup, model: ConfiguredProviderGroup['models'][number]): void {
+  store.loadModelIntoForm({
+    providerId: provider.providerId,
+    baseUrl: provider.baseUrl,
+    api: provider.api,
+    hasKey: provider.hasKey,
+    thinkingFormat: provider.thinkingFormat,
+    supportsDeveloperRole: provider.supportsDeveloperRole,
+    modelId: model.id,
+    modelName: model.name,
+    reasoning: model.reasoning
+  });
+  isEditing.value = true;
+  formCardRef.value?.scrollIntoView({ behavior: 'smooth' });
+}
+
+function cancelEdit(): void {
+  isEditing.value = false;
+  store.editingModelId = '';
+}
+
+function promptDeleteModel(providerId: string, modelId: string): void {
+  deletingKey.value = `${providerId}::${modelId}`;
+}
+
+function executeDeleteModel(providerId: string, modelId: string): void {
+  store.deleteModel(providerId, modelId);
+  deletingKey.value = null;
+}
+
+function promptDeleteProvider(providerId: string): void {
+  deletingProviderId.value = providerId;
+}
+
+function executeDeleteProvider(providerId: string): void {
+  store.deleteProvider(providerId);
+  deletingProviderId.value = null;
+}
+
+function openQuickAdd(providerId: string): void {
+  quickAddingProviderId.value = providerId;
+  quickModelId.value = '';
+  quickModelName.value = '';
+  quickModelReasoning.value = false;
+}
+
+function closeQuickAdd(): void {
+  quickAddingProviderId.value = null;
+}
+
+function submitQuickAdd(provider: ConfiguredProviderGroup): void {
+  const mId = quickModelId.value.trim();
+  if (!mId) return;
+  store.post('models/save', {
+    providerId: provider.providerId,
+    baseUrl: provider.baseUrl,
+    modelId: mId,
+    modelName: quickModelName.value.trim() || mId,
+    reasoning: quickModelReasoning.value
+  });
+  closeQuickAdd();
+}
+
+function openBatchImport(provider: ConfiguredProviderGroup): void {
+  batchImportProviderId.value = provider.providerId;
+  selectedBatchModels.value = [];
+  store.models.providerId = provider.providerId;
+  store.models.baseUrl = provider.baseUrl;
+  store.fetchModelsList();
+}
+
+function closeBatchImport(): void {
+  batchImportProviderId.value = null;
+}
+
+function toggleSelectBatchModel(id: string): void {
+  const idx = selectedBatchModels.value.indexOf(id);
+  if (idx >= 0) {
+    selectedBatchModels.value.splice(idx, 1);
+  } else {
+    selectedBatchModels.value.push(id);
+  }
+}
+
+function selectAllBatchModels(): void {
+  selectedBatchModels.value = [...store.modelSuggestions];
+}
+
+function submitBatchImport(provider: ConfiguredProviderGroup): void {
+  if (selectedBatchModels.value.length === 0) return;
+  store.batchAddFetchedModels(provider.providerId, provider.baseUrl, selectedBatchModels.value);
+  closeBatchImport();
+}
+
+function testSingle(provider: ConfiguredProviderGroup, model: ConfiguredProviderGroup['models'][number]): void {
+  store.testSingleModel({
+    providerId: provider.providerId,
+    modelId: model.id,
+    baseUrl: provider.baseUrl,
+    testStatus: model.testStatus
+  });
+}
+
+function testAll(): void {
+  for (const group of displayProviderGroups.value) {
+    for (const model of group.models) {
+      testSingle(group, model);
+    }
+  }
+}
+
+async function saveAndFinish(): Promise<void> {
+  await store.saveAndTestModels();
+}
 </script>
 
 <template>
-  <section>
-    <h2 class="set-page-title">{{ t('modelsTitle') }}</h2>
-    <p class="set-hint">
-      {{ t('modelsHint') }}
-      <template v-if="store.models.modelsPath"> · {{ store.models.modelsPath }}</template>
-    </p>
-
-    <!-- 主路径一屏（docs/12 §5，对标 Cline 设置）：provider → URL/模型 → key → 保存并测试 -->
-    <div class="set-card">
-      <h3 class="set-title">{{ t('modelsSectionConnect') }}</h3>
-      <p v-if="firstRun" class="set-hint">{{ t('mFirstRunHint') }}</p>
-
-      <div class="set-field">
-        <label class="set-label" for="m-provider">{{ t('mProvider') }}</label>
-        <select id="m-provider" class="set-select" v-model="presetModel">
-          <option v-for="preset in PROVIDER_PRESETS" :key="preset.id" :value="preset.id">
-            {{ t(preset.labelKey) }}
-          </option>
-        </select>
+  <section class="models-tab">
+    <header class="models-tab__head">
+      <div>
+        <h2 class="set-page-title">{{ t('modelsTitle') }}</h2>
+        <p class="set-hint">{{ t('modelsHint') }}</p>
       </div>
-
-      <div v-if="isCustom" class="set-field">
-        <label class="set-label" for="m-providerId">{{ t('mProviderId') }}</label>
-        <input
-          id="m-providerId"
-          type="text"
-          class="set-input"
-          v-model="store.models.providerId"
-          :placeholder="CUSTOM_PROVIDER_ID"
-          spellcheck="false"
-        />
-      </div>
-
-      <!-- 宽编辑器两列：Base URL | 模型 ID（窄视图自动落回单列） -->
-      <div class="models-row">
-        <div class="set-field">
-          <label class="set-label" for="m-baseUrl">{{ t('mBaseUrl') }}</label>
-          <input
-            id="m-baseUrl"
-            type="text"
-            class="set-input"
-            v-model="store.models.baseUrl"
-            placeholder="https://llm.example.internal/v1"
-            spellcheck="false"
-          />
-          <span class="set-desc">{{ t('mApiStyle') }}: {{ store.models.api }}</span>
-        </div>
-        <div class="set-field">
-          <label class="set-label" for="m-modelId">{{ t('mModelId') }}</label>
-          <input
-            id="m-modelId"
-            type="text"
-            class="set-input"
-            v-model="store.models.modelId"
-            placeholder="qwen3-max"
-            spellcheck="false"
-            list="m-model-suggestions"
-          />
-          <datalist id="m-model-suggestions">
-            <option v-for="id in modelSuggestions" :key="id" :value="id"></option>
-          </datalist>
-          <span class="set-desc">{{ t('mModelIdHint') }}</span>
-        </div>
-      </div>
-
-      <div class="set-field">
-        <label class="set-label" for="m-modelName">{{ t('mModelName') }}</label>
-        <input id="m-modelName" type="text" class="set-input" v-model="store.models.modelName" placeholder="Qwen3 Max" />
-      </div>
-
-      <div class="set-field">
-        <label class="set-label" for="m-apiKey">{{ t('mApiKey') }}</label>
-        <!-- password 永不回显：state 到达时该输入框总是被清空 -->
-        <input
-          id="m-apiKey"
-          type="password"
-          class="set-input"
-          v-model="store.models.apiKey"
-          autocomplete="off"
-          :placeholder="apiKeyPlaceholder"
-        />
-        <span class="set-desc">{{ t('mKeySecretNote') }}</span>
-        <span class="set-desc">{{ keyState }}</span>
-        <span v-if="keyWarn" class="set-desc set-status--warn">{{ t('mKeyMissingWarn') }}</span>
-      </div>
-
-      <div class="set-actions">
-        <button
-          type="button"
-          class="ops-btn"
-          :disabled="store.testingModel"
-          @click="store.saveAndTestModels()"
-        >
-          {{ t('mSaveTest') }}
+      <div class="models-tab__head-actions">
+        <button type="button" class="ops-btn" @click="startAddProvider">
+          <span class="codicon codicon-add" aria-hidden="true"></span>
+          {{ t('mAddProviderBtn') }}
         </button>
         <button
+          v-if="displayProviderGroups.length > 0"
           type="button"
           class="ops-btn ops-btn--secondary"
-          :disabled="store.fetchingModels || store.models.baseUrl.trim().length === 0"
-          @click="store.fetchModels()"
+          @click="testAll"
         >
-          {{ t('mFetchModels') }}
+          <span class="codicon codicon-pulse" aria-hidden="true"></span>
+          {{ t('mTestAll') }}
         </button>
-        <button type="button" class="ops-btn ops-btn--secondary" @click="store.openModelsJson()">
+        <button
+          type="button"
+          class="ops-btn ops-btn--ghost ops-btn--sm"
+          @click="store.openModelsFile"
+        >
+          <span class="codicon codicon-json" aria-hidden="true"></span>
           {{ t('mOpenModels') }}
         </button>
       </div>
-      <div
-        v-if="status"
-        class="set-status"
-        :class="status.ok ? 'set-status--ok' : 'set-status--err'"
-        role="status"
-      >
-        {{ status.text }}
-      </div>
+    </header>
+
+    <!-- 顶栏状态提示 -->
+    <div
+      v-if="status"
+      class="set-status"
+      :class="{ 'set-status--ok': status.ok, 'set-status--error': !status.ok }"
+      role="status"
+    >
+      <span
+        class="codicon"
+        :class="status.ok ? 'codicon-check' : 'codicon-error'"
+        aria-hidden="true"
+      ></span>
+      <span>{{ status.text }}</span>
     </div>
 
-    <!-- 高级折叠：思考 / 兼容 / OAuth / 角色模型（主路径不需要时不占屏） -->
-    <details class="set-card models-advanced">
-      <summary class="models-advanced__summary">
-        <span class="set-title models-advanced__title">{{ t('mAdvanced') }}</span>
-        <span class="set-desc models-advanced__hint">{{ t('mAdvancedHint') }}</span>
-      </summary>
-
-      <div class="models-advanced__group">
-        <h4 class="set-title">{{ t('modelsSectionReasoning') }}</h4>
-        <div class="set-field">
-          <label class="set-check">
-            <input type="checkbox" v-model="store.models.reasoning" />
-            <span class="set-label">{{ t('mReasoning') }}</span>
-          </label>
-        </div>
-        <div class="set-field">
-          <label class="set-label" for="m-thinkingLevel">{{ t('mThinkingLevel') }}</label>
-          <select id="m-thinkingLevel" class="set-select" v-model="store.models.thinkingLevel">
-            <option v-for="level in THINKING_LEVELS" :key="level" :value="level">{{ level }}</option>
-          </select>
-        </div>
+    <!-- 1. 按服务商分组展示的已配置模型列表（对标 Kilo Code / Cline） -->
+    <section class="models-catalog-section">
+      <div class="models-catalog-section__head">
+        <h3 class="set-section-title">{{ t('mModelListTitle') }}</h3>
+        <span class="set-hint">{{ t('mModelListHint') }}</span>
       </div>
 
-      <div class="models-advanced__group">
-        <h4 class="set-title">{{ t('modelsSectionCompat') }}</h4>
-        <div class="set-field">
-          <label class="set-label" for="m-thinkingFormat">{{ t('mThinkingFormat') }}</label>
-          <select id="m-thinkingFormat" class="set-select" v-model="store.models.thinkingFormat">
-            <option v-for="format in THINKING_FORMATS" :key="format" :value="format">
-              {{ format === 'default' ? t('mThinkingFormatDefault') : format }}
-            </option>
-          </select>
-        </div>
-        <div class="set-field">
-          <label class="set-check">
-            <input type="checkbox" v-model="store.models.supportsDeveloperRole" />
-            <span class="set-label">{{ t('mSupportsDeveloperRole') }}</span>
-          </label>
-        </div>
-        <span class="set-desc">{{ t('mCompatHint') }}</span>
+      <!-- 空状态 -->
+      <div v-if="displayProviderGroups.length === 0" class="models-empty-box ops-well">
+        <span class="codicon codicon-info" aria-hidden="true"></span>
+        <p>{{ t('mNoModelsFound') }}</p>
+        <button type="button" class="ops-btn ops-btn--sm" @click="startAddProvider">
+          <span class="codicon codicon-add" aria-hidden="true"></span>
+          {{ t('mAddProviderBtn') }}
+        </button>
       </div>
 
-      <div class="models-advanced__group">
-        <h4 class="set-title">{{ t('modelsSectionOauth') }}</h4>
-        <div class="set-field">
-          <label class="set-label" for="m-oauthProvider">{{ t('mOauthProvider') }}</label>
-          <select id="m-oauthProvider" class="set-select" v-model="store.models.oauthProvider">
-            <option v-for="id in OAUTH_PROVIDER_IDS" :key="id" :value="id">{{ id }}</option>
-            <option value="custom">{{ t('mOauthCustom') }}</option>
-          </select>
+      <!-- 服务商卡片列表（包含多模型） -->
+      <div v-else class="provider-groups-list">
+        <article
+          v-for="group in displayProviderGroups"
+          :key="group.providerId"
+          class="provider-card"
+        >
+          <!-- 服务商头部信息栏 -->
+          <header class="provider-card__head">
+            <div class="provider-card__meta">
+              <div class="provider-card__title-row">
+                <span class="codicon codicon-server-process provider-card__icon" aria-hidden="true"></span>
+                <strong class="provider-card__name">{{ group.providerId }}</strong>
+                <span class="ops-badge ops-badge--secondary ops-mono">{{ group.api }}</span>
+                <span
+                  class="ops-badge"
+                  :class="group.hasKey ? 'ops-badge--success' : 'ops-badge--muted'"
+                >
+                  {{ group.hasKey ? t('mKeySaved') : t('mKeyMissing') }}
+                </span>
+              </div>
+              <p class="provider-card__url ops-mono">{{ group.baseUrl || '(Base URL 未填写)' }}</p>
+            </div>
+
+            <!-- 服务商操作按钮 -->
+            <div class="provider-card__actions">
+              <!-- 行内删除服务商确认 -->
+              <div
+                v-if="deletingProviderId === group.providerId"
+                class="inline-confirm"
+              >
+                <span class="inline-confirm__text">{{ t('mDeleteProviderConfirm') }}</span>
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--danger ops-btn--xs"
+                  @click="executeDeleteProvider(group.providerId)"
+                >
+                  {{ t('mConfirmBtn') }}
+                </button>
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--secondary ops-btn--xs"
+                  @click="deletingProviderId = null"
+                >
+                  {{ t('mCancelBtn') }}
+                </button>
+              </div>
+              <template v-else>
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--secondary ops-btn--xs"
+                  @click="openQuickAdd(group.providerId)"
+                >
+                  <span class="codicon codicon-add" aria-hidden="true"></span>
+                  {{ t('mQuickAddModel') }}
+                </button>
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--secondary ops-btn--xs"
+                  @click="openBatchImport(group)"
+                >
+                  <span class="codicon codicon-cloud-download" aria-hidden="true"></span>
+                  {{ t('mFetchModels') }}
+                </button>
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--secondary ops-btn--xs"
+                  @click="editProvider(group)"
+                >
+                  <span class="codicon codicon-edit" aria-hidden="true"></span>
+                  {{ t('mEditProvider') }}
+                </button>
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--ghost ops-btn--xs"
+                  @click="promptDeleteProvider(group.providerId)"
+                >
+                  <span class="codicon codicon-trash" aria-hidden="true"></span>
+                  {{ t('mDeleteProvider') }}
+                </button>
+              </template>
+            </div>
+          </header>
+
+          <!-- 快速添加模型抽屉 -->
+          <div v-if="quickAddingProviderId === group.providerId" class="quick-add-drawer">
+            <div class="quick-add-drawer__title">
+              <span class="codicon codicon-add" aria-hidden="true"></span>
+              <strong>{{ t('mQuickAddModel') }} ({{ group.providerId }})</strong>
+            </div>
+            <div class="quick-add-drawer__fields">
+              <input
+                v-model="quickModelId"
+                type="text"
+                class="ops-input ops-input--sm ops-mono"
+                placeholder="模型 ID (如 deepseek-chat, gpt-4o)"
+                @keydown.enter.prevent="submitQuickAdd(group)"
+              />
+              <input
+                v-model="quickModelName"
+                type="text"
+                class="ops-input ops-input--sm"
+                placeholder="显示名 (可选)"
+                @keydown.enter.prevent="submitQuickAdd(group)"
+              />
+              <label class="ops-checkbox-label">
+                <input v-model="quickModelReasoning" type="checkbox" />
+                <span>{{ t('mReasoning') }}</span>
+              </label>
+              <button
+                type="button"
+                class="ops-btn ops-btn--primary ops-btn--xs"
+                :disabled="!quickModelId.trim()"
+                @click="submitQuickAdd(group)"
+              >
+                {{ t('mConfirmBtn') }}
+              </button>
+              <button
+                type="button"
+                class="ops-btn ops-btn--secondary ops-btn--xs"
+                @click="closeQuickAdd"
+              >
+                {{ t('mCancelBtn') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 批量拉取模型抽屉 -->
+          <div v-if="batchImportProviderId === group.providerId" class="batch-import-drawer">
+            <div class="batch-import-drawer__head">
+              <strong>
+                <span class="codicon codicon-cloud-download" aria-hidden="true"></span>
+                {{ t('mFetchModels') }} ({{ group.providerId }})
+              </strong>
+              <div class="batch-import-drawer__actions">
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--secondary ops-btn--xs"
+                  @click="selectAllBatchModels"
+                >
+                  全选 ({{ store.modelSuggestions.length }})
+                </button>
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--primary ops-btn--xs"
+                  :disabled="selectedBatchModels.length === 0"
+                  @click="submitBatchImport(group)"
+                >
+                  {{ t('mAddSelectedFetched') }} ({{ selectedBatchModels.length }})
+                </button>
+                <button
+                  type="button"
+                  class="ops-btn ops-btn--ghost ops-btn--xs"
+                  @click="closeBatchImport"
+                >
+                  {{ t('mCancelBtn') }}
+                </button>
+              </div>
+            </div>
+            <div v-if="store.fetchingModels" class="batch-import-drawer__loading ops-muted">
+              <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
+              {{ t('mFetching') }}
+            </div>
+            <div v-else-if="store.modelSuggestions.length === 0" class="batch-import-drawer__empty ops-muted">
+              未拉取到模型列表，请确认 Base URL 与 API Key 是否正确。
+            </div>
+            <div v-else class="batch-import-drawer__list">
+              <label
+                v-for="suggested in store.modelSuggestions"
+                :key="suggested"
+                class="batch-import-drawer__item"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedBatchModels.includes(suggested)"
+                  @change="toggleSelectBatchModel(suggested)"
+                />
+                <span class="ops-mono">{{ suggested }}</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 服务商下的模型列表 -->
+          <div class="provider-models-table">
+            <div
+              v-for="model in group.models"
+              :key="model.id"
+              class="model-row"
+              :class="{ 'model-row--default': model.isDefault }"
+            >
+              <div class="model-row__main">
+                <div class="model-row__id-row">
+                  <span class="model-row__id ops-mono">{{ model.id }}</span>
+                  <span v-if="model.name && model.name !== model.id" class="model-row__name ops-muted">
+                    ({{ model.name }})
+                  </span>
+                  <span v-if="model.isDefault" class="ops-badge ops-badge--success">
+                    <span class="codicon codicon-check" aria-hidden="true"></span>
+                    {{ t('mDefaultBadge') }}
+                  </span>
+                  <span v-if="model.reasoning" class="ops-badge ops-badge--info">
+                    <span class="codicon codicon-sparkle" aria-hidden="true"></span>
+                    {{ t('mReasoning') }}
+                  </span>
+                </div>
+
+                <!-- 连通性测试结果徽标 -->
+                <div v-if="model.testStatus && model.testStatus !== 'idle'" class="model-row__test-status">
+                  <span v-if="model.testStatus === 'testing'" class="ops-badge ops-badge--secondary ops-mono">
+                    <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
+                    {{ t('mTestingSingle') }}
+                  </span>
+                  <span v-else-if="model.testStatus === 'ok'" class="ops-badge ops-badge--success ops-mono">
+                    <span class="codicon codicon-pass" aria-hidden="true"></span>
+                    {{ t('mTestOk') }} {{ model.latencyMs != null ? `(${Math.round(model.latencyMs)}ms)` : '' }}
+                  </span>
+                  <span v-else-if="model.testStatus === 'error'" class="ops-badge ops-badge--danger ops-mono" :title="model.testError">
+                    <span class="codicon codicon-error" aria-hidden="true"></span>
+                    {{ t('mTestFail') }}{{ model.testError || '' }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- 模型单行操作 -->
+              <div class="model-row__actions">
+                <!-- 行内删除模型确认 -->
+                <div
+                  v-if="deletingKey === `${group.providerId}::${model.id}`"
+                  class="inline-confirm"
+                >
+                  <span class="inline-confirm__text">{{ tf('mDeleteConfirmPrompt', { model: model.id }) }}?</span>
+                  <button
+                    type="button"
+                    class="ops-btn ops-btn--danger ops-btn--xs"
+                    @click="executeDeleteModel(group.providerId, model.id)"
+                  >
+                    {{ t('mConfirmBtn') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="ops-btn ops-btn--secondary ops-btn--xs"
+                    @click="deletingKey = null"
+                  >
+                    {{ t('mCancelBtn') }}
+                  </button>
+                </div>
+                <template v-else>
+                  <button
+                    type="button"
+                    class="ops-btn ops-btn--secondary ops-btn--xs"
+                    :disabled="model.testStatus === 'testing'"
+                    @click="testSingle(group, model)"
+                  >
+                    <span class="codicon codicon-pulse" aria-hidden="true"></span>
+                    {{ t('mTestSingle') }}
+                  </button>
+                  <button
+                    v-if="!model.isDefault"
+                    type="button"
+                    class="ops-btn ops-btn--secondary ops-btn--xs"
+                    @click="store.setDefaultModel(group.providerId, model.id)"
+                  >
+                    {{ t('mSetDefault') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="ops-btn ops-btn--ghost ops-btn--xs"
+                    @click="editModel(group, model)"
+                  >
+                    <span class="codicon codicon-edit" aria-hidden="true"></span>
+                    {{ t('mEditModel') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="ops-btn ops-btn--ghost ops-btn--xs"
+                    @click="promptDeleteModel(group.providerId, model.id)"
+                  >
+                    <span class="codicon codicon-trash" aria-hidden="true"></span>
+                    {{ t('mDeleteModel') }}
+                  </button>
+                </template>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 2. 编辑 / 添加服务商与模型表单（折叠/卡片） -->
+    <section ref="formCardRef" class="set-card model-form-card" :class="{ 'model-form-card--open': isEditing }">
+      <header class="model-form-card__head" @click="isEditing = !isEditing">
+        <div class="model-form-card__title">
+          <span class="codicon" :class="isEditing ? 'codicon-chevron-down' : 'codicon-chevron-right'" aria-hidden="true"></span>
+          <span class="codicon codicon-tools" aria-hidden="true"></span>
+          <strong>{{ store.editingModelId ? t('mEditModel') : t('mAddProviderBtn') }}</strong>
         </div>
-        <div v-if="store.models.oauthProvider === 'custom'" class="set-field">
-          <input
-            type="text"
-            class="set-input"
-            v-model="store.models.oauthProviderCustom"
-            :placeholder="t('mOauthCustomPh')"
-            :aria-label="t('mOauthProvider')"
-            spellcheck="false"
-          />
+        <button v-if="isEditing" type="button" class="ops-btn ops-btn--ghost ops-btn--xs" @click.stop="cancelEdit">
+          {{ t('mCancelEdit') }}
+        </button>
+      </header>
+
+      <div v-if="isEditing" class="model-form-card__body">
+        <!-- 预设选择器 -->
+        <div class="set-row">
+          <label class="set-label" for="models-preset">{{ t('mProvider') }}</label>
+          <div class="set-ctrl">
+            <select id="models-preset" v-model="presetModel" class="ops-select">
+              <option
+                v-for="preset in PROVIDER_PRESETS"
+                :key="preset.id"
+                :value="preset.id"
+              >
+                {{ t(preset.labelKey) }}
+              </option>
+            </select>
+          </div>
         </div>
-        <div class="set-actions">
+
+        <div v-if="isCustom" class="set-row">
+          <label class="set-label" for="models-provider-id">{{ t('mProviderId') }}</label>
+          <div class="set-ctrl">
+            <input
+              id="models-provider-id"
+              v-model="store.models.providerId"
+              type="text"
+              class="ops-input ops-mono"
+              placeholder="openai-compatible"
+            />
+          </div>
+        </div>
+
+        <div class="set-row">
+          <label class="set-label" for="models-base-url">{{ t('mBaseUrl') }}</label>
+          <div class="set-ctrl">
+            <input
+              id="models-base-url"
+              v-model="store.models.baseUrl"
+              type="text"
+              class="ops-input ops-mono"
+              placeholder="https://..."
+            />
+          </div>
+        </div>
+
+        <div class="set-row">
+          <label class="set-label" for="models-api-key">{{ t('mApiKey') }}</label>
+          <div class="set-ctrl">
+            <input
+              id="models-api-key"
+              v-model="store.models.apiKey"
+              type="password"
+              class="ops-input ops-mono"
+              autocomplete="off"
+              :placeholder="apiKeyPlaceholder"
+            />
+            <span class="set-ctrl__hint">{{ keyState }}</span>
+            <span class="set-ctrl__hint ops-muted">{{ t('mKeySecretNote') }}</span>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <label class="set-label" for="models-model-id">{{ t('mModelId') }}</label>
+          <div class="set-ctrl">
+            <div class="models-input-row">
+              <input
+                id="models-model-id"
+                v-model="store.models.modelId"
+                type="text"
+                list="models-suggestions"
+                class="ops-input ops-mono"
+                placeholder="例如 deepseek-chat, qwen-plus"
+              />
+              <datalist id="models-suggestions">
+                <option v-for="id in modelSuggestions" :key="id" :value="id" />
+              </datalist>
+              <button
+                type="button"
+                class="ops-btn ops-btn--secondary"
+                :disabled="store.fetchingModels || !store.models.baseUrl"
+                @click="store.fetchModelsList"
+              >
+                <span
+                  class="codicon"
+                  :class="store.fetchingModels ? 'codicon-loading codicon-modifier-spin' : 'codicon-cloud-download'"
+                  aria-hidden="true"
+                ></span>
+                {{ store.fetchingModels ? t('mFetching') : t('mFetchModels') }}
+              </button>
+            </div>
+            <span class="set-ctrl__hint ops-muted">{{ t('mModelIdHint') }}</span>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <label class="set-label" for="models-model-name">{{ t('mModelName') }}</label>
+          <div class="set-ctrl">
+            <input
+              id="models-model-name"
+              v-model="store.models.modelName"
+              type="text"
+              class="ops-input"
+              placeholder="显示名称 (可选)"
+            />
+          </div>
+        </div>
+
+        <div class="set-row">
+          <span class="set-label">{{ t('modelsSectionReasoning') }}</span>
+          <div class="set-ctrl">
+            <label class="ops-checkbox-label">
+              <input v-model="store.models.reasoning" type="checkbox" />
+              <span>{{ t('mReasoning') }}</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 缺 key 警告提示 -->
+        <div v-if="keyWarn" class="set-alert set-alert--warn" role="alert">
+          <span class="codicon codicon-warning" aria-hidden="true"></span>
+          <span>{{ t('mKeyMissingWarn') }}</span>
+        </div>
+
+        <div class="model-form-card__foot">
           <button
             type="button"
-            class="ops-btn"
-            :disabled="store.oauthBusy || oauthProviderResolved.length === 0"
-            @click="store.oauthLogin()"
+            class="ops-btn ops-btn--primary"
+            :disabled="store.testingModel || !store.models.baseUrl"
+            @click="saveAndFinish"
           >
-            {{ t('mOauthLogin') }}
+            <span
+              class="codicon"
+              :class="store.testingModel ? 'codicon-loading codicon-modifier-spin' : 'codicon-save'"
+              aria-hidden="true"
+            ></span>
+            {{ store.testingModel ? t('mTesting') : t('mSaveTest') }}
           </button>
-          <button type="button" class="ops-btn ops-btn--secondary" @click="store.openAuthJson()">
-            {{ t('mOpenAuth') }}
+          <button type="button" class="ops-btn ops-btn--secondary" @click="cancelEdit">
+            {{ t('mCancelEdit') }}
           </button>
-        </div>
-        <p class="set-note">
-          {{ oauthNote }}
-          <template v-if="store.models.authPath">{{ t('mAuthPathLabel') }}{{ store.models.authPath }}</template>
-        </p>
-        <div
-          v-if="oauthStatus"
-          class="set-status"
-          :class="oauthStatus.ok ? 'set-status--ok' : 'set-status--err'"
-          role="status"
-        >
-          {{ oauthStatus.text }}
         </div>
       </div>
+    </section>
 
-      <div class="models-advanced__group">
-        <h4 class="set-title">{{ t('mRolesTitle') }}</h4>
+    <!-- 3. 按角色分配模型矩阵 -->
+    <section class="set-card">
+      <header class="set-card__head">
+        <h3 class="set-section-title">{{ t('mRolesTitle') }}</h3>
         <p class="set-hint">{{ t('mRolesHint') }}</p>
-        <div v-for="role in ROLE_MODEL_ROLES" :key="role" class="set-field role-row">
-          <span class="set-label role-row__label">{{ t(ROLE_LABEL_KEYS[role]) }}</span>
-          <div class="role-row__inputs">
+      </header>
+      <div class="set-card__body">
+        <div v-for="role in ROLE_MODEL_ROLES" :key="role" class="set-row">
+          <label class="set-label" :for="`role-${role}-model`">{{ t(ROLE_LABEL_KEYS[role]) }}</label>
+          <div class="set-ctrl set-ctrl--row">
             <input
-              type="text"
-              class="set-input"
+              :id="`role-${role}-provider`"
               v-model="store.models.roleModels[role].provider"
+              type="text"
+              class="ops-input ops-mono"
               :placeholder="t('mRoleProviderPh')"
-              :aria-label="`${t(ROLE_LABEL_KEYS[role])} provider`"
-              spellcheck="false"
             />
             <input
-              type="text"
-              class="set-input"
+              :id="`role-${role}-model`"
               v-model="store.models.roleModels[role].model"
+              type="text"
+              class="ops-input ops-mono"
               :placeholder="t('mRoleModelPh')"
-              :aria-label="`${t(ROLE_LABEL_KEYS[role])} model`"
-              spellcheck="false"
-              list="m-model-suggestions"
             />
           </div>
         </div>
       </div>
-    </details>
+    </section>
+
+    <!-- 4. OAuth 登录支持 -->
+    <section class="set-card">
+      <header class="set-card__head">
+        <h3 class="set-section-title">{{ t('modelsSectionOauth') }}</h3>
+        <p class="set-hint">{{ oauthNote }}</p>
+      </header>
+      <div class="set-card__body">
+        <div class="set-row">
+          <label class="set-label" for="oauth-provider-select">{{ t('mOauthProvider') }}</label>
+          <div class="set-ctrl set-ctrl--row">
+            <select id="oauth-provider-select" v-model="store.models.oauthProvider" class="ops-select">
+              <option v-for="id in OAUTH_PROVIDER_IDS" :key="id" :value="id">
+                {{ id }}
+              </option>
+              <option value="custom">{{ t('mOauthCustom') }}</option>
+            </select>
+            <input
+              v-if="store.models.oauthProvider === 'custom'"
+              v-model="store.models.oauthProviderCustom"
+              type="text"
+              class="ops-input ops-mono"
+              :placeholder="t('mOauthCustomPh')"
+            />
+            <button
+              type="button"
+              class="ops-btn ops-btn--secondary"
+              :disabled="store.oauthBusy || !oauthProviderResolved"
+              @click="store.loginOauth"
+            >
+              <span
+                class="codicon"
+                :class="store.oauthBusy ? 'codicon-loading codicon-modifier-spin' : 'codicon-sign-in'"
+                aria-hidden="true"
+              ></span>
+              {{ store.oauthBusy ? t('mOauthPending') : t('mOauthLogin') }}
+            </button>
+          </div>
+        </div>
+        <div
+          v-if="oauthStatus"
+          class="set-status"
+          :class="{ 'set-status--ok': oauthStatus.ok, 'set-status--error': !oauthStatus.ok }"
+          role="status"
+        >
+          <span>{{ oauthStatus.text }}</span>
+        </div>
+      </div>
+    </section>
   </section>
 </template>
 
 <style scoped>
-/* 宽编辑器两列（Cline 式紧凑表单）：列宽不足 240px 时自动落回单列 */
-.models-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  column-gap: 12px;
-}
-
-.models-row .set-field {
-  min-width: 0;
-}
-
-/* 高级折叠：复用 set-card 边框，summary 做成卡片头（自绘 chevron，隐藏原生 marker）。
-   卡片自身去 padding，由 summary / 分组各自持有，保证展开态内边距一致。 */
-.models-advanced {
-  padding: 0;
-}
-
-.models-advanced__summary {
+.models-tab {
   display: flex;
+  flex-direction: column;
+  gap: var(--ops-space-4);
+}
+
+.models-tab__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--ops-space-3);
+  flex-wrap: wrap;
+}
+
+.models-tab__head-actions {
+  display: flex;
+  gap: var(--ops-space-2);
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-radius: 6px;
-  cursor: pointer;
-  user-select: none;
-  list-style: none; /* 隐藏原生 disclosure 三角（含 Firefox ::marker） */
 }
 
-.models-advanced__summary::-webkit-details-marker {
-  display: none;
+.models-catalog-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ops-space-3);
 }
 
-/* 自绘 chevron：右指 → 展开后下指，跟随 muted 色 */
-.models-advanced__summary::before {
-  content: '';
-  flex: 0 0 auto;
-  width: 5px;
-  height: 5px;
-  border-right: 1.5px solid var(--ops-muted);
-  border-bottom: 1.5px solid var(--ops-muted);
-  transform: rotate(-45deg);
-  transition: transform 120ms ease;
+.models-catalog-section__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-details[open] > .models-advanced__summary::before {
-  transform: rotate(45deg);
+.models-empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--ops-space-6);
+  gap: var(--ops-space-3);
+  text-align: center;
+  border-radius: var(--ops-radius);
+  border: 1px dashed var(--ops-border);
 }
 
-.models-advanced__summary:hover {
-  background: var(--ops-hover-bg);
+.provider-groups-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ops-space-3);
 }
 
-.models-advanced__summary:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder, var(--ops-accent));
-  outline-offset: -1px;
-}
-
-/* 展开态：头部只圆上角，与内容之间画分隔线 */
-details[open] > .models-advanced__summary {
-  border-radius: 6px 6px 0 0;
-  border-bottom: 1px solid var(--vscode-widget-border, var(--ops-border));
-}
-
-.models-advanced__title {
-  flex: 0 0 auto;
-  margin: 0;
-}
-
-.models-advanced__hint {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin: 0;
-  white-space: nowrap;
+.provider-card {
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  background: var(--ops-bg-card, var(--ops-bg));
   overflow: hidden;
-  text-overflow: ellipsis;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
-.models-advanced__group {
-  padding: 12px 14px;
+.provider-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--ops-space-3) var(--ops-space-4);
+  background: color-mix(in srgb, var(--ops-bg) 92%, var(--ops-fg) 8%);
+  border-bottom: 1px solid var(--ops-border);
+  gap: var(--ops-space-3);
+  flex-wrap: wrap;
 }
 
-.models-advanced__group + .models-advanced__group {
-  border-top: 1px solid var(--vscode-widget-border, var(--ops-border));
-}
-
-/* 组内末元素不再叠加自身下边距，分组上下留白一致 */
-.models-advanced__group > :last-child {
-  margin-bottom: 0;
-}
-
-.role-row {
+.provider-card__meta {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.role-row__label {
-  margin: 0;
-}
-
-/* provider + 模型 同行；容器不够宽时 flex-wrap 换行（各占整行） */
-.role-row__inputs {
+.provider-card__title-row {
   display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+}
+
+.provider-card__icon {
+  color: var(--ops-primary, #388bfd);
+}
+
+.provider-card__name {
+  font-size: 14px;
+}
+
+.provider-card__url {
+  font-size: 11px;
+  color: var(--ops-muted);
+}
+
+.provider-card__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
   flex-wrap: wrap;
-  gap: 8px;
 }
 
-.role-row__inputs .set-input {
-  min-width: 0;
+.provider-models-table {
+  display: flex;
+  flex-direction: column;
 }
 
-.role-row__inputs .set-input:first-child {
-  flex: 1 1 150px;
+.model-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--ops-space-2) var(--ops-space-4);
+  border-bottom: 1px solid color-mix(in srgb, var(--ops-border) 60%, transparent 40%);
+  gap: var(--ops-space-3);
 }
 
-.role-row__inputs .set-input:last-child {
-  flex: 2 1 220px;
+.model-row:last-child {
+  border-bottom: none;
+}
+
+.model-row--default {
+  background: color-mix(in srgb, var(--ops-success, #2ea043) 6%, transparent 94%);
+}
+
+.model-row__main {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-3);
+  flex-wrap: wrap;
+}
+
+.model-row__id-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+}
+
+.model-row__id {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.model-row__name {
+  font-size: 12px;
+}
+
+.model-row__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+}
+
+.inline-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--ops-danger, #f85149) 12%, transparent 88%);
+  border: 1px solid var(--ops-danger, #f85149);
+  border-radius: var(--ops-radius);
+}
+
+.inline-confirm__text {
+  font-size: 11px;
+  color: var(--ops-danger, #f85149);
+  font-weight: 500;
+}
+
+.quick-add-drawer,
+.batch-import-drawer {
+  padding: var(--ops-space-3) var(--ops-space-4);
+  background: color-mix(in srgb, var(--ops-bg) 95%, var(--ops-primary, #388bfd) 5%);
+  border-bottom: 1px solid var(--ops-border);
+}
+
+.quick-add-drawer__title {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  margin-bottom: var(--ops-space-2);
+  font-size: 12px;
+}
+
+.quick-add-drawer__fields {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  flex-wrap: wrap;
+}
+
+.batch-import-drawer__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--ops-space-2);
+}
+
+.batch-import-drawer__actions {
+  display: flex;
+  gap: var(--ops-space-2);
+}
+
+.batch-import-drawer__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--ops-space-2);
+  max-height: 180px;
+  overflow-y: auto;
+  padding: var(--ops-space-2) 0;
+}
+
+.batch-import-drawer__item {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.model-form-card {
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  background: var(--ops-bg-card, var(--ops-bg));
+  overflow: hidden;
+}
+
+.model-form-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--ops-space-3) var(--ops-space-4);
+  cursor: pointer;
+  user-select: none;
+}
+
+.model-form-card__title {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+}
+
+.model-form-card__body {
+  padding: var(--ops-space-3) var(--ops-space-4);
+  border-top: 1px solid var(--ops-border);
+}
+
+.model-form-card__foot {
+  display: flex;
+  gap: var(--ops-space-2);
+  margin-top: var(--ops-space-4);
+}
+
+.models-input-row {
+  display: flex;
+  gap: var(--ops-space-2);
+}
+
+.models-input-row .ops-input {
+  flex: 1;
 }
 </style>

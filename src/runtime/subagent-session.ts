@@ -30,13 +30,13 @@ import {
 import {
   executeBusinessTool,
   toPiTool,
-  truncatePreview,
   type PiModule
 } from './tool-gate';
 import type {
   CreateOpsRuntimeOptions,
   DispatchSubagentResult,
   OpsRuntimeHandlers,
+  SubagentStepItem,
   ToolCallOrigin
 } from './types';
 
@@ -238,24 +238,70 @@ export async function runSubagentSession(
     settingsManager
   });
 
+  const startTime = Date.now();
   let lastAssistantText = '';
   let currentText = '';
   let toolCalls = 0;
   let budgetExceeded = false;
   const maxToolCalls = spec.toolPolicy.budget.maxToolCalls;
+  const maxWallMs = spec.toolPolicy.budget.maxWallMs;
+
+  const steps: SubagentStepItem[] = [
+    {
+      id: `step-${spec.taskId}-0`,
+      title: `初始化任务: ${spec.goal}`,
+      type: 'output',
+      status: 'ok',
+      durationMs: 0
+    }
+  ];
+  const logs: string[] = [`[${new Date().toLocaleTimeString()}] 子代理就绪 (${spec.role}): ${spec.goal}`];
+
+  const emitProgress = (activity?: string) => {
+    handlers.onSubagentEvent?.({
+      taskId: spec.taskId,
+      role: spec.role,
+      status: 'running',
+      goal: spec.goal,
+      currentActivity: activity ?? `正在执行 (${toolCalls}/${maxToolCalls})`,
+      steps: [...steps],
+      logs: [...logs],
+      toolCalls: { used: toolCalls, max: maxToolCalls },
+      wallMs: { used: Date.now() - startTime, max: maxWallMs }
+    });
+  };
+
+  emitProgress('正在启动分析…');
+
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
     switch (event.type) {
       case 'message_start':
-        if ((event.message as { role?: string }).role === 'assistant') currentText = '';
+        if ((event.message as { role?: string }).role === 'assistant') {
+          currentText = '';
+        }
         break;
       case 'message_update':
         if (event.assistantMessageEvent.type === 'text_delta') {
           currentText += event.assistantMessageEvent.delta;
-          if (currentText.trim().length > 0) lastAssistantText = currentText;
+          if (currentText.trim().length > 0) {
+            lastAssistantText = currentText;
+          }
+        } else if (event.assistantMessageEvent.type === 'thinking_delta') {
+          emitProgress('正在深度思考推导…');
         }
         break;
-      case 'tool_execution_start':
+      case 'tool_execution_start': {
         toolCalls += 1;
+        const toolEv = event as { toolName?: string; toolCall?: { name?: string } };
+        const toolName = toolEv.toolName ?? toolEv.toolCall?.name ?? 'tool';
+        steps.push({
+          id: `step-${spec.taskId}-${steps.length}`,
+          title: `调用工具: ${toolName}`,
+          type: 'tool',
+          status: 'running'
+        });
+        logs.push(`[${new Date().toLocaleTimeString()}] 调用工具: ${toolName}`);
+        emitProgress(`正在执行工具: ${toolName}`);
         if (toolCalls > maxToolCalls && !budgetExceeded) {
           budgetExceeded = true;
           void session.abort().catch(() => {
@@ -263,6 +309,18 @@ export async function runSubagentSession(
           });
         }
         break;
+      }
+      case 'tool_execution_end': {
+        const toolEv = event as { toolName?: string; isError?: boolean; ok?: boolean };
+        const toolName = toolEv.toolName ?? 'tool';
+        const runningStep = [...steps].reverse().find((s) => s.status === 'running' && s.type === 'tool');
+        if (runningStep) {
+          runningStep.status = toolEv.isError || toolEv.ok === false ? 'error' : 'ok';
+        }
+        logs.push(`[${new Date().toLocaleTimeString()}] 工具 ${toolName} 执行完成`);
+        emitProgress(`工具 ${toolName} 执行完成`);
+        break;
+      }
       default:
         break;
     }
@@ -278,6 +336,15 @@ export async function runSubagentSession(
 
   try {
     await session.prompt(`开始执行任务 ${spec.taskId}：${spec.goal}`);
+    steps.push({
+      id: `step-${spec.taskId}-${steps.length}`,
+      title: '整理分析结果与最终结论',
+      type: 'output',
+      status: 'ok',
+      durationMs: Date.now() - startTime
+    });
+    logs.push(`[${new Date().toLocaleTimeString()}] 任务执行完毕，生成结论`);
+    emitProgress('已完成分析与结果归纳');
     return {
       finalText: lastAssistantText,
       ...(budgetExceeded
@@ -343,24 +410,13 @@ export function createMainSubagentLayer(input: {
       ...(meta !== undefined ? { goal: meta.goal, visibleTools: [...meta.visibleTools] } : {}),
       ...(e.summary !== undefined ? { summary: e.summary } : {}),
       ...(e.error !== undefined ? { error: e.error } : {}),
-      ...(e.evidenceNote !== undefined ? { evidenceNote: e.evidenceNote } : {})
+      ...(e.evidenceNote !== undefined ? { evidenceNote: e.evidenceNote } : {}),
+      ...(e.steps !== undefined ? { steps: e.steps } : {}),
+      ...(e.logs !== undefined ? { logs: e.logs } : {}),
+      ...(e.currentActivity !== undefined ? { currentActivity: e.currentActivity } : {}),
+      ...(e.toolCalls !== undefined ? { toolCalls: e.toolCalls } : {}),
+      ...(e.wallMs !== undefined ? { wallMs: e.wallMs } : {})
     });
-    // 复用 host 已理解的 tool_start/tool_end 事件呈现子代理生命周期
-    //（host API dispatchSubagent 派发的任务没有对应的模型侧工具调用卡片）。
-    const eventId = `subagent:${e.taskId}`;
-    const eventName = `subagent_${e.role}`;
-    if (e.status === 'running') {
-      handlers.onEvent?.({ type: 'tool_start', id: eventId, name: eventName });
-    } else if (e.status !== 'queued') {
-      handlers.onEvent?.({
-        type: 'tool_end',
-        id: eventId,
-        name: eventName,
-        ok: e.status === 'ok' || e.status === 'degraded',
-        ...(e.summary !== undefined ? { preview: truncatePreview(e.summary) } : {}),
-        ...(e.error !== undefined ? { error: e.error } : {})
-      });
-    }
   };
 
   const rawSubagents: SubagentManager = createSubagentManager({

@@ -60,8 +60,32 @@ const zhCN = {
   cfgShowThinkingDesc: '在对话中显示折叠的思考时长（思考正文始终不展开）。值班默认开启。结论/Focus 模式会隐藏思考项。',
   cfgListPlaceholder: '用逗号分隔，例如 db_query, log_search',
 
-  modelsTitle: '模型',
-  modelsHint: '配置写入 models.json；API key 只存 VS Code SecretStorage，文件中保留占位符、绝不回显。',
+  modelsTitle: '模型管理中心',
+  modelsHint: '统一管理所有已配置的大模型与服务商。API key 仅安全保存在 VS Code SecretStorage 中，不会泄露。',
+  mModelListTitle: '已配置模型',
+  mModelListHint: '查看、编辑、删除或切换默认大语言模型。',
+  mAddModel: '添加模型',
+  mEditModel: '编辑模型',
+  mDeleteConfirm: '确定要删除该模型吗？',
+  mDeleteConfirmPrompt: '确定删除模型',
+  mDeleteProviderConfirm: '确定删除该服务商及其所有模型？',
+  mConfirmBtn: '确定删除',
+  mCancelBtn: '取消',
+  mAddBatchFetched: '批量添加拉取的模型',
+  mAddSelectedFetched: '添加为新模型',
+  mProviderModels: '个模型',
+  mAddProviderBtn: '添加服务商 / 模型',
+  mEditProvider: '编辑服务商',
+  mDeleteProvider: '删除服务商',
+  mQuickAddModel: '+ 添加模型',
+  mSetDefault: '设为默认',
+  mDefaultBadge: '默认模型',
+  mTestSingle: '测试连接',
+  mTestingSingle: '测试中…',
+  mNoModelsFound: '暂无已配置的模型。点击上方「添加模型」按钮开始添加。',
+  mTestAll: '测试全部',
+  mActiveBadge: '当前激活',
+  mCancelEdit: '取消',
   modelsSectionConnect: '连接模型',
   modelsSectionReasoning: '深度思考',
   modelsSectionCompat: '兼容性',
@@ -221,9 +245,33 @@ const en: Record<SettingsMessageKey, string> = {
     'Show a collapsed thinking-duration indicator in chat (chain-of-thought body stays hidden). On by default for duty. Conclusion/Focus mode hides thinking items.',
   cfgListPlaceholder: 'Comma-separated, e.g. db_query, log_search',
 
-  modelsTitle: 'Models',
+  modelsTitle: 'Models Management Center',
   modelsHint:
-    'Written to models.json; the API key lives only in VS Code SecretStorage — the file keeps a placeholder and the key is never echoed back.',
+    'Manage all LLM providers and models. API keys are safely stored in VS Code SecretStorage and never leaked.',
+  mModelListTitle: 'Configured Models',
+  mModelListHint: 'View, edit, delete, or switch the default model.',
+  mAddModel: 'Add Model',
+  mEditModel: 'Edit Model',
+  mDeleteConfirm: 'Are you sure you want to delete this model?',
+  mDeleteConfirmPrompt: 'Delete model',
+  mDeleteProviderConfirm: 'Delete provider and all its models?',
+  mConfirmBtn: 'Delete',
+  mCancelBtn: 'Cancel',
+  mAddBatchFetched: 'Import all fetched models',
+  mAddSelectedFetched: 'Add to provider',
+  mProviderModels: 'models',
+  mAddProviderBtn: 'Add Provider / Model',
+  mEditProvider: 'Edit Provider',
+  mDeleteProvider: 'Delete Provider',
+  mQuickAddModel: '+ Add Model',
+  mSetDefault: 'Set as Default',
+  mDefaultBadge: 'Default',
+  mTestSingle: 'Test Connection',
+  mTestingSingle: 'Testing…',
+  mNoModelsFound: 'No configured models yet. Click "Add Model" above to get started.',
+  mTestAll: 'Test All',
+  mActiveBadge: 'Active',
+  mCancelEdit: 'Cancel',
   modelsSectionConnect: 'Connect model',
   modelsSectionReasoning: 'Reasoning',
   modelsSectionCompat: 'Compatibility',
@@ -371,4 +419,13 @@ export function setLocale(raw: unknown): void {
 /** 响应式取词：computed / 模板渲染中调用即可跟随 locale 切换。 */
 export function t(key: SettingsMessageKey): string {
   return MESSAGES[current.value][key] ?? zhCN[key];
+}
+
+/** 带变量替换的取词。 */
+export function tf(key: SettingsMessageKey, vars: Record<string, string | number>): string {
+  let text = t(key);
+  for (const [name, val] of Object.entries(vars)) {
+    text = text.replace(new RegExp(`\\{${name}\\}`, 'g'), String(val));
+  }
+  return text;
 }

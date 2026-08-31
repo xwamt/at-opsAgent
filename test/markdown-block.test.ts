@@ -49,5 +49,22 @@ describe('MarkdownBlock.vue 约束', () => {
     expect(lib).toContain("highlight.js/lib/languages/bash");
     expect(lib).toContain("highlight.js/lib/languages/yaml");
     expect(lib).toContain("highlight.js/lib/languages/python");
+    expect(lib).toContain("highlight.js/lib/languages/sql");
+    expect(lib).toContain("highlight.js/lib/languages/diff");
+    expect(lib).toContain("highlight.js/lib/languages/dockerfile");
+    expect(lib).toContain("highlight.js/lib/languages/ini");
+    expect(lib).toContain("highlight.js/lib/languages/nginx");
+  });
+
+  it('支持 SQL / Diff / Shell 别名的高亮渲染', () => {
+    const sqlHtml = renderMarkdown('```sql\nSELECT * FROM users;\n```', false);
+    expect(sqlHtml).toContain('hljs-keyword');
+    expect(sqlHtml).toContain('SELECT');
+
+    const diffHtml = renderMarkdown('```diff\n- old\n+ new\n```', false);
+    expect(diffHtml).toContain('hljs-addition');
+
+    const shHtml = renderMarkdown('```sh\necho 1\n```', false);
+    expect(shHtml).toContain('hljs-built_in');
   });
 });

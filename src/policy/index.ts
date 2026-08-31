@@ -261,9 +261,14 @@ const READ_ONLY_LEADING_COMMANDS = new Set([
   'uname',
   'uptime',
   'df',
+  'du',
   'free',
   'nproc',
   'ps',
+  'pstree',
+  'pgrep',
+  'pidof',
+  'lsof',
   'cat',
   'head',
   'tail',
@@ -282,9 +287,17 @@ const READ_ONLY_LEADING_COMMANDS = new Set([
   'findmnt',
   'vmstat',
   'iostat',
+  'mpstat',
+  'sar',
+  'pidstat',
+  'numastat',
+  'turbostat',
+  'ipcs',
   'netstat',
   'ss',
   'dmesg',
+  'env',
+  'printenv',
   // 管道滤镜（重定向 / $() / 反引号已被 SHELL_DANGER_RE 整体排除）
   'awk',
   'grep',
@@ -293,7 +306,11 @@ const READ_ONLY_LEADING_COMMANDS = new Set([
   'cut',
   'uniq',
   'tr',
-  'column'
+  'column',
+  'zcat',
+  'zgrep',
+  'bzcat',
+  'xzcat'
 ]);
 
 /** systemctl 的只读子命令（无子命令的纯 flag 形式如 `systemctl --failed` 也算只读）。 */
@@ -397,6 +414,12 @@ function isReadOnlyCommandSegment(segment: string): boolean {
     const hasList = rest.some((t) => t === '--list' || /^-[a-z]*L/.test(t));
     return hasList && !rest.some((t) => IPTABLES_MUTATION_RE.test(t));
   }
+  if (cmd === 'find') {
+    // find 默认只读遍历与过滤；带 -delete / -exec / -execdir / -ok / -okdir / -fprint 等动作开关非只读
+    return !rest.some((t) =>
+      /^-+(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)/.test(t)
+    );
+  }
   return false;
 }
 
@@ -449,12 +472,18 @@ function firstString(...values: unknown[]): string | undefined {
  * 从工具入参尽力推导命令集哈希（无法推导时返回 undefined，
  * 完整校验由 orchestrator 的 assertApproval 负责）。
  */
-function deriveCommandSetHash(args: Record<string, unknown>): string | undefined {
+export function deriveCommandSetHash(
+  args: Record<string, unknown>,
+  toolName?: string
+): string | undefined {
   const declared = args.commandSetSha256;
   if (typeof declared === 'string' && declared.length > 0) return declared;
   if (Array.isArray(args.commands)) return hashCommandSet(args.commands);
   const single = firstString(args.command, args.sql, args.query);
   if (single !== undefined) return hashCommandSet([single]);
+  if (toolName !== undefined) {
+    return hashCommandSet({ tool: toolName, args });
+  }
   return undefined;
 }
 
@@ -549,7 +578,7 @@ export async function evaluatePolicy(ctx: PolicyContext): Promise<PolicyDecision
     if (approval.token.length === 0) {
       return block(OPS_ERROR.APPROVAL_REQUIRED, 'approvalToken 为空，需重新走审批简报');
     }
-    const derived = deriveCommandSetHash(ctx.args);
+    const derived = deriveCommandSetHash(ctx.args, ctx.toolName);
     if (derived !== undefined && derived !== approval.commandSetSha256) {
       return block(
         OPS_ERROR.APPROVAL_STALE,

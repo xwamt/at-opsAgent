@@ -87,6 +87,41 @@ export interface ModelsFormState {
   oauthNote: string;
 }
 
+export interface ConfiguredModelCard {
+  providerId: string;
+  modelId: string;
+  modelName: string;
+  baseUrl: string;
+  api: string;
+  reasoning: boolean;
+  hasKey: boolean;
+  isDefault: boolean;
+  thinkingFormat?: 'default' | ThinkingFormat;
+  supportsDeveloperRole?: boolean;
+}
+
+export interface ConfiguredProviderGroup {
+  providerId: string;
+  baseUrl: string;
+  api: string;
+  hasKey: boolean;
+  thinkingFormat?: 'default' | ThinkingFormat;
+  supportsDeveloperRole?: boolean;
+  models: Array<{
+    id: string;
+    name: string;
+    reasoning: boolean;
+    isDefault: boolean;
+  }>;
+}
+
+export interface FullModelsConfigState {
+  providers: ConfiguredProviderGroup[];
+  models: ConfiguredModelCard[];
+  currentForm: ModelsFormState;
+  defaultModel?: { provider: string; model: string };
+}
+
 export interface ModelsSavePayload {
   /** 目标 provider id；缺省 = 第一个已有 provider（旧行为兼容）。 */
   providerId?: unknown;
@@ -94,6 +129,8 @@ export interface ModelsSavePayload {
   api?: unknown;
   modelId?: unknown;
   modelName?: unknown;
+  /** 批量模型列表（Kilo 式多模型一次性保存/导入）。 */
+  models?: unknown;
   /** 新字段名；旧调用方发 thinking 也接受。 */
   reasoning?: unknown;
   thinking?: unknown;
@@ -240,8 +277,9 @@ export async function saveModelsForm(
   const thinkingLevel = normalizeThinkingLevel(payload.thinkingLevel) ?? 'medium';
   const requestedProviderId =
     typeof payload.providerId === 'string' ? payload.providerId.trim() : '';
-  if (baseUrl.length === 0 || modelId.length === 0) {
-    return { error: 'Base URL 与模型 ID 不能为空。' };
+
+  if (baseUrl.length === 0) {
+    return { error: 'Base URL 不能为空。' };
   }
   if (requestedProviderId.length > 0 && !PROVIDER_ID_RE.test(requestedProviderId)) {
     return { error: `Provider id 只允许字母数字与 . _ -（收到 "${requestedProviderId}"）。` };
@@ -264,15 +302,44 @@ export async function saveModelsForm(
     : {};
 
   const models = (Array.isArray(existing.models) ? existing.models : []).filter(isRecord);
-  const entry: Record<string, unknown> = { id: modelId, reasoning };
-  if (modelName.length > 0) entry.name = modelName;
-  const idx = models.findIndex((m) => m.id === modelId);
-  if (idx >= 0) {
-    const merged = { ...models[idx], ...entry };
-    delete merged.thinking; // 旧字段名迁移：写端只留 reasoning
-    models[idx] = merged;
-  } else {
-    models.push(entry);
+
+  // 批量模型导入 / 更新
+  if (Array.isArray(payload.models)) {
+    for (const item of payload.models) {
+      if (!isRecord(item)) continue;
+      const mId = typeof item.id === 'string' ? item.id.trim() : '';
+      if (!mId) continue;
+      const mName = typeof item.name === 'string' ? item.name.trim() : undefined;
+      const mReasoning = item.reasoning === true || item.thinking === true;
+      const entry: Record<string, unknown> = { id: mId, reasoning: mReasoning };
+      if (mName) entry.name = mName;
+      const idx = models.findIndex((m) => m.id === mId);
+      if (idx >= 0) {
+        const merged = { ...models[idx], ...entry };
+        delete merged.thinking;
+        models[idx] = merged;
+      } else {
+        models.push(entry);
+      }
+    }
+  }
+
+  // 单模型添加 / 更新
+  if (modelId.length > 0) {
+    const entry: Record<string, unknown> = { id: modelId, reasoning };
+    if (modelName.length > 0) entry.name = modelName;
+    const idx = models.findIndex((m) => m.id === modelId);
+    if (idx >= 0) {
+      const merged = { ...models[idx], ...entry };
+      delete merged.thinking; // 旧字段名迁移：写端只留 reasoning
+      models[idx] = merged;
+    } else {
+      models.push(entry);
+    }
+  }
+
+  if (models.length === 0) {
+    return { error: '请至少指定或添加一个模型 ID。' };
   }
 
   const compat = isRecord(existing.compat) ? { ...existing.compat } : {};
@@ -314,9 +381,11 @@ export async function saveModelsForm(
   } catch (err) {
     return { error: `保存失败: ${err instanceof Error ? err.message : String(err)}` };
   }
+
+  const appliedModel = modelId.length > 0 ? modelId : (models[0]?.id as string) ?? '';
   return {
-    applied: { provider: providerId, model: modelId, thinkingLevel },
-    ...(warning !== undefined ? { warning } : {})
+    ...(warning !== undefined ? { warning } : {}),
+    applied: { provider: providerId, model: appliedModel, thinkingLevel }
   };
 }
 
@@ -344,3 +413,162 @@ export async function openModelsJson(deps: {
     );
   }
 }
+
+/** 读全量 models.json 配置：所有 Provider 与 Model 清单 + 默认模型 + 当前表单 */
+export async function readFullModelsConfig(
+  deps: ModelsFileDeps,
+  preferredProviderId?: string
+): Promise<FullModelsConfigState> {
+  const currentForm = await readModelsFormState(deps, preferredProviderId);
+  const agentSettings = await readAgentSettings(deps.agentDir);
+  const rawLast = isRecord(agentSettings.lastModel) ? agentSettings.lastModel : undefined;
+  const defaultModel: { provider: string; model: string } | undefined =
+    rawLast && typeof rawLast.provider === 'string' && typeof rawLast.model === 'string'
+      ? { provider: rawLast.provider, model: rawLast.model }
+      : undefined;
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await fs.readFile(deps.modelsPath, 'utf8'));
+  } catch {
+    return { providers: [], models: [], currentForm, defaultModel };
+  }
+
+  const providers = isRecord(raw) && isRecord(raw.providers) ? raw.providers : undefined;
+  if (!providers) {
+    return { providers: [], models: [], currentForm, defaultModel };
+  }
+
+  const modelCards: ConfiguredModelCard[] = [];
+  const providerGroups: ConfiguredProviderGroup[] = [];
+
+  for (const [providerId, provider] of Object.entries(providers)) {
+    if (!isRecord(provider)) continue;
+    const baseUrl = typeof provider.baseUrl === 'string' ? provider.baseUrl : '';
+    const api = typeof provider.api === 'string' ? provider.api : DEFAULT_API;
+    const hasKey = ((await deps.secrets.getLlmApiKey(providerId)) ?? '').length > 0;
+    const compat = isRecord(provider.compat) ? provider.compat : {};
+    const thinkingFormat = normalizeThinkingFormat(compat.thinkingFormat);
+    const supportsDeveloperRole = compat.supportsDeveloperRole !== false;
+
+    const modelsList = Array.isArray(provider.models) ? provider.models.filter(isRecord) : [];
+    const groupModels: ConfiguredProviderGroup['models'] = [];
+
+    for (const m of modelsList) {
+      const modelId = typeof m.id === 'string' ? m.id.trim() : '';
+      if (!modelId) continue;
+      const modelName = typeof m.name === 'string' ? m.name.trim() : modelId;
+      const reasoning = m.reasoning === true || m.thinking === true;
+      const isDefault = Boolean(
+        defaultModel && defaultModel.provider === providerId && defaultModel.model === modelId
+      );
+
+      modelCards.push({
+        providerId,
+        modelId,
+        modelName,
+        baseUrl,
+        api,
+        reasoning,
+        hasKey,
+        isDefault,
+        thinkingFormat,
+        supportsDeveloperRole
+      });
+
+      groupModels.push({
+        id: modelId,
+        name: modelName,
+        reasoning,
+        isDefault
+      });
+    }
+
+    providerGroups.push({
+      providerId,
+      baseUrl,
+      api,
+      hasKey,
+      thinkingFormat,
+      supportsDeveloperRole,
+      models: groupModels
+    });
+  }
+
+  return { providers: providerGroups, models: modelCards, currentForm, defaultModel };
+}
+
+/** 删除指定 provider 下的指定 model */
+export async function deleteModelEntry(
+  deps: ModelsFileDeps,
+  providerId: string,
+  modelId: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    let root: Record<string, unknown> = {};
+    try {
+      const raw: unknown = JSON.parse(await fs.readFile(deps.modelsPath, 'utf8'));
+      if (isRecord(raw)) root = raw;
+    } catch {
+      return { ok: false, error: 'models.json 文件不存在' };
+    }
+
+    const providers = isRecord(root.providers) ? { ...root.providers } : {};
+    if (!isRecord(providers[providerId])) {
+      return { ok: false, error: `Provider ${providerId} 不存在` };
+    }
+
+    const existingProvider = { ...(providers[providerId] as Record<string, unknown>) };
+    const models = Array.isArray(existingProvider.models)
+      ? existingProvider.models.filter(isRecord)
+      : [];
+
+    const remainingModels = models.filter((m) => m.id !== modelId);
+    existingProvider.models = remainingModels;
+    providers[providerId] = existingProvider;
+
+    await fs.writeFile(
+      deps.modelsPath,
+      `${JSON.stringify({ ...root, providers }, null, 2)}\n`,
+      { encoding: 'utf8', mode: 0o600 }
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `删除模型失败: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/** 删除整个 provider 及其关联的 SecretStorage 密钥 */
+export async function deleteProviderEntry(
+  deps: ModelsFileDeps,
+  providerId: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    let root: Record<string, unknown> = {};
+    try {
+      const raw: unknown = JSON.parse(await fs.readFile(deps.modelsPath, 'utf8'));
+      if (isRecord(raw)) root = raw;
+    } catch {
+      return { ok: false, error: 'models.json 文件不存在' };
+    }
+
+    const providers = isRecord(root.providers) ? { ...root.providers } : {};
+    if (providers[providerId]) {
+      delete providers[providerId];
+      await fs.writeFile(
+        deps.modelsPath,
+        `${JSON.stringify({ ...root, providers }, null, 2)}\n`,
+        { encoding: 'utf8', mode: 0o600 }
+      );
+    }
+    try {
+      await deps.secrets.clearLlmApiKey(providerId);
+    } catch {
+      // 忽略秘钥删除失败
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `删除 Provider 失败: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+

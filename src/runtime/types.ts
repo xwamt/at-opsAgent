@@ -121,6 +121,15 @@ export type OpsRuntimeHandlers = {
   recallMemory?: (query: string) => Promise<string>;
 };
 
+export type SubagentStepItem = {
+  id: string;
+  title: string;
+  type: 'thinking' | 'tool' | 'output';
+  status: 'running' | 'ok' | 'error';
+  detail?: string;
+  durationMs?: number;
+};
+
 export type OpsSubagentEvent = {
   taskId: string;
   status: SubagentRunStatus;
@@ -138,6 +147,14 @@ export type OpsSubagentEvent = {
   error?: string;
   /** output.contract=evidence-note@1 且解析成功时的结构化便签（host 侧证据板消费）。 */
   evidenceNote?: EvidenceNote;
+  /** 实时执行步骤轨迹 */
+  steps?: SubagentStepItem[];
+  /** 实时日志输出 */
+  logs?: string[];
+  /** 当前动作状态描述 */
+  currentActivity?: string;
+  toolCalls?: { used: number; max: number };
+  wallMs?: { used: number; max: number };
 };
 
 export type OpsRuntimeEvent =
