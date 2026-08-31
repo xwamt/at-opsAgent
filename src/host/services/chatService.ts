@@ -190,6 +190,13 @@ export class ChatService {
   ): Promise<{ accepted: boolean }> {
     const ctx = this.ctx;
     const sessionId = ctx.store.activeSessionId;
+    // docs/13 §4.2：模型开口前先等一轮 Hub catalog 刷新（消掉 start 竞态；
+    // 失败只记日志，绝不因此拒发 prompt）。此时刷新也确保 ensureRuntime 时 customTools 拥有完整业务工具。
+    try {
+      await ctx.hub.refresh();
+    } catch (err) {
+      ctx.log(`[hub] refresh 失败（继续派发）: ${describeError(err)}`);
+    }
     let runtime: RuntimeLike;
     try {
       runtime = await this.pool.ensure(sessionId);
@@ -199,13 +206,6 @@ export class ChatService {
         return { accepted: false };
       }
       throw err;
-    }
-    // docs/13 §4.2：模型开口前先等一轮 Hub catalog 刷新（消掉 start 竞态；
-    // 失败只记日志，绝不因此拒发 prompt）。
-    try {
-      await ctx.hub.refresh();
-    } catch (err) {
-      ctx.log(`[hub] refresh 失败（继续派发）: ${describeError(err)}`);
     }
     // playbook 阶段驱动 + 当前阶段 L4 注入在首次模型调用之前完成。
     await ctx.playbooks.advancePlaybookForPrompt(sessionId);
@@ -221,6 +221,7 @@ export class ChatService {
       } else {
         ctx.emitAssistantNotice(`⚠ 模型调用失败：${msg}`, sessionId);
       }
+      ctx.broadcastToSession(sessionId, 'turn/end', {});
       this.pool.markIdle(sessionId);
     });
     return { accepted: true };
@@ -309,6 +310,23 @@ export class ChatService {
     if (typeof id !== 'string' || typeof title !== 'string') return { ok: false };
     if (!this.ctx.store.renameSession(id, title)) return { ok: false };
     this.ctx.broadcast('hydrate', this.snapshot());
+    return { ok: true };
+  }
+
+  /** 切换证据便签置顶并广播 transcript/patch。 */
+  pinEvidence(taskId: string, pinned: boolean): { ok: boolean } {
+    if (typeof taskId !== 'string' || taskId.length === 0) return { ok: false };
+    const sessionId = this.ctx.store.activeSessionId;
+    const items = this.ctx.store.itemsOf(sessionId).filter(
+      (i): i is Extract<TranscriptItem, { kind: 'evidence' }> =>
+        i.kind === 'evidence' && i.note.taskId === taskId
+    );
+    if (items.length === 0) return { ok: false };
+    if (!this.ctx.store.pinEvidence(taskId, pinned, sessionId)) return { ok: false };
+    for (const item of items) {
+      const patch = { note: { ...item.note, pinned } };
+      this.ctx.broadcastToSession(sessionId, 'transcript/patch', { itemId: item.id, patch });
+    }
     return { ok: true };
   }
 
@@ -455,7 +473,8 @@ export class ChatService {
           logs: e.logs,
           currentActivity: e.currentActivity,
           toolCalls: e.toolCalls,
-          wallMs: e.wallMs
+          wallMs: e.wallMs,
+          transcript: e.transcript
         });
         if (e.evidenceNote) appendEvidenceNote(ctx, sessionId, e.evidenceNote);
         const terminal = new Set(['ok', 'degraded', 'failed', 'aborted']);

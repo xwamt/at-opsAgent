@@ -96,4 +96,37 @@ describe('patchSubagentCard', () => {
     expect(broadcasts).toHaveLength(2);
     expect(broadcasts[1]).toMatchObject({ taskId: 't5', status: 'failed', latest: '出错了' });
   });
+
+  it('支持 transcript 增量写入与持久化回载', () => {
+    const { ctx, store } = fakeCtx();
+    const sid = store.activeSessionId;
+    patchSubagentCard(ctx, sid, 't6', {
+      status: 'ok',
+      role: 'investigator',
+      goal: '分析慢查询',
+      transcript: [
+        { kind: 'assistant', id: 'a1', text: '正在排查...', streaming: false },
+        { kind: 'thinking', id: 'th1', steps: ['step 1', 'step 2'], durationMs: 100 },
+        {
+          kind: 'tool',
+          id: 'tc1',
+          call: { name: 'mysql_slow_log', risk: 'read', status: 'ok', preview: 'slow queries found' }
+        }
+      ]
+    });
+
+    const card = store.getSubagent('t6', sid);
+    expect(card?.transcript).toHaveLength(3);
+    expect(card?.transcript?.[0].kind).toBe('assistant');
+    expect(card?.transcript?.[1].kind).toBe('thinking');
+    expect(card?.transcript?.[2].kind).toBe('tool');
+
+    // 落盘并用新 store 回载
+    store.persistNow();
+    const store2 = new SessionStore({ filePath: (store as unknown as { persistPath: string }).persistPath });
+    const card2 = store2.getSubagent('t6', store2.activeSessionId);
+    expect(card2).toBeDefined();
+    expect(card2?.transcript).toHaveLength(3);
+    expect(card2?.label).toBe('分析慢查询');
+  });
 });

@@ -238,6 +238,23 @@ export class SessionStore {
     return item;
   }
 
+  /** 按 taskId 切换证据便签置顶（evidence/pin）；找不到则 false。 */
+  pinEvidence(taskId: string, pinned: boolean, sessionId?: string): boolean {
+    if (typeof taskId !== 'string' || taskId.length === 0) return false;
+    const sid = sessionId ?? this._activeSessionId;
+    let changed = false;
+    for (const item of this.itemsRef(sid)) {
+      if (item.kind === 'evidence' && item.note.taskId === taskId) {
+        item.note.pinned = pinned;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.schedulePersist();
+    }
+    return changed;
+  }
+
   /** 首条用户消息 → 会话标题（仅覆盖自动标题「会话 N」）。 */
   private maybeAdoptTitle(text: string, sessionId: string): void {
     const session = this._sessions.find((s) => s.id === sessionId);
@@ -472,15 +489,23 @@ export class SessionStore {
     const bags = parsed.bags ?? {};
     for (const session of this._sessions) {
       const bag = bags[session.id];
+      const items = Array.isArray(bag?.items) ? sanitizeItems(bag.items) : [];
+      const subagentsMap = new Map<string, SubagentCard>();
+      const subItem = items.find((i) => i.kind === 'subagents');
+      if (subItem && subItem.kind === 'subagents' && Array.isArray(subItem.agents)) {
+        for (const agent of subItem.agents) {
+          subagentsMap.set(agent.taskId, agent);
+        }
+      }
       this._bags.set(session.id, {
-        items: Array.isArray(bag?.items) ? sanitizeItems(bag.items) : [],
+        items,
         playbook:
           bag?.playbook && typeof bag.playbook === 'object' && typeof bag.playbook.id === 'string'
             ? { id: bag.playbook.id, stage: String(bag.playbook.stage ?? 'triage') }
             : undefined,
-        // 审批令牌 / 子代理 live 态跨重载一律作废。
+        // 审批令牌跨重载作废。
         pendingBriefs: [],
-        subagents: new Map(),
+        subagents: subagentsMap,
         timeline: Array.isArray(bag?.timeline) ? bag.timeline : []
       });
     }
@@ -494,7 +519,7 @@ export class SessionStore {
     this._items = bag?.items ?? [];
     this._playbook = bag?.playbook;
     this._pendingBriefs = [];
-    this._subagents = new Map();
+    this._subagents = new Map(bag?.subagents ?? []);
     this._timeline = bag?.timeline ?? [];
     return true;
   }
@@ -571,6 +596,37 @@ function redactPersistedItem(item: TranscriptItem): TranscriptItem {
       }
       return { ...item, call };
     }
+    case 'subagents': {
+      const agents = item.agents.map((card) => {
+        const nextCard = { ...card };
+        if (typeof nextCard.goal === 'string') nextCard.goal = redactSecrets(nextCard.goal).text;
+        if (typeof nextCard.latest === 'string') nextCard.latest = redactSecrets(nextCard.latest).text;
+        if (typeof nextCard.currentActivity === 'string') {
+          nextCard.currentActivity = redactSecrets(nextCard.currentActivity).text;
+        }
+        if (Array.isArray(nextCard.transcript)) {
+          nextCard.transcript = nextCard.transcript.map((tItem) => {
+            if (tItem.kind === 'assistant') {
+              return { ...tItem, text: redactSecrets(tItem.text).text };
+            }
+            if (tItem.kind === 'thinking') {
+              return { ...tItem, steps: tItem.steps.map((s) => redactSecrets(s).text) };
+            }
+            if (tItem.kind === 'tool') {
+              const call = { ...tItem.call };
+              if (typeof call.preview === 'string') call.preview = redactSecrets(call.preview).text;
+              if (typeof call.errorMessage === 'string') {
+                call.errorMessage = redactSecrets(call.errorMessage).text;
+              }
+              return { ...tItem, call };
+            }
+            return tItem;
+          });
+        }
+        return nextCard;
+      });
+      return { ...item, agents };
+    }
     default:
       return item;
   }
@@ -586,6 +642,33 @@ function sanitizeItems(items: TranscriptItem[]): TranscriptItem[] {
       }
       if (item.kind === 'tool' && item.call?.status === 'running') {
         return { ...item, call: { ...item.call, status: 'interrupted' as const } };
+      }
+      if (item.kind === 'subagents') {
+        const agents = item.agents.map((card) => {
+          let updated = card;
+          if (card.status === 'running' || card.status === 'queued') {
+            updated = { ...card, status: 'aborted' };
+          }
+          if (Array.isArray(updated.transcript)) {
+            updated = {
+              ...updated,
+              transcript: updated.transcript.map((tItem) => {
+                if (tItem.kind === 'assistant' && tItem.streaming) {
+                  return { ...tItem, streaming: false };
+                }
+                if (tItem.kind === 'thinking' && tItem.streaming) {
+                  return { ...tItem, streaming: false };
+                }
+                if (tItem.kind === 'tool' && tItem.call?.status === 'running') {
+                  return { ...tItem, call: { ...tItem.call, status: 'interrupted' as const } };
+                }
+                return tItem;
+              })
+            };
+          }
+          return updated;
+        });
+        return { ...item, agents };
       }
       return item;
     });

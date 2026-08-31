@@ -21,6 +21,52 @@ export interface SubagentCardPatch {
   currentActivity?: string;
   toolCalls?: { used: number; max: number };
   wallMs?: { used: number; max: number };
+  transcript?: SubagentCard['transcript'];
+}
+
+interface PendingBroadcast {
+  sessionId: string;
+  card: SubagentCard;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const pendingBroadcasts = new Map<string, PendingBroadcast>();
+
+function flushBroadcast(key: string, ctx: HostContext): void {
+  const pending = pendingBroadcasts.get(key);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pendingBroadcasts.delete(key);
+  ctx.broadcastToSession(pending.sessionId, 'subagent/upsert', pending.card);
+}
+
+export function broadcastSubagentUpsert(
+  ctx: HostContext,
+  sessionId: string,
+  card: SubagentCard,
+  immediate = false
+): void {
+  const key = `${sessionId}:${card.taskId}`;
+  const isTerminal = card.status !== 'queued' && card.status !== 'running';
+
+  if (immediate || isTerminal) {
+    flushBroadcast(key, ctx);
+    ctx.broadcastToSession(sessionId, 'subagent/upsert', card);
+    return;
+  }
+
+  const existing = pendingBroadcasts.get(key);
+  if (existing) {
+    existing.card = card;
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    flushBroadcast(key, ctx);
+  }, 40);
+  timer.unref?.();
+
+  pendingBroadcasts.set(key, { sessionId, card, timer });
 }
 
 /** 更新或创建子代理卡片并广播；返回卡片是否处于 live（queued/running）态。 */
@@ -52,7 +98,8 @@ export function patchSubagentCard(
         ...(patch.logs !== undefined ? { logs: patch.logs } : {}),
         ...(patch.currentActivity !== undefined ? { currentActivity: patch.currentActivity } : {}),
         ...(patch.toolCalls !== undefined ? { toolCalls: patch.toolCalls } : {}),
-        ...(patch.wallMs !== undefined ? { wallMs: patch.wallMs } : {})
+        ...(patch.wallMs !== undefined ? { wallMs: patch.wallMs } : {}),
+        ...(patch.transcript !== undefined ? { transcript: patch.transcript } : {})
       }
     : {
         taskId,
@@ -68,10 +115,11 @@ export function patchSubagentCard(
         ...(patch.latest !== undefined ? { latest: patch.latest } : {}),
         ...(patch.steps !== undefined ? { steps: patch.steps } : {}),
         ...(patch.logs !== undefined ? { logs: patch.logs } : {}),
-        ...(patch.currentActivity !== undefined ? { currentActivity: patch.currentActivity } : {})
+        ...(patch.currentActivity !== undefined ? { currentActivity: patch.currentActivity } : {}),
+        ...(patch.transcript !== undefined ? { transcript: patch.transcript } : {})
       };
   ctx.store.upsertSubagent(next, sessionId);
-  ctx.broadcastToSession(sessionId, 'subagent/upsert', next);
+  broadcastSubagentUpsert(ctx, sessionId, next);
   return next.status === 'queued' || next.status === 'running';
 }
 
@@ -83,7 +131,14 @@ export function appendEvidenceNote(
     taskId: string;
     confidence: 'confirmed' | 'hypothesis' | 'pending';
     summary: string;
-    refs?: Array<{ kind: string; preview: string; artifactUri?: string }>;
+    refs?: Array<{
+      kind: string;
+      preview: string;
+      artifactUri?: string;
+      points?: number[];
+      from?: string;
+      to?: string;
+    }>;
   }
 ): void {
   if (typeof note.taskId !== 'string' || typeof note.summary !== 'string') return;
@@ -95,7 +150,10 @@ export function appendEvidenceNote(
       ? note.refs.map((ref) => ({
           kind: String(ref.kind ?? 'note'),
           preview: String(ref.preview ?? ''),
-          ...(typeof ref.artifactUri === 'string' ? { artifactUri: ref.artifactUri } : {})
+          ...(typeof ref.artifactUri === 'string' ? { artifactUri: ref.artifactUri } : {}),
+          ...(Array.isArray(ref.points) ? { points: ref.points.filter((v) => typeof v === 'number') } : {}),
+          ...(typeof ref.from === 'string' ? { from: ref.from } : {}),
+          ...(typeof ref.to === 'string' ? { to: ref.to } : {})
         }))
       : []
   };
