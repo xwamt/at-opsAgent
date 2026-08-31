@@ -6,6 +6,7 @@
 import type {
   ChatPromptReq,
   SubagentCard,
+  SubagentTranscriptItem,
   ToolCallView,
   TranscriptItem,
   UsageView
@@ -63,13 +64,14 @@ export function buildPromptPayload(
 }
 
 /**
- * CoT 隐藏（对齐 pi-coding-agent hideThinkingBlock，且恒为折叠、无 expander）：
- * thinking 项的推理步骤永不进入可见渲染；唯一可见的是 security-triage 等
- * 链路附带的 untrustedQuotes 警示块（只含外部引用原文，不含任何思考步骤）。
+ * 思维链默折叠、用户可展开；untrustedQuotes 在 UI 中始终可见（折叠态也渲染警示块）。
+ * 从 thinking 项提取非空外部引用原文；思考步骤正文由 ThinkingBlock 折叠区控制可见性。
  * 返回空数组 ⇒ 该 thinking 项没有引用块可渲染。
  */
-export function visibleUntrustedQuotes(item: TranscriptItem): string[] {
-  if (item.kind !== 'thinking' || !Array.isArray(item.untrustedQuotes)) {
+export function visibleUntrustedQuotes(
+  item: TranscriptItem | SubagentTranscriptItem | { kind: string; untrustedQuotes?: string[] }
+): string[] {
+  if (item.kind !== 'thinking' || !('untrustedQuotes' in item) || !Array.isArray(item.untrustedQuotes)) {
     return [];
   }
   return item.untrustedQuotes.filter((quote) => typeof quote === 'string' && quote !== '');
@@ -91,11 +93,17 @@ export function filterTranscriptForView(
 }
 
 /**
- * 思考时长指示是否可见：配置 ui.showThinking 默认 true；
- * 结论模式（Focus）强制 false。CoT 正文始终折叠。
+ * 思考块是否渲染：配置 ui.showThinking 默认 true；
+ * 结论模式（Focus）强制 false。CoT 正文默认折叠，用户可点击展开。
  */
 export function thinkingMetaVisible(showThinking: boolean, conclusionMode: boolean): boolean {
   return showThinking === true && conclusionMode !== true;
+}
+
+/** 思考进行中 live badge：`3200` → `3.2s`（与 ThinkingBlock 折叠头 timer 一致）。 */
+export function formatThinkingLiveLabel(elapsedMs: number): string {
+  const sec = (elapsedMs / 1000).toFixed(1);
+  return `${sec}s`;
 }
 
 /** durationMs → `850ms` / `1.2s`；非法或缺省返回 null（UI 走「思考中」）。 */
@@ -122,6 +130,7 @@ export interface TimelineStripEntry {
   id: string;
   label: string;
   tone: ConfidenceLevel | 'info' | 'warn' | 'crit';
+  pinned?: boolean;
 }
 
 function toSeverity(value: unknown): ChatTimelineEvent['severity'] {
@@ -517,6 +526,38 @@ export function usagePercent(usage: UsageView | null | undefined): number | null
   return Math.min(100, Math.max(0, Math.round((usage.contextUsed / usage.contextWindow) * 100)));
 }
 
+function formatCompactTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    return `${Math.round(tokens / 1_000_000)}M`;
+  }
+  if (tokens >= 1000) {
+    return `${Math.round(tokens / 1000)}k`;
+  }
+  return String(tokens);
+}
+
+/** 紧凑单行 usage 指标，如「43% · 15k in · 2k out · $0.02」；无任何可用字段返回 null。 */
+export function formatCompactUsage(usage: UsageView | null | undefined): string | null {
+  if (!usage) {
+    return null;
+  }
+  const parts: string[] = [];
+  const pct = usagePercent(usage);
+  if (pct !== null) {
+    parts.push(`${pct}%`);
+  }
+  if (usage.inputTokens !== undefined) {
+    parts.push(`${formatCompactTokenCount(usage.inputTokens)} in`);
+  }
+  if (usage.outputTokens !== undefined) {
+    parts.push(`${formatCompactTokenCount(usage.outputTokens)} out`);
+  }
+  if (usage.costUsd !== undefined) {
+    parts.push(`$${usage.costUsd.toFixed(2)}`);
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 // ── hydrate 元数据（hasApiKey / usage）───────────────────────────────────
 
 export interface HydrateMeta {
@@ -629,14 +670,161 @@ export function buildTimelineStrip(
     label: event.title,
     tone: event.severity
   }));
+  const evidenceEntries: TimelineStripEntry[] = [];
   for (const item of items) {
     if (item.kind === 'evidence') {
-      entries.push({
+      evidenceEntries.push({
         id: `ev-${item.id}`,
         label: item.note.summary,
-        tone: normalizeConfidence(item.note.confidence)
+        tone: normalizeConfidence(item.note.confidence),
+        ...(item.note.pinned ? { pinned: true } : {})
       });
     }
   }
+  evidenceEntries.sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+  entries.push(...evidenceEntries);
   return entries.slice(-cap);
+}
+
+// ── transcript 粘底滚动（BUG-1：patch/appendText 不增 items.length）────────
+
+const STICKY_TAIL_COUNT = 5;
+
+function stickyTailItemPart(item: TranscriptItem | SubagentTranscriptItem): string {
+  switch (item.kind) {
+    case 'assistant':
+      return `a:${item.id}:${(item.text ?? '').length}:${item.streaming ? 1 : 0}`;
+    case 'thinking': {
+      const steps = item.steps ?? [];
+      const stepsLen = steps.reduce((sum, step) => sum + step.length, 0);
+      return `t:${item.id}:${steps.length}:${stepsLen}:${item.durationMs ?? ''}`;
+    }
+    case 'tool':
+      return `tool:${item.id}:${item.call.status}:${(item.call.preview ?? '').length}`;
+    case 'subagents':
+      return `sub:${item.id}:${item.agents.length}`;
+    default:
+      return `${(item as { kind: string; id: string }).kind}:${(item as { kind: string; id: string }).id}`;
+  }
+}
+
+/** 末几条 transcript 项的轻量签名；appendText / tool preview 增量会改变签名。 */
+export function stickyTailSignature(items: readonly (TranscriptItem | SubagentTranscriptItem)[]): string {
+  return items.slice(-STICKY_TAIL_COUNT).map(stickyTailItemPart).join('|');
+}
+
+export function distanceFromBottom(el: HTMLElement): number {
+  return el.scrollHeight - el.scrollTop - el.clientHeight;
+}
+
+/** scrollHeight - scrollTop - clientHeight ≤ threshold 视为粘底；默认 4px。 */
+export function isPinnedToBottom(el: HTMLElement, threshold = 4): boolean {
+  return distanceFromBottom(el) <= threshold;
+}
+
+/** 流式占位 / live timer 用：`3200` → `3.2s`（与 formatThinkingLiveLabel 同形）。 */
+export function formatElapsedSeconds(ms: number): string {
+  return formatThinkingLiveLabel(ms);
+}
+
+// ── 时间戳（OPT-6）────────────────────────────────────────────────────────
+
+/** 墙钟 → 相对时间（工具卡头 xs 标签；now 可注入便于单测）。 */
+export function formatRelativeTime(ts: number, now = Date.now()): string {
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) {
+    return '';
+  }
+  const diff = Math.max(0, now - ts);
+  if (diff < 60_000) {
+    return '刚刚';
+  }
+  if (diff < 3_600_000) {
+    return `${Math.floor(diff / 60_000)}分钟前`;
+  }
+  if (diff < 86_400_000) {
+    return `${Math.floor(diff / 3_600_000)}小时前`;
+  }
+  return `${Math.floor(diff / 86_400_000)}天前`;
+}
+
+/** hover 用绝对时间（本地 HH:mm:ss 或完整日期）。 */
+export function formatAbsoluteTime(ts: number): string {
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) {
+    return '';
+  }
+  return new Date(ts).toLocaleString(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+}
+
+// ── 审批 audit 留痕（OPT-5）────────────────────────────────────────────────
+
+type ApprovalAuditItem = Extract<
+  TranscriptItem,
+  { kind: 'approval' }
+>;
+
+/** briefId 尾 4 字符（不足 4 则全量）。 */
+export function briefIdTail(briefId: string): string {
+  const id = String(briefId ?? '').trim();
+  return id.length <= 4 ? id : id.slice(-4);
+}
+
+/** transcript 审批行：`审批 #尾4位`（不裸渲完整 briefId）。 */
+export function formatApprovalRefLabel(
+  item: Pick<ApprovalAuditItem, 'briefId'> & Partial<ApprovalAuditItem>
+): string {
+  return `审批 #${briefIdTail(item.briefId)}`;
+}
+
+const APPROVAL_DECISION_LABEL: Record<
+  NonNullable<ApprovalAuditItem['decision']>,
+  { icon: string; label: string }
+> = {
+  approved: { icon: '✔', label: '已批准' },
+  rejected: { icon: '✘', label: '已拒绝' },
+  timeout: { icon: '⏱', label: '已超时' },
+  pending: { icon: '…', label: '待审批' }
+};
+
+const APPROVAL_RISK_LABEL: Record<'write' | 'exec', string> = {
+  write: 'write',
+  exec: 'exec'
+};
+
+/**
+ * 审批决议 audit 行（host system 行 / 结论模式留痕）：
+ * `✔ 已批准 exec · rollback api-gateway · 10:32:15 · brief …尾4位`
+ */
+export function formatApprovalAuditLine(
+  item: Pick<ApprovalAuditItem, 'briefId'> & Partial<ApprovalAuditItem>
+): string {
+  const decision = item.decision ?? 'pending';
+  const meta = APPROVAL_DECISION_LABEL[decision] ?? APPROVAL_DECISION_LABEL.pending;
+  const parts: string[] = [`${meta.icon} ${meta.label}`];
+  if (item.risk === 'write' || item.risk === 'exec') {
+    parts.push(APPROVAL_RISK_LABEL[item.risk]);
+  }
+  const target = String(item.targetLabel ?? '').trim();
+  if (target) {
+    parts.push(target);
+  }
+  if (typeof item.ts === 'number' && Number.isFinite(item.ts)) {
+    parts.push(
+      new Date(item.ts).toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      })
+    );
+  }
+  parts.push(`brief …${briefIdTail(item.briefId)}`);
+  return parts.join(' · ');
 }

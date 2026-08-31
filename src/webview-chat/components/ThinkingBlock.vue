@@ -1,14 +1,20 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import type { TranscriptItem } from '../../protocol/host-protocol';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import type { SubagentTranscriptItem, TranscriptItem } from '../../protocol/host-protocol';
 import { t, tf } from '../i18n';
 import { useCopiedFlag } from '../lib/clipboard';
-import { formatThinkingDurationMs, visibleUntrustedQuotes } from '../store-helpers';
+import {
+  formatThinkingDurationMs,
+  formatThinkingLiveLabel,
+  visibleUntrustedQuotes
+} from '../store-helpers';
 import MarkdownBlock from './MarkdownBlock.vue';
 import UntrustedQuotes from './UntrustedQuotes.vue';
 
 const props = defineProps<{
-  item: Extract<TranscriptItem, { kind: 'thinking' }>;
+  item:
+    | Extract<TranscriptItem, { kind: 'thinking' }>
+    | Extract<SubagentTranscriptItem, { kind: 'thinking' }>;
 }>();
 
 const isThinking = computed(() => props.item.durationMs == null);
@@ -62,14 +68,57 @@ const thinkingText = computed(() => {
 
 const durationText = computed(() => {
   if (isThinking.value) {
-    const sec = (elapsedMs.value / 1000).toFixed(1);
-    return `${sec}s`;
+    return formatThinkingLiveLabel(elapsedMs.value);
   }
   const duration = formatThinkingDurationMs(props.item.durationMs);
   return duration ? tf('thinkingDuration', { duration }) : t('thinkingInProgress');
 });
 
+const showDurationBadge = computed(() => isThinking.value || props.item.durationMs != null);
+
 const untrustedQuotes = computed(() => visibleUntrustedQuotes(props.item));
+
+// ── 思考正文内部滚动容器的底部粘连（isBodyPinnedToBottom） ───────────
+const bodyEl = ref<HTMLElement | null>(null);
+const isBodyPinnedToBottom = ref(true);
+
+function onBodyScroll(): void {
+  const el = bodyEl.value;
+  if (!el) return;
+  const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+  if (dist > 30) {
+    isBodyPinnedToBottom.value = false;
+  } else if (dist <= 10) {
+    isBodyPinnedToBottom.value = true;
+  }
+}
+
+function scrollBodyToBottom(): void {
+  const el = bodyEl.value;
+  if (!el || !isBodyPinnedToBottom.value) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+watch(
+  () => [thinkingText.value, isThinking.value],
+  async () => {
+    if (isBodyPinnedToBottom.value && expanded.value) {
+      await nextTick();
+      scrollBodyToBottom();
+    }
+  }
+);
+
+watch(
+  () => expanded.value,
+  async (isExp) => {
+    if (isExp) {
+      isBodyPinnedToBottom.value = true;
+      await nextTick();
+      scrollBodyToBottom();
+    }
+  }
+);
 
 async function copyThought(): Promise<void> {
   if (thinkingText.value) {
@@ -105,7 +154,7 @@ function toggleExpand(): void {
         aria-hidden="true"
       ></span>
       <span class="thinking-card__title">{{ isThinking ? t('thinkingInProgress') : t('thinkingTitle') }}</span>
-      <span v-if="props.item.durationMs != null" class="thinking-card__badge ops-mono">
+      <span v-if="showDurationBadge" class="thinking-card__badge ops-mono">
         {{ durationText }}
       </span>
       <span class="thinking-card__spacer"></span>
@@ -123,8 +172,13 @@ function toggleExpand(): void {
       </button>
     </div>
 
-    <!-- 折叠展开区：思考中或展开时渲染推理 Markdown 步骤 -->
-    <div v-if="expanded" class="thinking-card__body">
+    <!-- 不可信引用：折叠态也可见，与 expanded 无关 -->
+    <div v-if="untrustedQuotes.length > 0" class="thinking-card__quotes">
+      <UntrustedQuotes :quotes="untrustedQuotes" />
+    </div>
+
+    <!-- 折叠展开区：用户点击标题后渲染推理 Markdown 步骤（支持底部粘连滚动） -->
+    <div v-if="expanded" ref="bodyEl" class="thinking-card__body" @scroll="onBodyScroll">
       <div v-if="thinkingText" class="thinking-card__content">
         <MarkdownBlock :source="thinkingText" :streaming="isThinking" />
         <span v-if="isThinking" class="thinking-card__caret" :aria-label="t('generating')">▍</span>
@@ -133,7 +187,6 @@ function toggleExpand(): void {
         <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
         {{ t('thinkingInProgress') }}
       </p>
-      <UntrustedQuotes v-if="untrustedQuotes.length > 0" :quotes="untrustedQuotes" />
     </div>
   </div>
 </template>
@@ -218,6 +271,11 @@ function toggleExpand(): void {
 .thinking-card__copy:focus-visible,
 .thinking-card__copy.ops-copy-btn--copied {
   opacity: 1;
+}
+
+.thinking-card__quotes {
+  padding: var(--ops-space-2) var(--ops-space-3);
+  border-top: 1px dashed var(--ops-border);
 }
 
 .thinking-card__body {

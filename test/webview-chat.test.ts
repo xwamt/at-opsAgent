@@ -8,8 +8,7 @@
  * - i18n 启动包（<html lang> 检测 + hydrate locale 切换）
  * - Composer/store 的 prompt 组装（steer / followUp / attachments）
  * - ChatTranscript 事件脉络条（timeline 事件 + 证据便签）
- * - ChatTranscript CoT 隐藏（visibleUntrustedQuotes：思考步骤永不可见，
- *   仅 untrustedQuotes 警示块渲染，对齐 pi hideThinkingBlock）
+ * - ChatTranscript 思维链（visibleUntrustedQuotes：默折叠可展开，untrustedQuotes 常显）
  * - HistoryOverlay/WelcomeState 的会话归一化与建议卡（sessions / suggestions）
  * - ModelSelector 模型清单（normalizeChatModels + hydrate 吸收顺序）
  * - 子代理 inspector（collect/active/title + resolveInspectedSubagent：
@@ -40,12 +39,21 @@ import {
   buildWelcomeSuggestions,
   canFollowUpFrom,
   collectSubagentCards,
+  distanceFromBottom,
   filterTranscriptForView,
   findAdjacentSubagent,
+  formatApprovalAuditLine,
+  formatApprovalRefLabel,
+  formatAbsoluteTime,
+  formatRelativeTime,
   formatDataOutputPreview,
+  formatCompactUsage,
   formatThinkingDurationMs,
+  formatThinkingLiveLabel,
+  formatElapsedSeconds,
   isCommandToolCall,
   isConclusionItem,
+  isPinnedToBottom,
   isSubagentToolCall,
   modelsConfigured,
   normalizeChatModels,
@@ -54,6 +62,7 @@ import {
   normalizeUsage,
   parseToolOutputPreview,
   resolveInspectedSubagent,
+  stickyTailSignature,
   subagentTitle,
   thinkingMetaVisible,
   toolCallHeadline,
@@ -62,7 +71,13 @@ import {
   type ChatTimelineEvent,
   type SessionMeta
 } from '../src/webview-chat/store-helpers';
-import { annotateCommandKeywords, isBlankApprovalValue } from '../src/webview-chat/lib/approval-brief';
+import {
+  annotateCommandKeywords,
+  countBlankApprovalElements,
+  formatApprovalBriefMarkdown,
+  isBlankApprovalValue,
+  isBriefLong
+} from '../src/webview-chat/lib/approval-brief';
 
 // root tsconfig 无 DOM lib：jsdom 的 document 通过 globalThis 收窄访问
 function setHtmlLang(lang: string): void {
@@ -258,7 +273,7 @@ describe('ChatTranscript 事件脉络条（timeline + 证据便签）', () => {
   });
 });
 
-describe('ChatTranscript CoT 隐藏（对齐 pi hideThinkingBlock，恒为隐藏）', () => {
+describe('ChatTranscript 思维链（默折叠可展开，untrustedQuotes 常显）', () => {
   const steps = ['确认症状与时间窗：09:05 起 5xx 比例 0.2%→14%', '优先 grafana 窄窗验证，再放大面'];
 
   it('thinking 项无 untrustedQuotes ⇒ 可见内容为空（整项不渲染）', () => {
@@ -369,9 +384,11 @@ describe('i18n：欢迎页 / 历史会话新键（zh-CN + en）', () => {
   it('模型选择器空态引导键（zh-CN + en 同步存在；空态是可点按钮）', () => {
     expect(t('modelSelectorEmpty')).toBe('配置模型');
     expect(t('modelSelectorAria')).toBe('选择模型');
+    expect(t('modelSelectorManage')).toBe('管理模型…');
     setLocale('en');
     expect(t('modelSelectorEmpty')).toBe('Configure model');
     expect(t('modelSelectorAria')).toBe('Choose model');
+    expect(t('modelSelectorManage')).toBe('Manage models…');
   });
 
   it('P1-13 补漏键：九要素 / 阶段 / 风险 / 工具状态双语齐备', () => {
@@ -423,6 +440,28 @@ describe('ModelSelector 模型清单归一化（normalizeChatModels）', () => {
         'garbage'
       ])
     ).toEqual([{ provider: 'openai', model: 'gpt-4o', label: 'GPT-4o' }]);
+  });
+});
+
+describe('ModelSelector 自绘下拉（OPT-12）', () => {
+  const src = readFileSync(
+    path.join(process.cwd(), 'src/webview-chat/components/ModelSelector.vue'),
+    'utf8'
+  );
+
+  it('不再使用原生 select；浮层含 provider 分组、过滤与「管理模型…」尾项', () => {
+    expect(src).not.toContain('<select');
+    expect(src).not.toContain('modelsel__select');
+    expect(src).toContain('modelsel__panel');
+    expect(src).toContain('modelsel__group');
+    expect(src).toContain("t('modelSelectorManage')");
+    expect(src).toContain("store.openSettings('models')");
+    expect(src).toContain('showFilter');
+    expect(src).toContain("event.key === 'Escape'");
+    expect(src).toContain("event.key === 'ArrowDown'");
+    expect(src).toContain("event.key === 'ArrowUp'");
+    expect(src).toContain('codicon-chip');
+    expect(src).toContain('modelsel--empty');
   });
 });
 
@@ -516,6 +555,26 @@ describe('store：hydrate 元数据吸收（hasApiKey / usage）与未配置判�
     expect(usagePercent(normalizeUsage({ contextUsed: 200, contextWindow: 100 }))).toBe(100);
     expect(usagePercent(normalizeUsage({ inputTokens: 5 }))).toBeNull();
     expect(usagePercent(null)).toBeNull();
+  });
+
+  it('formatCompactUsage：生成紧凑单行 usage 指标；缺字段时优雅降级', () => {
+    expect(formatCompactUsage(null)).toBeNull();
+    expect(formatCompactUsage(undefined)).toBeNull();
+    expect(formatCompactUsage({})).toBeNull();
+    expect(formatCompactUsage({ contextUsed: 43_000, contextWindow: 100_000, costUsd: 0.02 })).toBe(
+      '43% · $0.02'
+    );
+    expect(
+      formatCompactUsage({
+        contextUsed: 43_000,
+        contextWindow: 100_000,
+        inputTokens: 15_432,
+        outputTokens: 2_105,
+        costUsd: 0.02
+      })
+    ).toBe('43% · 15k in · 2k out · $0.02');
+    expect(formatCompactUsage({ inputTokens: 500, outputTokens: 120 })).toBe('500 in · 120 out');
+    expect(formatCompactUsage({ costUsd: 0.005 })).toBe('$0.01');
   });
 
   it('modelsConfigured：无模型或 hasApiKey===false ⇒ 未配置；null 不拦截', () => {
@@ -947,6 +1006,69 @@ describe('结论模式 filter（Plan 12 T11）', () => {
     expect(store).toContain('toggleConclusionMode');
     expect(store).not.toMatch(/setState\(\{[^}]*conclusionMode/);
   });
+
+  it('Composer /export 触发 chat/export（OPT-15）', () => {
+    const composer = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/Composer.vue'),
+      'utf8'
+    );
+    expect(composer).toContain('EXPORT_RE');
+    expect(composer).toContain("store.post('chat/export', {})");
+  });
+
+  it('Composer /rename 打开历史并重命名当前会话（OPT-15）', () => {
+    const composer = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/Composer.vue'),
+      'utf8'
+    );
+    const store = readFileSync(path.join(process.cwd(), 'src/webview-chat/store.ts'), 'utf8');
+    expect(composer).toContain('RENAME_RE');
+    expect(composer).toContain('store.requestRenameSession(store.sessionId)');
+    expect(store).toContain('pendingRenameSessionId');
+    expect(store).toContain('requestRenameSession');
+  });
+
+  it('EvidenceNote pin 切换走 evidence/pin（OPT-13）', () => {
+    const evidence = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/EvidenceNote.vue'),
+      'utf8'
+    );
+    const store = readFileSync(path.join(process.cwd(), 'src/webview-chat/store.ts'), 'utf8');
+    expect(evidence).toContain('codicon-pin');
+    expect(evidence).toContain('codicon-pinned');
+    expect(evidence).toContain('togglePin');
+    expect(evidence).toContain('evidence--pinned');
+    expect(store).toContain("post('evidence/pin'");
+  });
+
+  it('HistoryOverlay 删除走行内二次确认，不用 window.confirm（OPT-14）', () => {
+    const history = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/HistoryOverlay.vue'),
+      'utf8'
+    );
+    expect(history).not.toContain('window.confirm');
+    expect(history).toContain('deleteConfirmId');
+    expect(history).toContain('historyDeleteConfirmInline');
+    expect(history).toContain('commitDelete');
+  });
+
+  it('buildTimelineStrip 置顶证据排在时间线之后的最前', () => {
+    const items: TranscriptItem[] = [
+      {
+        kind: 'evidence',
+        id: 'ev-a',
+        note: { taskId: 't-a', confidence: 'hypothesis', summary: '普通', refs: [] }
+      },
+      {
+        kind: 'evidence',
+        id: 'ev-b',
+        note: { taskId: 't-b', confidence: 'confirmed', summary: '置顶', refs: [], pinned: true }
+      }
+    ];
+    const strip = buildTimelineStrip([], items);
+    expect(strip.map((entry) => entry.label)).toEqual(['置顶', '普通']);
+    expect(strip[0]?.pinned).toBe(true);
+  });
 });
 
 describe('ApprovalBar 空要素折叠 + 命令关键词 span（Plan 12 T11）', () => {
@@ -973,16 +1095,53 @@ describe('ApprovalBar 空要素折叠 + 命令关键词 span（Plan 12 T11）', 
     expect(annotateCommandKeywords('echo hello').every((seg) => !seg.keyword)).toBe(true);
   });
 
-  it('ApprovalBar 模板：关键词 class 在 span；复制钮仍在；空行不再写死破折号', () => {
+  it('countBlankApprovalElements：只计九要素空白，不含 guidedManual / 额外键', () => {
+    expect(countBlankApprovalElements(undefined)).toBe(9);
+    expect(countBlankApprovalElements({})).toBe(9);
+    expect(
+      countBlankApprovalElements({
+        goal: '重启 api-gateway',
+        evidence: '',
+        impact: '—',
+        commands: ['kubectl apply -f x.yaml']
+      })
+    ).toBe(7);
+    expect(
+      countBlankApprovalElements({
+        goal: 'x',
+        evidence: 'y',
+        impact: 'z',
+        prechecks: 'a',
+        backup: 'b',
+        commands: ['echo hi'],
+        successCriteria: 'c',
+        rollback: 'd',
+        unknowns: 'e',
+        guidedManual: 'command:foo'
+      })
+    ).toBe(0);
+    expect(
+      countBlankApprovalElements({
+        goal: 'x',
+        extraField: 'ignored'
+      })
+    ).toBe(8);
+  });
+
+  it('ApprovalBar 模板：关键词 class 在 span；逐行 copy；空行不再写死破折号', () => {
     const approval = readFileSync(
       path.join(process.cwd(), 'src/webview-chat/components/ApprovalBar.vue'),
       'utf8'
     );
     expect(approval).toContain('annotateCommandKeywords');
     expect(approval).toContain('isBlankApprovalValue');
+    expect(approval).toContain('countBlankApprovalElements');
     expect(approval).toContain('approval__kw');
     expect(approval).toContain('codicon-copy');
-    expect(approval).toContain('@click.stop="copyCommands(row)"');
+    expect(approval).toContain('copyCommandLine');
+    expect(approval).toContain('approvalBlankSummary');
+    expect(approval).toContain('min(30vh, 240px)');
+    expect(approval).toContain('onEscReject');
     expect(approval).not.toContain("? '—'");
   });
 });
@@ -1024,6 +1183,29 @@ describe('思考时长 + Focus/showThinking（Plan 12 T11）', () => {
     expect(formatThinkingDurationMs(-1)).toBeNull();
   });
 
+  it('formatThinkingLiveLabel：思考中 live badge 秒数格式', () => {
+    expect(formatThinkingLiveLabel(0)).toBe('0.0s');
+    expect(formatThinkingLiveLabel(3200)).toBe('3.2s');
+    expect(formatThinkingLiveLabel(12_500)).toBe('12.5s');
+  });
+
+  it('ThinkingBlock：折叠头 live timer + untrustedQuotes 与 expanded 无关', () => {
+    const src = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ThinkingBlock.vue'),
+      'utf8'
+    );
+    expect(src).toContain('const expanded = ref(false)');
+    expect(src).toContain('showDurationBadge');
+    expect(src).toContain('formatThinkingLiveLabel');
+    expect(src).toContain('max-height: 240px');
+    const quotesIdx = src.indexOf('thinking-card__quotes');
+    const expandedBodyIdx = src.indexOf('v-if="expanded"');
+    expect(quotesIdx).toBeGreaterThan(-1);
+    expect(expandedBodyIdx).toBeGreaterThan(-1);
+    expect(quotesIdx).toBeLessThan(expandedBodyIdx);
+    expect(src).not.toMatch(/v-if="expanded"[\s\S]*UntrustedQuotes/);
+  });
+
   it('thinkingMetaVisible：默认 true；结论/Focus 强制 false', () => {
     expect(thinkingMetaVisible(true, false)).toBe(true);
     expect(thinkingMetaVisible(false, false)).toBe(false);
@@ -1054,6 +1236,138 @@ describe('思考时长 + Focus/showThinking（Plan 12 T11）', () => {
     expect(t('thinkingInProgress')).toBe('Thinking…');
     expect(tf('thinkingDuration', { duration: '1.2s' })).toBe('Thought 1.2s');
     expect(t('conclusionModeAria')).toContain('Conclusion');
+  });
+});
+
+describe('粘底滚动 helper（BUG-1 stickyTailSignature + isPinnedToBottom）', () => {
+  it('stickyTailSignature：appendText 不改变 length 时签名仍变', () => {
+    const base: TranscriptItem[] = [
+      { kind: 'user', id: 'u1', text: '查磁盘' },
+      { kind: 'assistant', id: 'a1', text: '正在', streaming: true }
+    ];
+    const patched: TranscriptItem[] = [
+      { kind: 'user', id: 'u1', text: '查磁盘' },
+      { kind: 'assistant', id: 'a1', text: '正在检查 /var 分区…', streaming: true }
+    ];
+    expect(base.length).toBe(patched.length);
+    expect(stickyTailSignature(base)).not.toBe(stickyTailSignature(patched));
+  });
+
+  it('stickyTailSignature：thinking steps / tool preview 增量会改变签名', () => {
+    const thinkingA: TranscriptItem[] = [
+      { kind: 'thinking', id: 'th1', steps: ['step one'] }
+    ];
+    const thinkingB: TranscriptItem[] = [
+      { kind: 'thinking', id: 'th1', steps: ['step one', 'step two longer'] }
+    ];
+    expect(stickyTailSignature(thinkingA)).not.toBe(stickyTailSignature(thinkingB));
+
+    const toolA: TranscriptItem[] = [
+      { kind: 'tool', id: 't1', call: { name: 'df', risk: 'read', status: 'running', preview: '' } }
+    ];
+    const toolB: TranscriptItem[] = [
+      {
+        kind: 'tool',
+        id: 't1',
+        call: { name: 'df', risk: 'read', status: 'running', preview: '{"stdout":"93%"}' }
+      }
+    ];
+    expect(stickyTailSignature(toolA)).not.toBe(stickyTailSignature(toolB));
+  });
+
+  function mockScrollEl(opts: {
+    scrollHeight: number;
+    scrollTop: number;
+    clientHeight: number;
+  }): HTMLElement {
+    return {
+      scrollHeight: opts.scrollHeight,
+      scrollTop: opts.scrollTop,
+      clientHeight: opts.clientHeight
+    } as HTMLElement;
+  }
+
+  it('distanceFromBottom / isPinnedToBottom：mock 元素尺寸阈值', () => {
+    const pinned = mockScrollEl({ scrollHeight: 1000, scrollTop: 996, clientHeight: 0 });
+    expect(distanceFromBottom(pinned)).toBe(4);
+    expect(isPinnedToBottom(pinned)).toBe(true);
+    expect(isPinnedToBottom(pinned, 4)).toBe(true);
+
+    const unpinned = mockScrollEl({ scrollHeight: 1000, scrollTop: 850, clientHeight: 0 });
+    expect(distanceFromBottom(unpinned)).toBe(150);
+    expect(isPinnedToBottom(unpinned)).toBe(false);
+    expect(isPinnedToBottom(unpinned, 200)).toBe(true);
+  });
+
+  it('formatElapsedSeconds 与 formatThinkingLiveLabel 一致', () => {
+    expect(formatElapsedSeconds(3200)).toBe('3.2s');
+    expect(formatElapsedSeconds(3200)).toBe(formatThinkingLiveLabel(3200));
+  });
+});
+
+describe('审批 audit 留痕（OPT-5）', () => {
+  const fixedTs = 1_700_000_000_000; // 2023-11-15 06:13:20 UTC
+
+  it('formatApprovalRefLabel 只展示 brief 尾 4 位', () => {
+    expect(formatApprovalRefLabel({ kind: 'approval', id: 'a1', briefId: 'brief-xyz1234' })).toBe(
+      '审批 #1234'
+    );
+    expect(formatApprovalRefLabel({ kind: 'approval', id: 'a2', briefId: 'ab' })).toBe('审批 #ab');
+  });
+
+  it('formatApprovalAuditLine 生成人类可读决议摘要', () => {
+    const line = formatApprovalAuditLine({
+      kind: 'approval',
+      id: 'app-1',
+      briefId: 'brief-xyz1234',
+      decision: 'approved',
+      targetLabel: '回滚 api-gateway',
+      risk: 'exec',
+      ts: fixedTs
+    });
+    expect(line).toContain('✔ 已批准');
+    expect(line).toContain('exec');
+    expect(line).toContain('回滚 api-gateway');
+    expect(line).toContain('brief …1234');
+    expect(line).toMatch(/\d{2}:\d{2}:\d{2}/);
+  });
+
+  it('formatApprovalAuditLine 拒绝/超时分支', () => {
+    expect(
+      formatApprovalAuditLine({
+        kind: 'approval',
+        id: 'app-2',
+        briefId: 'brief-abcd9999',
+        decision: 'rejected',
+        targetLabel: '重启 nginx',
+        risk: 'write',
+        ts: fixedTs
+      })
+    ).toContain('✘ 已拒绝');
+    expect(
+      formatApprovalAuditLine({
+        kind: 'approval',
+        id: 'app-3',
+        briefId: 'brief-abcd9999',
+        decision: 'timeout',
+        ts: fixedTs
+      })
+    ).toContain('⏱ 已超时');
+  });
+});
+
+describe('时间戳 helper（OPT-6）', () => {
+  const now = 1_700_000_100_000;
+
+  it('formatRelativeTime 分段相对时间', () => {
+    expect(formatRelativeTime(now - 30_000, now)).toBe('刚刚');
+    expect(formatRelativeTime(now - 120_000, now)).toBe('2分钟前');
+    expect(formatRelativeTime(now - 7_200_000, now)).toBe('2小时前');
+    expect(formatRelativeTime(now - 172_800_000, now)).toBe('2天前');
+  });
+
+  it('formatAbsoluteTime 返回非空本地时间串', () => {
+    expect(formatAbsoluteTime(now).length).toBeGreaterThan(8);
   });
 });
 
@@ -1109,5 +1423,99 @@ describe('终端命令执行组件（Kilo / Cursor 终端解耦，2026-08-31）'
     expect(isSubagentToolCall({ name: 'run_remote_command' })).toBe(false);
 
     expect(formatDataOutputPreview('{"a":1}')).toBe('{\n  "a": 1\n}');
+  });
+});
+
+describe('审批简报编辑器深链（OPT-18）', () => {
+  it('isBriefLong / formatApprovalBriefMarkdown', () => {
+    const short = { goal: '重启 nginx' };
+    expect(isBriefLong(short)).toBe(false);
+    const long = {
+      goal: 'x'.repeat(200),
+      evidence: 'y'.repeat(200)
+    };
+    expect(isBriefLong(long)).toBe(true);
+    const md = formatApprovalBriefMarkdown({
+      id: 'brief-abc',
+      risk: 'exec',
+      targetLabel: '回滚 api-gateway',
+      elements: {
+        goal: '恢复可用性',
+        commands: [{ tool: 'at.terminal/run_remote_command', command: 'kubectl rollout undo deploy/api-gateway' }]
+      }
+    });
+    expect(md).toContain('# 审批简报 · 回滚 api-gateway');
+    expect(md).toContain('## 目标');
+    expect(md).toContain('kubectl rollout undo');
+  });
+
+  it('ApprovalBar 展开超长简报时显示 openBrief 深链', () => {
+    const approval = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ApprovalBar.vue'),
+      'utf8'
+    );
+    expect(approval).toContain('isBriefLong');
+    expect(approval).toContain('command:atOpsAgent.openBrief?');
+    expect(approval).toContain('approvalBriefOpenEditor');
+  });
+
+  it('host 注册 atOpsAgent.openBrief 命令', () => {
+    const commands = readFileSync(path.join(process.cwd(), 'src/host/commands.ts'), 'utf8');
+    expect(commands).toContain("'atOpsAgent.openBrief'");
+    expect(commands).toContain('formatApprovalBriefMarkdown');
+  });
+});
+
+describe('MetricSnippet 结构化（OPT-21）', () => {
+  it('协议 EvidenceRefView 含 points/from/to', () => {
+    const proto = readFileSync(
+      path.join(process.cwd(), 'src/protocol/host-protocol.ts'),
+      'utf8'
+    );
+    expect(proto).toContain('export type EvidenceRefView');
+    expect(proto).toContain('points?: number[]');
+    expect(proto).toContain('from?: string');
+    expect(proto).toContain('to?: string');
+  });
+
+  it('MetricSnippet 与 EvidenceNote 传递 inferred 标签', () => {
+    const metric = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/MetricSnippet.vue'),
+      'utf8'
+    );
+    const evidence = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/EvidenceNote.vue'),
+      'utf8'
+    );
+    expect(metric).toContain('inferred?: boolean');
+    expect(metric).toContain("t('metricInferred')");
+    expect(evidence).toContain('extractMetricData');
+    expect(evidence).toContain(':inferred="ref.inferred"');
+    expect(t('metricInferred')).toBe('推断');
+  });
+});
+
+describe('存为运维文档（OPT-22）', () => {
+  it('store.saveOpsDoc 走 opsDoc/save；host 与 mock 均已接线', () => {
+    const store = readFileSync(path.join(process.cwd(), 'src/webview-chat/store.ts'), 'utf8');
+    const host = readFileSync(path.join(process.cwd(), 'src/host/hostController.ts'), 'utf8');
+    const mock = readFileSync(path.join(process.cwd(), 'src/webview-chat/mock-host.ts'), 'utf8');
+    expect(store).toContain("this.post('opsDoc/save'");
+    expect(host).toContain("case 'opsDoc/save'");
+    expect(host).toContain('saveOpsDocFromTranscript');
+    expect(mock).toContain("msg.type === 'opsDoc/save'");
+  });
+});
+
+describe('SubagentTranscript 结构', () => {
+  it('源码引用 ThinkingBlock ToolCallCard MarkdownBlock 与 stickyTailSignature', () => {
+    const src = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/SubagentTranscript.vue'),
+      'utf8'
+    );
+    expect(src).toContain('ThinkingBlock');
+    expect(src).toContain('ToolCallCard');
+    expect(src).toContain('MarkdownBlock');
+    expect(src).toContain('stickyTailSignature');
   });
 });

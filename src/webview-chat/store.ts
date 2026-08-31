@@ -120,6 +120,7 @@ function pickToolCall(source: AnyRecord): Partial<ToolCallView> {
     'pluginId',
     'risk',
     'status',
+    'startedAt',
     'durationMs',
     'truncated',
     'preview',
@@ -161,6 +162,8 @@ export const useOpsStore = defineStore('ops-chat', {
     timeline: [] as ChatTimelineEvent[],
     sessions: [] as SessionMeta[],
     historyOpen: false,
+    /** /rename 打开历史抽屉后自动进入重命名的会话 id。 */
+    pendingRenameSessionId: null as string | null,
     mock: false,
     /** 结论模式（Focus）：只渲染 assistant + evidence + notice；不持久化。 */
     conclusionMode: false,
@@ -374,6 +377,26 @@ export const useOpsStore = defineStore('ops-chat', {
       this.post('session/delete', { id });
     },
 
+    pinEvidence(taskId: string, pinned: boolean): void {
+      if (!taskId) {
+        return;
+      }
+      for (const item of this.items) {
+        if (item.kind === 'evidence' && item.note.taskId === taskId) {
+          item.note.pinned = pinned;
+        }
+      }
+      this.post('evidence/pin', { taskId, pinned });
+    },
+
+    requestRenameSession(sessionId: string): void {
+      if (!sessionId) {
+        return;
+      }
+      this.pendingRenameSessionId = sessionId;
+      this.historyOpen = true;
+    },
+
     saveOpsDoc(itemId?: string): void {
       this.post('opsDoc/save', itemId ? { itemId } : {});
     },
@@ -472,6 +495,7 @@ export const useOpsStore = defineStore('ops-chat', {
           }
           break;
         }
+        case 'agent/idle':
         case 'turn/end': {
           this.streaming = false;
           this.streamingId = null;
@@ -725,7 +749,11 @@ export const useOpsStore = defineStore('ops-chat', {
       }
       const idx = board.agents.findIndex((agent) => agent.taskId === card.taskId);
       if (idx >= 0) {
-        board.agents.splice(idx, 1, { ...board.agents[idx], ...card });
+        board.agents.splice(idx, 1, {
+          ...board.agents[idx],
+          ...card,
+          ...(Array.isArray(card.transcript) ? { transcript: [...card.transcript] } : {})
+        });
       } else {
         board.agents.push(card);
       }
