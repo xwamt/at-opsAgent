@@ -39,6 +39,7 @@ import {
   buildWelcomeSuggestions,
   canFollowUpFrom,
   collectSubagentCards,
+  deriveSubagentBoardPreview,
   distanceFromBottom,
   filterTranscriptForView,
   findAdjacentSubagent,
@@ -712,6 +713,39 @@ describe('SubagentBoard/ChatApp 子代理 inspector（docs/12 §3）', () => {
     expect(tf('subagentStripCount', { count: 2 })).toContain('2');
     expect(t('subagentVisibleTools')).toBe('Visible tools');
     setLocale('zh-CN');
+  });
+
+  it('deriveSubagentBoardPreview：优先 latest，次选 transcript（助理回复/工具调用/思考），回退 activity', () => {
+    const c1: SubagentCard = {
+      ...card('t1', 'ok'),
+      latest: '分析完成，发现 3 个慢查询'
+    };
+    expect(deriveSubagentBoardPreview(c1)).toBe('分析完成，发现 3 个慢查询');
+
+    const c2: SubagentCard = {
+      ...card('t2', 'running'),
+      transcript: [
+        { kind: 'thinking', id: 'th1', steps: ['正在思考分析架构...'], durationMs: 100 },
+        { kind: 'tool', id: 'tc1', call: { name: 'query_db', risk: 'read', status: 'ok', preview: 'SELECT *' } },
+        { kind: 'assistant', id: 'a1', text: '查询耗时 120ms，已完成', streaming: false }
+      ]
+    };
+    expect(deriveSubagentBoardPreview(c2)).toBe('查询耗时 120ms，已完成');
+
+    const c3: SubagentCard = {
+      ...card('t3', 'running'),
+      transcript: [
+        { kind: 'thinking', id: 'th1', steps: ['正在检查拓扑'], durationMs: 100 },
+        { kind: 'tool', id: 'tc1', call: { name: 'check_top', risk: 'read', status: 'running', preview: 'node-1' } }
+      ]
+    };
+    expect(deriveSubagentBoardPreview(c3)).toBe('[check_top] node-1');
+
+    const c4: SubagentCard = {
+      ...card('t4', 'running'),
+      currentActivity: '正在执行网络探测'
+    };
+    expect(deriveSubagentBoardPreview(c4)).toBe('正在执行网络探测');
   });
 });
 

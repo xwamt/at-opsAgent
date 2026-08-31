@@ -3,7 +3,7 @@ import { computed } from 'vue';
 import type { SubagentCard } from '../../protocol/host-protocol';
 import { t } from '../i18n';
 import { useOpsStore } from '../store';
-import { subagentTitle } from '../store-helpers';
+import { deriveSubagentBoardPreview, subagentTitle } from '../store-helpers';
 
 const props = defineProps<{ agents: SubagentCard[] }>();
 const store = useOpsStore();
@@ -110,11 +110,16 @@ function onCardKey(event: KeyboardEvent, taskId: string): void {
           <span>tools {{ agent.toolCalls.used }}/{{ agent.toolCalls.max }}</span>
           <span>wall {{ secs(agent.wallMs.used) }}/{{ secs(agent.wallMs.max) }}</span>
         </div>
-        <div v-if="agent.status === 'running' && agent.currentActivity" class="sa__latest sa__latest--running ops-accent">
+        <div
+          v-if="agent.status === 'running' && (deriveSubagentBoardPreview(agent) || agent.currentActivity)"
+          class="sa__latest sa__latest--running ops-accent"
+        >
           <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
-          {{ agent.currentActivity }}
+          {{ deriveSubagentBoardPreview(agent) || agent.currentActivity }}
         </div>
-        <div v-else-if="agent.latest" class="sa__latest">{{ agent.latest }}</div>
+        <div v-else-if="deriveSubagentBoardPreview(agent)" class="sa__latest">
+          {{ deriveSubagentBoardPreview(agent) }}
+        </div>
       </article>
     </div>
   </section>

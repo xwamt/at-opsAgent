@@ -828,3 +828,44 @@ export function formatApprovalAuditLine(
   parts.push(`brief …${briefIdTail(item.briefId)}`);
   return parts.join(' · ');
 }
+
+/**
+ * 从 SubagentCard 提炼 Board 单行摘要文本：
+ * 1. 若 card.latest 有值，优先使用（截断至一行或首段）；
+ * 2. 否则从 card.transcript 反向查找：
+ *    - 最近 assistant 文本
+ *    - 最近 tool: `[${call.name}] ${call.preview ?? ''}`
+ *    - 最近 thinking 步骤
+ * 3. 否则回退 card.currentActivity
+ */
+export function deriveSubagentBoardPreview(card: SubagentCard, maxChars = 80): string {
+  if (card.latest && card.latest.trim()) {
+    const clean = card.latest.replace(/\r?\n/g, ' ').trim();
+    return clean.length > maxChars ? `${clean.slice(0, maxChars)}…` : clean;
+  }
+  if (Array.isArray(card.transcript) && card.transcript.length > 0) {
+    for (let i = card.transcript.length - 1; i >= 0; i--) {
+      const item = card.transcript[i];
+      if (item.kind === 'assistant' && item.text.trim()) {
+        const clean = item.text.replace(/\r?\n/g, ' ').trim();
+        return clean.length > maxChars ? `${clean.slice(0, maxChars)}…` : clean;
+      }
+      if (item.kind === 'tool') {
+        const preview = item.call.preview ? item.call.preview.replace(/\r?\n/g, ' ').trim() : '';
+        const raw = preview ? `[${item.call.name}] ${preview}` : `[${item.call.name}]`;
+        return raw.length > maxChars ? `${raw.slice(0, maxChars)}…` : raw;
+      }
+      if (item.kind === 'thinking' && item.steps.length > 0) {
+        const lastStep = item.steps[item.steps.length - 1].replace(/\r?\n/g, ' ').trim();
+        if (lastStep) {
+          return lastStep.length > maxChars ? `${lastStep.slice(0, maxChars)}…` : lastStep;
+        }
+      }
+    }
+  }
+  if (card.currentActivity && card.currentActivity.trim()) {
+    const clean = card.currentActivity.replace(/\r?\n/g, ' ').trim();
+    return clean.length > maxChars ? `${clean.slice(0, maxChars)}…` : clean;
+  }
+  return '';
+}
