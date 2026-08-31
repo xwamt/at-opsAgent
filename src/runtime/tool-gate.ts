@@ -173,6 +173,22 @@ async function persistFullToolResult(
  * - 结果超过 8KB 时截断回给模型（带中文提示），完整 JSON 落盘
  *   agentDir/tool-results/<toolCallId>.json（写盘失败不影响调用）。
  */
+const toolPreviewCache = new Map<string, { preview?: string; error?: string }>();
+
+export function recordToolPreview(toolCallId: string, entry: { preview?: string; error?: string }): void {
+  if (!toolCallId) return;
+  toolPreviewCache.set(toolCallId, entry);
+}
+
+export function takeToolPreview(toolCallId: string): { preview?: string; error?: string } | undefined {
+  if (!toolCallId) return undefined;
+  const val = toolPreviewCache.get(toolCallId);
+  if (val !== undefined) {
+    toolPreviewCache.delete(toolCallId);
+  }
+  return val;
+}
+
 export async function executeBusinessTool(
   handlers: OpsRuntimeHandlers,
   descriptor: AgentToolDescriptor,
@@ -182,25 +198,52 @@ export async function executeBusinessTool(
   toolCallId?: string,
   origin: ToolCallOrigin = MAIN_ORIGIN
 ): Promise<string> {
-  const capped = injectPayloadCaps(descriptor.name, args, handlers.payloadCaps);
-  const gate = await applyToolGate(handlers, descriptor.name, capped, origin);
-  if (gate.kind === 'reject') return gate.resultJson;
-  const result = await handlers.hub.invoke({
-    name: descriptor.name,
-    arguments: capped,
-    abort: signal
-  });
-  if (isCancelledInvocation(result)) {
-    throw new Error(result.error?.message ?? `工具 ${descriptor.name} 调用已被用户取消`);
+  try {
+    const capped = injectPayloadCaps(descriptor.name, args, handlers.payloadCaps);
+    const gate = await applyToolGate(handlers, descriptor.name, capped, origin);
+    if (gate.kind === 'reject') {
+      if (toolCallId) {
+        recordToolPreview(toolCallId, { preview: truncatePreview(gate.resultJson) });
+      }
+      return gate.resultJson;
+    }
+    const result = await handlers.hub.invoke({
+      name: descriptor.name,
+      arguments: capped,
+      abort: signal
+    });
+    if (isCancelledInvocation(result)) {
+      const msg = result.error?.message ?? `工具 ${descriptor.name} 调用已被用户取消`;
+      if (toolCallId) {
+        recordToolPreview(toolCallId, {
+          error: msg,
+          preview: truncatePreview(JSON.stringify(result))
+        });
+      }
+      throw new Error(msg);
+    }
+    const full = redactSecrets(JSON.stringify(result)).text;
+    if (toolCallId) {
+      recordToolPreview(toolCallId, {
+        preview: truncatePreview(full),
+        error: result.ok === false ? (result.error?.message ?? 'Tool returned error') : undefined
+      });
+    }
+    if (full.length <= MODEL_RESULT_CHAR_LIMIT) return full;
+    const savedPath = await persistFullToolResult(agentDir, toolCallId ?? randomUUID(), full);
+    return truncateForModel(full, {
+      pluginId: descriptor.pluginId,
+      name: descriptor.name,
+      ...(savedPath !== undefined ? { savedPath } : {})
+    });
+  } catch (err) {
+    if (toolCallId && !toolPreviewCache.has(toolCallId)) {
+      recordToolPreview(toolCallId, {
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+    throw err;
   }
-  const full = redactSecrets(JSON.stringify(result)).text;
-  if (full.length <= MODEL_RESULT_CHAR_LIMIT) return full;
-  const savedPath = await persistFullToolResult(agentDir, toolCallId ?? randomUUID(), full);
-  return truncateForModel(full, {
-    pluginId: descriptor.pluginId,
-    name: descriptor.name,
-    ...(savedPath !== undefined ? { savedPath } : {})
-  });
 }
 
 export function toPiTool(pi: PiModule, source: OpsToolSource): ToolDefinition {

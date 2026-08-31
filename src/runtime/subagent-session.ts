@@ -4,6 +4,7 @@
  * 从 src/runtime/index.ts 搬移（createPiRuntime 的子会话部分），零行为变化。
  * 禁止 import vscode。
  */
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,6 +19,19 @@ import { composeSubagentPrompt } from '../prompts/roles';
 import { describeError } from './fallback';
 import { listBusinessToolDescriptors } from './discovery-tools';
 import {
+  appendSubagentTextDelta,
+  appendSubagentThinkingDelta,
+  createEmptySubagentTranscript,
+  endSubagentTool,
+  finalizeSubagentAssistant,
+  finalizeSubagentThinking,
+  getLastAssistantText,
+  startSubagentAssistant,
+  startSubagentThinking,
+  startSubagentTool,
+  type SubagentTranscript
+} from './subagent-transcript';
+import {
   buildTaskSpec,
   createSubagentManager,
   filterToolsForSubagent,
@@ -29,6 +43,7 @@ import {
 } from './subagents';
 import {
   executeBusinessTool,
+  takeToolPreview,
   toPiTool,
   type PiModule
 } from './tool-gate';
@@ -246,6 +261,11 @@ export async function runSubagentSession(
   const maxToolCalls = spec.toolPolicy.budget.maxToolCalls;
   const maxWallMs = spec.toolPolicy.budget.maxWallMs;
 
+  let transcript: SubagentTranscript = createEmptySubagentTranscript();
+  let assistantMsgId: string | null = null;
+  let thinkingId: string | null = null;
+  let thinkingStartedAt: number | null = null;
+
   const steps: SubagentStepItem[] = [
     {
       id: `step-${spec.taskId}-0`,
@@ -257,7 +277,11 @@ export async function runSubagentSession(
   ];
   const logs: string[] = [`[${new Date().toLocaleTimeString()}] 子代理就绪 (${spec.role}): ${spec.goal}`];
 
-  const emitProgress = (activity?: string) => {
+  let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastEmitTime = 0;
+  let pendingActivity: string | undefined;
+
+  const doEmit = (activity?: string) => {
     handlers.onSubagentEvent?.({
       taskId: spec.taskId,
       role: spec.role,
@@ -267,33 +291,122 @@ export async function runSubagentSession(
       steps: [...steps],
       logs: [...logs],
       toolCalls: { used: toolCalls, max: maxToolCalls },
-      wallMs: { used: Date.now() - startTime, max: maxWallMs }
+      wallMs: { used: Date.now() - startTime, max: maxWallMs },
+      transcript: [...transcript]
     });
   };
 
-  emitProgress('正在启动分析…');
+  const emitProgress = (activity?: string, immediate = false) => {
+    if (activity !== undefined) {
+      pendingActivity = activity;
+    }
+    if (immediate) {
+      if (throttleTimer !== null) {
+        clearTimeout(throttleTimer);
+        throttleTimer = null;
+      }
+      lastEmitTime = Date.now();
+      doEmit(pendingActivity);
+      return;
+    }
+    const now = Date.now();
+    const elapsed = now - lastEmitTime;
+    if (elapsed >= 40) {
+      if (throttleTimer !== null) {
+        clearTimeout(throttleTimer);
+        throttleTimer = null;
+      }
+      lastEmitTime = now;
+      doEmit(pendingActivity);
+    } else if (throttleTimer === null) {
+      throttleTimer = setTimeout(() => {
+        throttleTimer = null;
+        lastEmitTime = Date.now();
+        doEmit(pendingActivity);
+      }, 40 - elapsed);
+    }
+  };
+
+  emitProgress('正在启动分析…', true);
 
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
     switch (event.type) {
       case 'message_start':
         if ((event.message as { role?: string }).role === 'assistant') {
           currentText = '';
+          if (thinkingId !== null) {
+            const dur = thinkingStartedAt !== null ? Date.now() - thinkingStartedAt : undefined;
+            transcript = finalizeSubagentThinking(transcript, thinkingId, dur);
+            thinkingId = null;
+            thinkingStartedAt = null;
+          }
+          if (assistantMsgId !== null) {
+            transcript = finalizeSubagentAssistant(transcript, assistantMsgId);
+          }
+          assistantMsgId = randomUUID();
+          transcript = startSubagentAssistant(transcript, assistantMsgId);
         }
         break;
       case 'message_update':
         if (event.assistantMessageEvent.type === 'text_delta') {
-          currentText += event.assistantMessageEvent.delta;
+          const delta = event.assistantMessageEvent.delta;
+          currentText += delta;
+          if (assistantMsgId === null) {
+            assistantMsgId = randomUUID();
+            transcript = startSubagentAssistant(transcript, assistantMsgId);
+          }
+          transcript = appendSubagentTextDelta(transcript, assistantMsgId, delta);
           if (currentText.trim().length > 0) {
             lastAssistantText = currentText;
           }
+          emitProgress();
         } else if (event.assistantMessageEvent.type === 'thinking_delta') {
+          const delta = event.assistantMessageEvent.delta;
+          if (thinkingId === null) {
+            thinkingId = randomUUID();
+            thinkingStartedAt = Date.now();
+            transcript = startSubagentThinking(transcript, thinkingId);
+          }
+          transcript = appendSubagentThinkingDelta(transcript, thinkingId, delta);
           emitProgress('正在深度思考推导…');
+        }
+        break;
+      case 'message_end':
+        if (thinkingId !== null) {
+          const dur = thinkingStartedAt !== null ? Date.now() - thinkingStartedAt : undefined;
+          transcript = finalizeSubagentThinking(transcript, thinkingId, dur);
+          thinkingId = null;
+          thinkingStartedAt = null;
+        }
+        if (assistantMsgId !== null) {
+          transcript = finalizeSubagentAssistant(transcript, assistantMsgId);
+          assistantMsgId = null;
         }
         break;
       case 'tool_execution_start': {
         toolCalls += 1;
-        const toolEv = event as { toolName?: string; toolCall?: { name?: string } };
+        if (thinkingId !== null) {
+          const dur = thinkingStartedAt !== null ? Date.now() - thinkingStartedAt : undefined;
+          transcript = finalizeSubagentThinking(transcript, thinkingId, dur);
+          thinkingId = null;
+          thinkingStartedAt = null;
+        }
+        if (assistantMsgId !== null) {
+          transcript = finalizeSubagentAssistant(transcript, assistantMsgId);
+          assistantMsgId = null;
+        }
+        const toolEv = event as { toolName?: string; toolCallId?: string; toolCall?: { id?: string; name?: string } };
         const toolName = toolEv.toolName ?? toolEv.toolCall?.name ?? 'tool';
+        const toolCallId = toolEv.toolCallId ?? toolEv.toolCall?.id ?? randomUUID();
+        const descriptor = descriptors.find((d) => d.name === toolName);
+        const risk = descriptor?.risk ?? 'exec';
+        const pluginId = descriptor?.pluginId;
+        transcript = startSubagentTool(transcript, toolCallId, {
+          name: toolName,
+          pluginId,
+          risk,
+          startedAt: Date.now()
+        });
         steps.push({
           id: `step-${spec.taskId}-${steps.length}`,
           title: `调用工具: ${toolName}`,
@@ -301,7 +414,7 @@ export async function runSubagentSession(
           status: 'running'
         });
         logs.push(`[${new Date().toLocaleTimeString()}] 调用工具: ${toolName}`);
-        emitProgress(`正在执行工具: ${toolName}`);
+        emitProgress(`正在执行工具: ${toolName}`, true);
         if (toolCalls > maxToolCalls && !budgetExceeded) {
           budgetExceeded = true;
           void session.abort().catch(() => {
@@ -311,14 +424,52 @@ export async function runSubagentSession(
         break;
       }
       case 'tool_execution_end': {
-        const toolEv = event as { toolName?: string; isError?: boolean; ok?: boolean };
+        const toolEv = event as {
+          toolName?: string;
+          toolCallId?: string;
+          isError?: boolean;
+          ok?: boolean;
+          result?: unknown;
+          error?: unknown;
+        };
         const toolName = toolEv.toolName ?? 'tool';
+        const toolCallId = toolEv.toolCallId;
         const runningStep = [...steps].reverse().find((s) => s.status === 'running' && s.type === 'tool');
+        const isError = toolEv.isError || toolEv.ok === false;
         if (runningStep) {
-          runningStep.status = toolEv.isError || toolEv.ok === false ? 'error' : 'ok';
+          runningStep.status = isError ? 'error' : 'ok';
         }
         logs.push(`[${new Date().toLocaleTimeString()}] 工具 ${toolName} 执行完成`);
-        emitProgress(`工具 ${toolName} 执行完成`);
+
+        const cached = toolCallId ? takeToolPreview(toolCallId) : undefined;
+        let previewText = cached?.preview;
+        if (!previewText && toolEv.result !== undefined) {
+          if (typeof toolEv.result === 'string') {
+            previewText = toolEv.result;
+          } else {
+            try {
+              previewText = JSON.stringify(toolEv.result);
+            } catch {
+              previewText = String(toolEv.result);
+            }
+          }
+        }
+        const errorMsg =
+          cached?.error ??
+          (toolEv.error instanceof Error
+            ? toolEv.error.message
+            : typeof toolEv.error === 'string'
+              ? toolEv.error
+              : undefined);
+
+        if (toolCallId) {
+          transcript = endSubagentTool(transcript, toolCallId, {
+            status: isError ? 'error' : 'ok',
+            preview: previewText,
+            error: errorMsg
+          });
+        }
+        emitProgress(`工具 ${toolName} 执行完成`, true);
         break;
       }
       default:
@@ -336,6 +487,12 @@ export async function runSubagentSession(
 
   try {
     await session.prompt(`开始执行任务 ${spec.taskId}：${spec.goal}`);
+    if (throttleTimer !== null) {
+      clearTimeout(throttleTimer);
+      throttleTimer = null;
+    }
+    transcript = finalizeSubagentAssistant(transcript);
+    transcript = finalizeSubagentThinking(transcript);
     steps.push({
       id: `step-${spec.taskId}-${steps.length}`,
       title: '整理分析结果与最终结论',
@@ -344,14 +501,19 @@ export async function runSubagentSession(
       durationMs: Date.now() - startTime
     });
     logs.push(`[${new Date().toLocaleTimeString()}] 任务执行完毕，生成结论`);
-    emitProgress('已完成分析与结果归纳');
+    emitProgress('已完成分析与结果归纳', true);
     return {
       finalText: lastAssistantText,
+      transcript: [...transcript],
       ...(budgetExceeded
         ? { degradedReason: `超出 maxToolCalls=${maxToolCalls} 预算，已中止取证` }
         : {})
     };
   } finally {
+    if (throttleTimer !== null) {
+      clearTimeout(throttleTimer);
+      throttleTimer = null;
+    }
     signal.removeEventListener('abort', onAbort);
     unsubscribe();
     session.dispose();
@@ -415,7 +577,8 @@ export function createMainSubagentLayer(input: {
       ...(e.logs !== undefined ? { logs: e.logs } : {}),
       ...(e.currentActivity !== undefined ? { currentActivity: e.currentActivity } : {}),
       ...(e.toolCalls !== undefined ? { toolCalls: e.toolCalls } : {}),
-      ...(e.wallMs !== undefined ? { wallMs: e.wallMs } : {})
+      ...(e.wallMs !== undefined ? { wallMs: e.wallMs } : {}),
+      ...(e.transcript !== undefined ? { transcript: e.transcript } : {})
     });
   };
 

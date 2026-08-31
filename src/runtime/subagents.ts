@@ -10,7 +10,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { mergeEvidence, type EvidenceNote, type RiskLevel, type SubagentRole, type TaskSpec } from '../orchestrator';
-import type { AgentToolDescriptor } from '../protocol';
+import type { AgentToolDescriptor, SubagentTranscriptItem } from '../protocol';
 import { isBusinessToolName } from './discovery-tools';
 import type { OpsCustomToolSpec } from './resource-loader';
 
@@ -409,6 +409,7 @@ export interface SubagentStatusEvent {
   currentActivity?: string;
   toolCalls?: { used: number; max: number };
   wallMs?: { used: number; max: number };
+  transcript?: SubagentTranscriptItem[];
 }
 
 export interface SubagentRunOutcome {
@@ -416,6 +417,8 @@ export interface SubagentRunOutcome {
   finalText: string;
   /** runner 主动降级的原因（如超出 maxToolCalls 预算被中止）。 */
   degradedReason?: string;
+  /** 子代理 mini-transcript（用于 Inspector 渲染与终态持久化）。 */
+  transcript?: SubagentTranscriptItem[];
 }
 
 export type SubagentRunner = (spec: TaskSpec, signal: AbortSignal) => Promise<SubagentRunOutcome>;
@@ -510,7 +513,7 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
 
   function emit(
     record: TaskRecord,
-    extra: Pick<SubagentStatusEvent, 'summary' | 'error' | 'evidenceNote'> = {}
+    extra: Pick<SubagentStatusEvent, 'summary' | 'error' | 'evidenceNote' | 'transcript'> = {}
   ): void {
     options.onStatus?.({
       taskId: record.spec.taskId,
@@ -565,15 +568,24 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
       pump();
       return;
     }
-    let extra: Pick<SubagentStatusEvent, 'summary' | 'error' | 'evidenceNote'> = {};
+    let extra: Pick<SubagentStatusEvent, 'summary' | 'error' | 'evidenceNote' | 'transcript'> = {};
     if (record.userAborted) {
       record.status = 'aborted';
+      if (result.outcome?.transcript !== undefined) {
+        extra = { transcript: result.outcome.transcript };
+      }
     } else if (record.timedOut) {
       record.status = 'failed';
-      extra = { error: `超出 maxWallMs=${record.spec.toolPolicy.budget.maxWallMs} 预算（超时中止）` };
+      extra = {
+        error: `超出 maxWallMs=${record.spec.toolPolicy.budget.maxWallMs} 预算（超时中止）`,
+        ...(result.outcome?.transcript !== undefined ? { transcript: result.outcome.transcript } : {})
+      };
     } else if (result.failure !== undefined) {
       record.status = 'failed';
-      extra = { error: result.failure instanceof Error ? result.failure.message : String(result.failure) };
+      extra = {
+        error: result.failure instanceof Error ? result.failure.message : String(result.failure),
+        ...(result.outcome?.transcript !== undefined ? { transcript: result.outcome.transcript } : {})
+      };
     } else {
       const outcome = result.outcome ?? { finalText: '' };
       const contract = record.spec.output.contract;
@@ -585,7 +597,12 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
       const summary = truncateSummary(note?.summary ?? outcome.finalText);
       if (outcome.degradedReason !== undefined) {
         record.status = 'degraded';
-        extra = { summary, error: outcome.degradedReason, ...(note !== undefined ? { evidenceNote: note } : {}) };
+        extra = {
+          summary,
+          error: outcome.degradedReason,
+          ...(note !== undefined ? { evidenceNote: note } : {}),
+          ...(outcome.transcript !== undefined ? { transcript: outcome.transcript } : {})
+        };
       } else if (JSON_CONTRACTS.has(contract) && contractJson?.contract !== contract) {
         // 契约 JSON 缺失：结果仍可用但标 degraded（该面按未完整取证处理）。
         // 宽松解析出的便签（contract 字段缺失但 confidence+summary 完整）
@@ -594,11 +611,16 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
         extra = {
           summary,
           error: `输出缺少 ${contract} JSON 契约块`,
-          ...(note !== undefined ? { evidenceNote: note } : {})
+          ...(note !== undefined ? { evidenceNote: note } : {}),
+          ...(outcome.transcript !== undefined ? { transcript: outcome.transcript } : {})
         };
       } else {
         record.status = 'ok';
-        extra = { summary, ...(note !== undefined ? { evidenceNote: note } : {}) };
+        extra = {
+          summary,
+          ...(note !== undefined ? { evidenceNote: note } : {}),
+          ...(outcome.transcript !== undefined ? { transcript: outcome.transcript } : {})
+        };
       }
     }
     if (record.retried === true && record.status === 'failed' && extra.error !== undefined) {

@@ -113,4 +113,12 @@ describe('subagent-transcript builder', () => {
     t = startSubagentAssistant(t, 'a3', longText);
     expect(deriveSubagentPreview(t)).toBe(`${'A'.repeat(80)}…`);
   });
+
+  it('tool-gate recordToolPreview / takeToolPreview 存取消费', async () => {
+    const { recordToolPreview, takeToolPreview } = await import('../src/runtime/tool-gate');
+    recordToolPreview('tc_cache_1', { preview: 'cached preview', error: undefined });
+    expect(takeToolPreview('tc_cache_1')).toEqual({ preview: 'cached preview', error: undefined });
+    // 再次取应已被消费删除
+    expect(takeToolPreview('tc_cache_1')).toBeUndefined();
+  });
 });
