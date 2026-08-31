@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { SubagentCard } from '../../protocol/host-protocol';
 import { t } from '../i18n';
 import { useCopiedFlag } from '../lib/clipboard';
 import { useOpsStore } from '../store';
 import { collectSubagentCards, findAdjacentSubagent, subagentTitle } from '../store-helpers';
 import MarkdownBlock from './MarkdownBlock.vue';
+import SubagentTranscript from './SubagentTranscript.vue';
 
 const store = useOpsStore();
 
@@ -41,8 +42,14 @@ const totalCount = computed(() => allCards.value.length);
 const prevTaskId = computed(() => inspected.value ? findAdjacentSubagent(allCards.value, inspected.value.taskId, 'prev') : null);
 const nextTaskId = computed(() => inspected.value ? findAdjacentSubagent(allCards.value, inspected.value.taskId, 'next') : null);
 
-type InspectorTab = 'steps' | 'logs' | 'overview';
-const activeTab = ref<InspectorTab>('steps');
+type InspectorTab = 'transcript' | 'overview';
+const activeTab = ref<InspectorTab>('transcript');
+
+const panelRef = ref<HTMLElement | null>(null);
+const closeBtnRef = ref<HTMLButtonElement | null>(null);
+
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 const { copied, copy } = useCopiedFlag();
 
@@ -68,21 +75,69 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
-async function copyAllLogs(): Promise<void> {
-  if (!inspected.value) return;
-  const content = [
-    `=== Subagent [${inspected.value.taskId}] ${inspected.value.label} ===`,
-    `Role: ${inspected.value.role} | Status: ${inspected.value.status}`,
-    `\n--- Logs ---`,
-    ...(inspected.value.logs ?? []),
-    `\n--- Output ---`,
-    inspected.value.latest ?? ''
-  ].join('\n');
-  await copy(content);
+function focusablesInPanel(): HTMLElement[] {
+  if (!panelRef.value) {
+    return [];
+  }
+  return Array.from(panelRef.value.querySelectorAll<HTMLElement>(FOCUSABLE));
 }
 
-onMounted(() => {
+function onPanelKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Tab') {
+    return;
+  }
+  const nodes = focusablesInPanel();
+  if (nodes.length === 0) {
+    return;
+  }
+  const first = nodes[0];
+  const last = nodes[nodes.length - 1];
+  const active = document.activeElement;
+  if (event.shiftKey) {
+    if (active === first || active === panelRef.value) {
+      event.preventDefault();
+      last.focus();
+    }
+    return;
+  }
+  if (active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+async function copyAllLogs(): Promise<void> {
+  if (!inspected.value) return;
+  const parts: string[] = [
+    `=== Subagent [${inspected.value.taskId}] ${inspected.value.label} ===`,
+    `Role: ${inspected.value.role} | Status: ${inspected.value.status}`
+  ];
+  if (inspected.value.transcript && inspected.value.transcript.length > 0) {
+    parts.push('\n--- Transcript ---');
+    for (const item of inspected.value.transcript) {
+      if (item.kind === 'assistant') {
+        parts.push(`[Assistant]\n${item.text}`);
+      } else if (item.kind === 'thinking') {
+        parts.push(`[Thinking]\n${item.steps.join('\n')}`);
+      } else if (item.kind === 'tool') {
+        parts.push(
+          `[Tool: ${item.call.name}] (${item.call.status})\n${item.call.preview ?? item.call.errorMessage ?? ''}`
+        );
+      }
+    }
+  } else if (inspected.value.logs && inspected.value.logs.length > 0) {
+    parts.push('\n--- Logs ---', ...inspected.value.logs);
+  }
+  if (inspected.value.latest) {
+    parts.push('\n--- Output ---', inspected.value.latest);
+  }
+  await copy(parts.join('\n'));
+}
+
+onMounted(async () => {
   document.addEventListener('keydown', onKeydown, true);
+  await nextTick();
+  closeBtnRef.value?.focus();
 });
 
 onBeforeUnmount(() => {
@@ -99,7 +154,12 @@ onBeforeUnmount(() => {
     :aria-label="t('subagentInspectorAria')"
   >
     <div class="sa-inspector__backdrop" aria-hidden="true" @click="close"></div>
-    <section class="sa-inspector__panel">
+    <section
+      ref="panelRef"
+      class="sa-inspector__panel ops-drawer-panel"
+      tabindex="-1"
+      @keydown="onPanelKeydown"
+    >
       <!-- 头部：标题 + 状态指示 + 左右切换 + 关闭按钮 -->
       <header class="sa-inspector__head">
         <span
@@ -141,6 +201,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <button
+          ref="closeBtnRef"
           type="button"
           class="sa-inspector__close"
           :aria-label="t('subagentInspectorCloseAria')"
@@ -161,23 +222,17 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="sa-inspector__tab"
-          :class="{ 'sa-inspector__tab--active': activeTab === 'steps' }"
-          @click="activeTab = 'steps'"
+          :class="{ 'sa-inspector__tab--active': activeTab === 'transcript' }"
+          @click="activeTab = 'transcript'"
         >
-          <span class="codicon codicon-list-tree" aria-hidden="true"></span>
-          {{ t('subagentSteps') }}
-          <span v-if="inspected.steps && inspected.steps.length > 0" class="sa-inspector__tab-count">
-            {{ inspected.steps.length }}
+          <span class="codicon codicon-comment-discussion" aria-hidden="true"></span>
+          {{ t('subagentTranscriptTab') }}
+          <span
+            v-if="inspected.transcript && inspected.transcript.length > 0"
+            class="sa-inspector__tab-count"
+          >
+            {{ inspected.transcript.length }}
           </span>
-        </button>
-        <button
-          type="button"
-          class="sa-inspector__tab"
-          :class="{ 'sa-inspector__tab--active': activeTab === 'logs' }"
-          @click="activeTab = 'logs'"
-        >
-          <span class="codicon codicon-terminal" aria-hidden="true"></span>
-          {{ t('subagentLogs') }}
         </button>
         <button
           type="button"
@@ -204,64 +259,14 @@ onBeforeUnmount(() => {
 
       <!-- 选项卡内容区 -->
       <div class="sa-inspector__body">
-        <!-- 选项卡 1：分步执行轨迹 -->
-        <div v-if="activeTab === 'steps'" class="sa-inspector__steps-panel">
-          <div v-if="inspected.steps && inspected.steps.length > 0" class="sa-stepper">
-            <div
-              v-for="(step, idx) in inspected.steps"
-              :key="step.id"
-              class="sa-stepper__item"
-              :class="'sa-stepper__item--' + step.status"
-            >
-              <div class="sa-stepper__indicator">
-                <span
-                  class="codicon sa-stepper__icon"
-                  :class="{
-                    'codicon-check': step.status === 'ok',
-                    'codicon-loading codicon-modifier-spin': step.status === 'running',
-                    'codicon-error': step.status === 'error'
-                  }"
-                  aria-hidden="true"
-                ></span>
-                <span v-if="idx < inspected.steps.length - 1" class="sa-stepper__line"></span>
-              </div>
-              <div class="sa-stepper__content">
-                <div class="sa-stepper__head">
-                  <span class="sa-stepper__title ops-mono">{{ step.title }}</span>
-                  <span
-                    class="sa-stepper__tag"
-                    :class="'sa-stepper__tag--' + step.status"
-                  >
-                    {{ step.status === 'running' ? t('subagentStepRunning') : t('subagentStepDone') }}
-                  </span>
-                </div>
-                <div v-if="step.detail" class="sa-stepper__detail ops-muted">{{ step.detail }}</div>
-              </div>
-            </div>
-          </div>
-          <div v-else class="sa-inspector__empty ops-muted">
-            <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
-            {{ t('subagentStepRunning') }}
-          </div>
-        </div>
+        <!-- 选项卡 1：对话（Mini-Transcript） -->
+        <SubagentTranscript
+          v-if="activeTab === 'transcript'"
+          :items="inspected.transcript ?? []"
+          :streaming="inspected.status === 'running'"
+        />
 
-        <!-- 选项卡 2：实时控制台日志与输出 -->
-        <div v-else-if="activeTab === 'logs'" class="sa-inspector__logs-panel">
-          <div v-if="inspected.logs && inspected.logs.length > 0" class="sa-inspector__console ops-mono">
-            <div v-for="(log, i) in inspected.logs" :key="i" class="sa-inspector__log-line">{{ log }}</div>
-          </div>
-          <div v-if="inspected.latest" class="sa-inspector__latest-wrap">
-            <span class="sa-inspector__section-label ops-muted">{{ t('subagentLatestLabel') }}</span>
-            <div class="sa-inspector__latest-box">
-              <MarkdownBlock :source="inspected.latest" />
-            </div>
-          </div>
-          <p v-if="(!inspected.logs || inspected.logs.length === 0) && !inspected.latest" class="sa-inspector__empty ops-muted">
-            {{ t('subagentNoOutput') }}
-          </p>
-        </div>
-
-        <!-- 选项卡 3：任务元数据与权限 -->
+        <!-- 选项卡 2：任务概览与元数据 -->
         <div v-else-if="activeTab === 'overview'" class="sa-inspector__overview-panel">
           <dl class="sa-inspector__meta">
             <dt class="ops-muted">{{ t('subagentStatusLabel') }}</dt>
@@ -293,6 +298,66 @@ onBeforeUnmount(() => {
               >{{ tool }}</span>
             </div>
           </div>
+
+          <!-- 终态最新输出摘要（若有） -->
+          <div v-if="inspected.latest" class="sa-inspector__section">
+            <span class="sa-inspector__label ops-muted">{{ t('subagentLatestLabel') }}</span>
+            <div class="sa-inspector__latest-box">
+              <MarkdownBlock :source="inspected.latest" />
+            </div>
+          </div>
+
+          <!-- 可折叠调试日志 -->
+          <details v-if="inspected.logs && inspected.logs.length > 0" class="sa-inspector__details">
+            <summary class="sa-inspector__summary ops-muted">
+              <span class="codicon codicon-terminal" aria-hidden="true"></span>
+              {{ t('subagentDebugLogs') }} ({{ inspected.logs.length }})
+            </summary>
+            <div class="sa-inspector__console ops-mono">
+              <div v-for="(log, i) in inspected.logs" :key="i" class="sa-inspector__log-line">{{ log }}</div>
+            </div>
+          </details>
+
+          <!-- 可折叠执行步骤（如果有历史 steps） -->
+          <details v-if="inspected.steps && inspected.steps.length > 0" class="sa-inspector__details">
+            <summary class="sa-inspector__summary ops-muted">
+              <span class="codicon codicon-list-tree" aria-hidden="true"></span>
+              {{ t('subagentSteps') }} ({{ inspected.steps.length }})
+            </summary>
+            <div class="sa-stepper">
+              <div
+                v-for="(step, idx) in inspected.steps"
+                :key="step.id"
+                class="sa-stepper__item"
+                :class="'sa-stepper__item--' + step.status"
+              >
+                <div class="sa-stepper__indicator">
+                  <span
+                    class="codicon sa-stepper__icon"
+                    :class="{
+                      'codicon-check': step.status === 'ok',
+                      'codicon-loading codicon-modifier-spin': step.status === 'running',
+                      'codicon-error': step.status === 'error'
+                    }"
+                    aria-hidden="true"
+                  ></span>
+                  <span v-if="idx < inspected.steps.length - 1" class="sa-stepper__line"></span>
+                </div>
+                <div class="sa-stepper__content">
+                  <div class="sa-stepper__head">
+                    <span class="sa-stepper__title ops-mono">{{ step.title }}</span>
+                    <span
+                      class="sa-stepper__tag"
+                      :class="'sa-stepper__tag--' + step.status"
+                    >
+                      {{ step.status === 'running' ? t('subagentStepRunning') : t('subagentStepDone') }}
+                    </span>
+                  </div>
+                  <div v-if="step.detail" class="sa-stepper__detail ops-muted">{{ step.detail }}</div>
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -318,28 +383,30 @@ onBeforeUnmount(() => {
   inset: 0;
   z-index: 30;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--ops-space-4);
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0;
 }
 
 .sa-inspector__backdrop {
   position: absolute;
   inset: 0;
-  background: color-mix(in srgb, var(--vscode-widget-shadow, #000) 45%, transparent);
-  backdrop-filter: blur(2px);
+  background: color-mix(in srgb, var(--vscode-widget-shadow, #000) 22%, transparent);
 }
 
 .sa-inspector__panel {
   position: relative;
-  width: min(640px, 100%);
-  max-height: min(84vh, 720px);
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   background: var(--vscode-editorWidget-background, var(--ops-bg));
   border: 1px solid var(--vscode-editorWidget-border, var(--ops-border));
-  border-radius: var(--ops-radius);
-  box-shadow: 0 8px 32px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.45));
+  border-right: none;
+  border-radius: var(--ops-radius) 0 0 var(--ops-radius);
+  box-shadow: -4px 0 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
   overflow: hidden;
 }
 
@@ -501,8 +568,7 @@ onBeforeUnmount(() => {
 
 .sa-inspector__body {
   flex: 1 1 auto;
-  min-height: 200px;
-  max-height: 480px;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--ops-space-3);
 }
@@ -610,6 +676,23 @@ onBeforeUnmount(() => {
   padding: 1px 0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.sa-inspector__details {
+  margin-top: var(--ops-space-3);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius-ctl);
+  padding: var(--ops-space-2);
+}
+
+.sa-inspector__summary {
+  cursor: pointer;
+  font-size: var(--ops-font-xs);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  margin-bottom: var(--ops-space-2);
 }
 
 .sa-inspector__latest-wrap {

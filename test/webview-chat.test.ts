@@ -700,12 +700,18 @@ describe('SubagentBoard/ChatApp 子代理 inspector（docs/12 §3）', () => {
   });
 
   it('inspector 新增文案 zh/en 双语齐备（含空输出与顶栏条）', () => {
+    setLocale('zh-CN');
     expect(t('subagentNoOutput')).toBe('尚无输出');
+    expect(t('subagentTranscriptTab')).toBe('对话');
+    expect(t('subagentDebugLogs')).toBe('调试日志');
     expect(tf('subagentStripCount', { count: 2 })).toBe('2 个子代理进行中');
     setLocale('en');
     expect(t('subagentNoOutput')).toBe('No output yet');
+    expect(t('subagentTranscriptTab')).toBe('Transcript');
+    expect(t('subagentDebugLogs')).toBe('Debug Logs');
     expect(tf('subagentStripCount', { count: 2 })).toContain('2');
     expect(t('subagentVisibleTools')).toBe('Visible tools');
+    setLocale('zh-CN');
   });
 });
 
