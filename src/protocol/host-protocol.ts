@@ -65,6 +65,18 @@ export type ChatPromptReq = {
 
 export type ChatAbortReq = { mode?: 'cancel' | 'stop' };
 
+export type ChatEditReq = {
+  itemId: string;
+  action: 'edit' | 'delete';
+};
+
+export type ChatEditRes = {
+  ok: boolean;
+  editorText?: string;
+  reason?: string;
+  rewindExecuted?: boolean;
+};
+
 export type ModelsTestReq = {
   baseUrl: string;
   modelId: string;
@@ -121,7 +133,7 @@ export type McpSaveReq = { text: string };
 export type SettingsOpenJsonReq = { kind: 'models' | 'mcp' | 'auth' | 'vscode' };
 
 export type TranscriptItem =
-  | { kind: 'user'; id: string; text: string; ts?: number }
+  | { kind: 'user'; id: string; text: string; ts?: number; piEntryId?: string }
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean; error?: boolean; retryable?: boolean; ts?: number }
   | {
       kind: 'thinking';
@@ -271,6 +283,7 @@ export type HostRequestType =
   | 'chat/prompt'
   | 'chat/abort'
   | 'chat/retry'
+  | 'chat/edit'
   | 'chat/export'
   | 'hydrate'
   | 'model/set'
