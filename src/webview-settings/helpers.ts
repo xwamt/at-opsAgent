@@ -1132,11 +1132,27 @@ export function buildModelsTestReq(form: ModelsForm): Record<string, unknown> {
   };
 }
 
-/** models/fetch 载荷（ModelsFetchReq）。 */
+/** 判断模型 ID 是否属于已知具备深度思考 / Reasoning 能力的模型 */
+export function isReasoningModel(modelId: string | undefined): boolean {
+  if (!modelId || typeof modelId !== 'string') return false;
+  const lower = modelId.toLowerCase();
+  return (
+    lower.includes('deepseek-r1') ||
+    lower.includes('reasoner') ||
+    lower.includes('thinking') ||
+    lower.includes('qwq') ||
+    /(^|[-_/])(o1|o3|r1)([-_/]|$)/.test(lower) ||
+    lower.includes('claude-3-7-sonnet')
+  );
+}
+
+/** models/fetch 载荷（ModelsFetchReq）：支持未保存状态下带入表单中的 apiKey。 */
 export function buildModelsFetchReq(form: ModelsForm): Record<string, unknown> {
+  const apiKey = form.apiKey.trim();
   return {
     baseUrl: form.baseUrl.trim(),
-    provider: form.providerId.trim() || CUSTOM_PROVIDER_ID
+    provider: form.providerId.trim() || CUSTOM_PROVIDER_ID,
+    ...(apiKey.length > 0 ? { apiKey } : {})
   };
 }
 
@@ -1151,10 +1167,15 @@ export function normalizeFetchedModels(raw: unknown): string[] {
         ? entry.trim()
         : typeof asRecord(entry).id === 'string'
           ? (asRecord(entry).id as string).trim()
-          : '';
+          : typeof asRecord(entry).name === 'string'
+            ? (asRecord(entry).name as string).trim()
+            : typeof asRecord(entry).model === 'string'
+              ? (asRecord(entry).model as string).trim()
+              : '';
     if (id.length > 0 && !out.includes(id)) {
       out.push(id);
     }
   }
   return out;
 }
+

@@ -266,7 +266,7 @@ export async function saveModelsForm(
   deps: ModelsFileDeps,
   payload: ModelsSavePayload
 ): Promise<ModelsSaveOutcome> {
-  const baseUrl = typeof payload.baseUrl === 'string' ? payload.baseUrl.trim() : '';
+  const rawBaseUrl = typeof payload.baseUrl === 'string' ? payload.baseUrl.trim() : '';
   const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
   const modelName = typeof payload.modelName === 'string' ? payload.modelName.trim() : '';
   const reasoning = payload.reasoning === true || payload.thinking === true;
@@ -278,9 +278,6 @@ export async function saveModelsForm(
   const requestedProviderId =
     typeof payload.providerId === 'string' ? payload.providerId.trim() : '';
 
-  if (baseUrl.length === 0) {
-    return { error: 'Base URL 不能为空。' };
-  }
   if (requestedProviderId.length > 0 && !PROVIDER_ID_RE.test(requestedProviderId)) {
     return { error: `Provider id 只允许字母数字与 . _ -（收到 "${requestedProviderId}"）。` };
   }
@@ -300,6 +297,16 @@ export async function saveModelsForm(
   const existing = isRecord(providers[providerId])
     ? (providers[providerId] as Record<string, unknown>)
     : {};
+
+  const baseUrl = rawBaseUrl.length > 0
+    ? rawBaseUrl
+    : typeof existing.baseUrl === 'string'
+      ? existing.baseUrl.trim()
+      : '';
+
+  if (baseUrl.length === 0) {
+    return { error: 'Base URL 不能为空。' };
+  }
 
   const models = (Array.isArray(existing.models) ? existing.models : []).filter(isRecord);
 

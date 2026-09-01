@@ -244,11 +244,35 @@ export async function createPiRuntime(
     settingsManager
   });
 
+  const syncToolsToSession = (): void => {
+    const s = session as unknown as {
+      _customTools?: ToolDefinition[];
+      _refreshToolRegistry?: (options?: { activeToolNames?: string[] }) => void;
+    };
+    if (Array.isArray(s._customTools) && typeof s._refreshToolRegistry === 'function') {
+      const allBusinessTools = buildBusinessTools(pi, handlers, agentDir);
+      const existingNames = new Set(s._customTools.map((t) => t.name));
+      let added = false;
+      for (const tool of allBusinessTools) {
+        if (!existingNames.has(tool.name)) {
+          s._customTools.push(tool);
+          registeredBusinessNames.add(tool.name);
+          added = true;
+        }
+      }
+      if (added) {
+        s._refreshToolRegistry({ activeToolNames: activeToolNames(handlers, extraToolNames) });
+        return;
+      }
+    }
+    session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
+  };
+
   // 初始 active = 发现工具 + 常驻附加工具 + 当前暴露的业务工具；
   // select 变化后即时同步。
-  session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
+  syncToolsToSession();
   const selectionSub = handlers.hub.selection.onDidChange(() => {
-    session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
+    syncToolsToSession();
   });
 
   // P1-15：目录重建请求排队到会话 idle（agent_end）后再回调 host——
@@ -277,15 +301,8 @@ export async function createPiRuntime(
   };
 
   // P1：工具目录变化（插件桥接上线/下线）时热刷新工具面。
-  // 已知限制：pi 的 AgentSession 只在 createAgentSession 期接收 customTools
-  // （AgentSessionConfig.customTools，之后是私有 _customTools），0.84.3 没有
-  // 任何公开 API 能事后追加/替换 ToolDefinition（reload() 只重载资源）。
-  // 因此：
-  // - 下线工具立即消失、重新上线的已注册工具立即恢复（setActiveToolsByName）；
-  // - 目录里出现全新的业务工具时，经 requestCatalogRebuild 通知 host 重建
-  //   runtime（P1-15：流式中排队到 idle），新工具才能进模型工具面。
   const toolsSub = handlers.hub.onDidChangeTools?.(() => {
-    session.setActiveToolsByName(activeToolNames(handlers, extraToolNames));
+    syncToolsToSession();
     if (catalogGainedNewBusinessTool(registeredBusinessNames, handlers.hub.listAllTools())) {
       requestCatalogRebuild();
     }

@@ -1,10 +1,21 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import type { NoticeAction } from '../../protocol/host-protocol';
 import { t, tf } from '../i18n';
 import { COPIED_FEEDBACK_MS, copyText } from '../lib/clipboard';
 import { useOpsStore } from '../store';
-import { assistantDisplay, visibleUntrustedQuotes, thinkingMetaVisible, formatThinkingDurationMs, type TimelineStripEntry } from '../store-helpers';
+import {
+  assistantDisplay,
+  distanceFromBottom,
+  formatApprovalRefLabel,
+  formatElapsedSeconds,
+  formatThinkingDurationMs,
+  isPinnedToBottom as elementPinnedToBottom,
+  stickyTailSignature,
+  thinkingMetaVisible,
+  visibleUntrustedQuotes,
+  type TimelineStripEntry
+} from '../store-helpers';
 import { getVsCodeApi } from '../vscode-api';
 import EvidenceNote from './EvidenceNote.vue';
 import MarkdownBlock from './MarkdownBlock.vue';
@@ -63,7 +74,8 @@ function toggleGroup(id: string): void {
 
 // ── 简单块级虚拟化：仅当超长会话（>250 条）时启动，避免常规会话 DOM 卸载导致高度跳动 ──
 const VIRTUAL_MIN = 250;
-const EST_HEIGHT = 120; // 调高单条估高
+/** 非 DOM 行的估高（px）；粘底时末条由 ResizeObserver 实测，用于 refine padBottom / 滚动同步。 */
+const EST_HEIGHT = 120;
 const OVERSCAN = 30;
 
 const range = ref({ start: 0, end: Number.MAX_SAFE_INTEGER });
@@ -72,10 +84,29 @@ const virtual = computed(() => store.renderItems.length > VIRTUAL_MIN);
 const visibleEntries = computed(() =>
   virtual.value ? store.renderItems.slice(range.value.start, range.value.end) : store.renderItems
 );
+
+/** 末条渲染节点：粘底时用 ResizeObserver 实测高度，减轻 EST_HEIGHT 估高偏差带来的跳动。 */
+const lastEntryEl = ref<HTMLElement | null>(null);
+const lastEntryHeight = ref(EST_HEIGHT);
+
 const padTop = computed(() => (virtual.value ? range.value.start * EST_HEIGHT : 0));
-const padBottom = computed(() =>
-  virtual.value ? Math.max(0, store.renderItems.length - range.value.end) * EST_HEIGHT : 0
-);
+const padBottom = computed(() => {
+  if (!virtual.value) {
+    return 0;
+  }
+  const hidden = Math.max(0, store.renderItems.length - range.value.end);
+  if (hidden === 0) {
+    return 0;
+  }
+  // 粘底：尾屏全渲染，不垫底；末条高度由 lastEntryHeight 驱动滚动（见 observeLastEntry）。
+  if (isPinnedToBottom.value) {
+    return 0;
+  }
+  // 非粘底：末条若在 DOM 中则 padBottom 减去 (EST − 实测) 一档，减轻 range 更新时的 scrollHeight 跳变。
+  const measured = lastEntryHeight.value > 0 ? lastEntryHeight.value : EST_HEIGHT;
+  const delta = Math.max(0, EST_HEIGHT - measured);
+  return Math.max(0, hidden * EST_HEIGHT - delta);
+});
 
 function updateRange(): void {
   if (!virtual.value) {
@@ -94,19 +125,51 @@ function updateRange(): void {
   }
 }
 
-// 用户向上滚动标记：如果用户正在阅读思维链或上方历史，绝不强行自动滚动到底部
-const userScrolledUp = ref(false);
+// 粘底标记：true = 视口在底部，流式输出时自动跟随；用户上翻 >80px 后变为 false
+const isPinnedToBottom = ref(true);
+
+// OPT-8：空 assistant 流式占位「正在巡检…」累计时长
+const inspectingElapsedMs = ref(0);
+let inspectingTimer: ReturnType<typeof setInterval> | null = null;
+
+function startInspectingTimer(): void {
+  stopInspectingTimer();
+  const start = Date.now();
+  inspectingElapsedMs.value = 0;
+  inspectingTimer = setInterval(() => {
+    inspectingElapsedMs.value = Date.now() - start;
+  }, 100);
+}
+
+function stopInspectingTimer(): void {
+  if (inspectingTimer) {
+    clearInterval(inspectingTimer);
+    inspectingTimer = null;
+  }
+}
+
+watch(
+  () => store.streaming,
+  (streaming) => {
+    if (streaming) {
+      startInspectingTimer();
+    } else {
+      stopInspectingTimer();
+    }
+  },
+  { immediate: true }
+);
 
 // 滚动：rAF 节流更新窗口；滚动位置进 getState
 let scrollRaf = 0;
 function onScroll(): void {
   const el = scroller.value;
   if (el) {
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom > 80) {
-      userScrolledUp.value = true;
-    } else if (distanceFromBottom < 30) {
-      userScrolledUp.value = false;
+    const dist = distanceFromBottom(el);
+    if (dist > 80) {
+      isPinnedToBottom.value = false;
+    } else if (elementPinnedToBottom(el)) {
+      isPinnedToBottom.value = true;
     }
   }
 
@@ -134,19 +197,26 @@ function scrollToBottom(smooth = false): void {
       end: store.renderItems.length
     };
   }
+  isPinnedToBottom.value = true;
   if (smooth) {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-  } else {
-    el.scrollTop = el.scrollHeight;
+    return;
   }
-  userScrolledUp.value = false;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      const target = scroller.value;
+      if (!target) {
+        return;
+      }
+      target.scrollTop = target.scrollHeight;
+    });
+  });
 }
 
 watch(
-  () => [store.items.length, store.streaming ? Date.now() : 0],
+  () => [stickyTailSignature(store.items), store.streaming, store.renderItems.length],
   async () => {
-    // 若用户正在上方查看思考或历史，保持视图稳定，不抢焦点
-    if (userScrolledUp.value) {
+    if (!isPinnedToBottom.value) {
       updateRange();
       return;
     }
@@ -156,16 +226,88 @@ watch(
   { deep: false }
 );
 
+let resizeObserver: ResizeObserver | null = null;
+let lastEntryObserver: ResizeObserver | null = null;
+
+function bindLastEntryRef(el: Element | null, idx: number): void {
+  if (!virtual.value || idx !== visibleEntries.value.length - 1) {
+    return;
+  }
+  lastEntryEl.value = el as HTMLElement | null;
+}
+
+function observeLastEntry(el: HTMLElement | null): void {
+  lastEntryObserver?.disconnect();
+  lastEntryObserver = null;
+  if (!el || typeof ResizeObserver === 'undefined') {
+    return;
+  }
+  lastEntryObserver = new ResizeObserver((entries) => {
+    const h = entries[0]?.contentRect.height;
+    if (h && h > 0) {
+      lastEntryHeight.value = h;
+    }
+    if (!isPinnedToBottom.value || !virtual.value) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const target = scroller.value;
+        if (target && isPinnedToBottom.value) {
+          target.scrollTop = target.scrollHeight;
+        }
+      });
+    });
+  });
+  lastEntryObserver.observe(el);
+  const initial = el.getBoundingClientRect().height;
+  if (initial > 0) {
+    lastEntryHeight.value = initial;
+  }
+}
+
+watch(
+  () => [lastEntryEl.value, visibleEntries.value.length, virtual.value] as const,
+  () => {
+    observeLastEntry(lastEntryEl.value);
+  },
+  { flush: 'post' }
+);
+
 onMounted(async () => {
   await nextTick();
   const state = getVsCodeApi().getState() as { transcriptScrollTop?: number } | undefined;
   const el = scroller.value;
   if (el && typeof state?.transcriptScrollTop === 'number' && state.transcriptScrollTop > 0) {
     el.scrollTop = state.transcriptScrollTop;
+    isPinnedToBottom.value = elementPinnedToBottom(el, 80);
   } else {
     scrollToBottom(false);
   }
   updateRange();
+
+  if (el && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      if (!isPinnedToBottom.value) {
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const target = scroller.value;
+          if (target && isPinnedToBottom.value) {
+            target.scrollTop = target.scrollHeight;
+          }
+        });
+      });
+    });
+    resizeObserver.observe(el);
+  }
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  lastEntryObserver?.disconnect();
+  stopInspectingTimer();
 });
 
 /** 审批行：批准/拒绝/超时 · HH:mm:ss；旧会话无 decision 仍显示「已处理」。 */
@@ -232,7 +374,12 @@ async function copyMessage(id: string, text: string): Promise<void> {
     <!-- 空态由 ChatApp 的欢迎页承接（items 为空时本组件不渲染），避免双重空态 -->
     <div ref="scroller" class="transcript" role="log" :aria-label="t('transcriptAria')" @scroll="onScroll">
     <div v-if="padTop > 0" class="transcript__pad" :style="{ height: padTop + 'px' }" aria-hidden="true"></div>
-    <template v-for="entry in visibleEntries" :key="entry.id">
+    <div
+      v-for="(entry, idx) in visibleEntries"
+      :key="entry.id"
+      :ref="(el) => bindLastEntryRef(el as Element | null, idx)"
+      class="transcript__entry"
+    >
       <!-- 连续只读工具聚合组：折叠头一行，展开后逐条工具卡 -->
       <section v-if="entry.kind === 'toolGroup'" class="toolgroup">
         <button
@@ -270,6 +417,9 @@ async function copyMessage(id: string, text: string): Promise<void> {
           >
             <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
             <span>{{ t('inspectingProgress') }}</span>
+            <span v-if="store.streaming" class="transcript__inspecting-elapsed">{{
+              formatElapsedSeconds(inspectingElapsedMs)
+            }}</span>
           </div>
           <div
             v-else-if="assistantDisplay(entry.item) === 'content'"
@@ -332,7 +482,11 @@ async function copyMessage(id: string, text: string): Promise<void> {
 
         <SubagentBoard v-else-if="entry.item.kind === 'subagents'" :agents="entry.item.agents" />
 
-        <EvidenceNote v-else-if="entry.item.kind === 'evidence'" :note="entry.item.note" />
+        <EvidenceNote
+          v-else-if="entry.item.kind === 'evidence'"
+          :note="entry.item.note"
+          :ts="entry.item.ts"
+        />
 
         <div
           v-else-if="entry.item.kind === 'approval'"
@@ -345,7 +499,15 @@ async function copyMessage(id: string, text: string): Promise<void> {
             aria-hidden="true"
           ></span>
           <span class="transcript__approval-label ops-muted">{{ t('approvalRequestLabel') }}</span>
-          <span class="transcript__approval-target ops-mono">{{ entry.item.targetLabel ?? entry.item.briefId }}</span>
+          <span
+            class="transcript__approval-target ops-mono"
+            :title="entry.item.briefId"
+          >{{ formatApprovalRefLabel(entry.item) }}</span>
+          <span
+            v-if="entry.item.targetLabel"
+            class="transcript__approval-detail ops-muted"
+            :title="entry.item.targetLabel"
+          >{{ entry.item.targetLabel }}</span>
           <span
             v-if="store.pendingApproval && store.pendingApproval.id === entry.item.briefId"
             class="transcript__approval-status ops-muted"
@@ -389,13 +551,13 @@ async function copyMessage(id: string, text: string): Promise<void> {
           <span>{{ entry.item.text }}</span>
         </div>
       </template>
-    </template>
+    </div>
     <div v-if="padBottom > 0" class="transcript__pad" :style="{ height: padBottom + 'px' }" aria-hidden="true"></div>
     </div>
 
     <!-- 浮动「回到底部」胶囊按钮：当用户向上翻阅思考过程或历史时出现，点击平滑滚动到底部 -->
     <button
-      v-if="userScrolledUp"
+      v-if="!isPinnedToBottom"
       type="button"
       class="transcript__scroll-btn"
       :title="t('scrollToBottom')"
@@ -518,6 +680,11 @@ async function copyMessage(id: string, text: string): Promise<void> {
   flex: 0 0 auto;
 }
 
+.transcript__entry {
+  flex-shrink: 0;
+  min-width: 0;
+}
+
 /* 保护每一行在 Flex 容器中不被挤压（flex-shrink: 0） */
 .transcript__msg,
 .toolgroup,
@@ -567,18 +734,24 @@ async function copyMessage(id: string, text: string): Promise<void> {
   min-width: 0;
 }
 
-.transcript__copy-msg,
+.transcript__copy-msg {
+  opacity: 0.45;
+}
+
+.transcript__copy-msg:hover,
+.transcript__copy-msg:focus-visible,
+.transcript__copy-msg.ops-copy-btn--copied {
+  opacity: 1;
+}
+
 .transcript__save-doc {
   opacity: 0;
   width: 22px;
   height: 22px;
 }
 
-.transcript__msg--agent:hover .transcript__copy-msg,
 .transcript__msg--agent:hover .transcript__save-doc,
-.transcript__copy-msg:focus-visible,
-.transcript__save-doc:focus-visible,
-.transcript__copy-msg.ops-copy-btn--copied {
+.transcript__save-doc:focus-visible {
   opacity: 1;
 }
 
@@ -620,6 +793,11 @@ async function copyMessage(id: string, text: string): Promise<void> {
   align-items: center;
   gap: var(--ops-space-2);
   font-size: var(--ops-font-sm);
+}
+
+.transcript__inspecting-elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--ops-muted);
 }
 
 .transcript__thinking {

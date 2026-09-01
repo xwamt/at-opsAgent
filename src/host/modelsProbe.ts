@@ -83,22 +83,42 @@ function headersFor(apiKey: string | undefined): Record<string, string> {
   return headers;
 }
 
-/** 解析 OpenAI 兼容 /models 响应（{data:[{id}]} 或 {models:[…]}）。 */
+/** 判断模型 ID 是否属于已知具备深度思考 / Reasoning 能力的模型 */
+export function isReasoningModel(modelId: string | undefined): boolean {
+  if (!modelId || typeof modelId !== 'string') return false;
+  const lower = modelId.toLowerCase();
+  return (
+    lower.includes('deepseek-r1') ||
+    lower.includes('reasoner') ||
+    lower.includes('thinking') ||
+    lower.includes('qwq') ||
+    /(^|[-_/])(o1|o3|r1)([-_/]|$)/.test(lower) ||
+    lower.includes('claude-3-7-sonnet')
+  );
+}
+
+/** 解析 OpenAI / Ollama / OpenRouter 兼容 /models 响应（{data:[{id}]}、{models:[…]} 或数组）。 */
 export function parseModelList(payload: unknown): string[] {
   if (typeof payload !== 'object' || payload === null) return [];
-  const record = payload as Record<string, unknown>;
-  const list = Array.isArray(record.data)
-    ? record.data
-    : Array.isArray(record.models)
-      ? record.models
-      : [];
+  const list: unknown[] = Array.isArray(payload)
+    ? payload
+    : Array.isArray((payload as Record<string, unknown>).data)
+      ? ((payload as Record<string, unknown>).data as unknown[])
+      : Array.isArray((payload as Record<string, unknown>).models)
+        ? ((payload as Record<string, unknown>).models as unknown[])
+        : [];
   const ids: string[] = [];
   for (const entry of list) {
-    if (typeof entry === 'string' && entry.length > 0) {
-      ids.push(entry);
+    if (typeof entry === 'string' && entry.trim().length > 0) {
+      ids.push(entry.trim());
     } else if (entry && typeof entry === 'object') {
-      const id = (entry as { id?: unknown; name?: unknown }).id ?? (entry as { name?: unknown }).name;
-      if (typeof id === 'string' && id.length > 0) ids.push(id);
+      const rec = entry as Record<string, unknown>;
+      const id =
+        (typeof rec.id === 'string' && rec.id.trim()) ||
+        (typeof rec.name === 'string' && rec.name.trim()) ||
+        (typeof rec.model === 'string' && rec.model.trim()) ||
+        '';
+      if (id.length > 0) ids.push(id);
     }
   }
   return [...new Set(ids)];
@@ -161,27 +181,66 @@ export async function probeOpenAiCompatible(input: ProbeInput): Promise<ProbeRes
   }
 }
 
-/** 拉取模型目录：GET /models → 模型 id 清单（P1-1）。 */
+/**
+ * 拉取模型目录：自动尝试 candidate 端点（/models -> /v1/models -> /api/tags）。
+ * 成功返回模型 ID 清单，失败返回中文诊断信息。
+ */
 export async function fetchModelCatalog(input: ProbeInput): Promise<FetchModelsResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const baseUrl = input.baseUrl.trim();
   if (baseUrl.length === 0) return { ok: false, error: 'Base URL 不能为空。' };
-  try {
-    const res = await fetchImpl(joinBaseUrl(baseUrl, 'models'), {
-      method: 'GET',
-      headers: headersFor(input.apiKey),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!res.ok) {
-      return { ok: false, error: describeHttpStatus(res.status) };
-    }
-    const models = parseModelList(await res.json().catch(() => undefined));
-    if (models.length === 0) {
-      return { ok: false, error: '目录响应里没有可用的模型 id（响应格式不是 OpenAI 兼容 /models）。' };
-    }
-    return { ok: true, models };
-  } catch (err) {
-    return { ok: false, error: describeNetworkError(err) };
+
+  // 构造候选端点列表（按优先级尝试）
+  const candidateUrls: string[] = [joinBaseUrl(baseUrl, 'models')];
+  const trimmed = baseUrl.replace(/\/+$/, '');
+  if (!trimmed.endsWith('/v1')) {
+    candidateUrls.push(joinBaseUrl(baseUrl, 'v1/models'));
   }
+  candidateUrls.push(joinBaseUrl(baseUrl, 'api/tags')); // Ollama 原生端点
+
+  let lastError = '';
+  let lastStatus: number | undefined;
+
+  for (const url of candidateUrls) {
+    try {
+      const res = await fetchImpl(url, {
+        method: 'GET',
+        headers: headersFor(input.apiKey),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      if (res.ok) {
+        const rawJson = await res.json().catch(() => undefined);
+        const models = parseModelList(rawJson);
+        if (models.length > 0) {
+          return { ok: true, models };
+        }
+        lastError = '目录响应里没有可用的模型 id（响应格式不是 OpenAI 兼容 /models 或 Ollama /api/tags）。';
+      } else {
+        lastStatus = res.status;
+        if (res.status === 401 || res.status === 403 || res.status === 429) {
+          // 鉴权或限流失败无需尝试其他端点，立即返回明确提示
+          return { ok: false, error: describeHttpStatus(res.status) };
+        }
+      }
+    } catch (err) {
+      lastError = describeNetworkError(err);
+      // 网络级错误（如域名不通）中断探测
+      if (lastError.includes('DNS') || lastError.includes('连接被拒绝')) {
+        return { ok: false, error: lastError };
+      }
+    }
+  }
+
+  if (lastError) {
+    return { ok: false, error: lastError };
+  }
+  if (lastStatus !== undefined && lastStatus !== 404) {
+    return { ok: false, error: describeHttpStatus(lastStatus) };
+  }
+  return {
+    ok: false,
+    error: '无法从该 API 获取模型列表：/models 与 /v1/models 均未返回有效的模型数据。'
+  };
 }
+

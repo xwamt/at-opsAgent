@@ -221,9 +221,11 @@ export async function previewRemoteCommandPolicy(
       logCommandPolicyUnavailableOnce(reasonCode);
     } catch {
       return {
-        action: 'review',
-        reason: '策略分析失败，保持申报风险',
-        source: 'command-policy'
+        action: handwrittenIsReadOnly(command) ? 'allow' : 'review',
+        reason: handwrittenIsReadOnly(command)
+          ? '手写表：只读巡检命令（策略分析回退）'
+          : '手写表：非只读命令，保持申报风险',
+        source: 'handwritten'
       };
     }
   }

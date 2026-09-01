@@ -9,6 +9,7 @@ const props = withDefaults(
   defineProps<{
     text?: string;
     isRunning?: boolean;
+    runningHint?: string;
     exitCode?: number;
     uri?: string;
     truncated?: boolean;
@@ -167,7 +168,7 @@ function toggleAutoScroll(): void {
       </div>
       <div v-else class="terminal-win__empty ops-muted">
         <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
-        <span>{{ t('terminalRunning') }}</span>
+        <span>{{ props.runningHint || t('terminalRunning') }}</span>
       </div>
     </div>
 

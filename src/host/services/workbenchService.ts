@@ -1,7 +1,7 @@
 /**
  * 工作台服务（编辑器 / 窗口交互的小件）：
  * - asset/pick：QuickPick 选素材附进 Composer（证据便签 + 工作区文件）；
- * - chat/export（P1-10）：指定/活动会话 → Markdown 值班报告（取消保存零 IO）；
+ * - chat/export（P1-10 / OPT-10）：指定/活动会话 → Markdown/JSON 值班报告（取消保存零 IO）；
  * - clipboard/write：host 回退剪贴板；
  * - log/open：LogViewer「在编辑器打开」；
  * - skill/run：内置技能无用户入口，收到请求只记日志（无害 no-op）。
@@ -11,9 +11,25 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AssetPickRes, TranscriptItem } from '../../protocol';
-import { buildOpsReportMarkdown, exportReportFileName } from '../exportReport';
+import {
+  buildOpsReportJson,
+  buildOpsReportMarkdown,
+  exportReportFileName,
+  type ExportReportFormat
+} from '../exportReport';
 import { AUDIT_WINDOW_CHOICES, copyAuditWindow } from './auditChain';
 import { describeError, type HostContext } from './context';
+
+export type ExportReportRequest = {
+  sessionId?: string;
+  format?: ExportReportFormat;
+  sanitize?: boolean;
+};
+
+type ExportPickResult = {
+  format: ExportReportFormat;
+  sanitize: boolean;
+};
 
 export class WorkbenchService {
   constructor(private readonly ctx: HostContext) {}
@@ -68,32 +84,96 @@ export class WorkbenchService {
     return { items: picked ? [picked.asset] : [] };
   }
 
+  /** QuickPick：Markdown/JSON + 脱敏开关（缺省项由调用方传入时跳过）。 */
+  private async pickExportOptions(
+    preset?: Pick<ExportReportRequest, 'format' | 'sanitize'>
+  ): Promise<ExportPickResult | undefined> {
+    let format = preset?.format;
+    if (!format) {
+      type FormatItem = vscode.QuickPickItem & { format: ExportReportFormat };
+      const formatPick = await vscode.window.showQuickPick<FormatItem>(
+        [
+          {
+            label: 'Markdown (.md)',
+            description: vscode.l10n.t('人类可读值班报告'),
+            format: 'markdown'
+          },
+          {
+            label: 'JSON (.json)',
+            description: vscode.l10n.t('结构化 DutyReportV1'),
+            format: 'json'
+          }
+        ],
+        { placeHolder: vscode.l10n.t('选择导出格式') }
+      );
+      if (!formatPick) return undefined;
+      format = formatPick.format;
+    }
+
+    let sanitize = preset?.sanitize;
+    if (sanitize === undefined) {
+      type SanitizeItem = vscode.QuickPickItem & { sanitize: boolean };
+      const sanitizePick = await vscode.window.showQuickPick<SanitizeItem>(
+        [
+          {
+            label: vscode.l10n.t('脱敏（推荐）'),
+            description: vscode.l10n.t('隐藏 Bearer / token / 密钥等'),
+            sanitize: true
+          },
+          {
+            label: vscode.l10n.t('原始（未脱敏）'),
+            description: vscode.l10n.t('请谨慎分享'),
+            sanitize: false
+          }
+        ],
+        { placeHolder: vscode.l10n.t('是否脱敏敏感内容') }
+      );
+      if (!sanitizePick) return undefined;
+      sanitize = sanitizePick.sanitize;
+    }
+
+    return { format, sanitize };
+  }
+
   /**
-   * chat/export（P1-10）：指定会话（缺省活动会话）→ Markdown 值班报告。
+   * chat/export（P1-10 / OPT-10）：指定会话（缺省活动会话）→ 值班报告。
    * showSaveDialog 选路径；取消（undefined）时零 write、零 openTextDocument。
-   * 报告绝不包含审批令牌 / API key。
    */
-  async exportReport(sessionId?: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+  async exportReport(req?: ExportReportRequest): Promise<{ ok: boolean; path?: string; error?: string }> {
     const store = this.ctx.store;
     const sid =
-      typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : store.activeSessionId;
+      typeof req?.sessionId === 'string' && req.sessionId.length > 0
+        ? req.sessionId
+        : store.activeSessionId;
+    const picked = await this.pickExportOptions(req);
+    if (!picked) return { ok: false };
+
     const session = store.sessions.find((s) => s.id === sid);
     const playbook = store.playbookOf(sid);
     const isActive = sid === store.activeSessionId;
-    const markdown = buildOpsReportMarkdown({
+    const baseInput = {
       sessionId: sid,
       ...(session !== undefined ? { sessionTitle: session.title } : {}),
       ...(playbook !== undefined ? { playbook } : {}),
       items: store.itemsOf(sid),
       timeline: isActive ? store.timeline : [],
-      pendingBriefs: isActive ? store.pendingBriefs : []
-    });
-    const fileName = exportReportFileName();
+      pendingBriefs: isActive ? store.pendingBriefs : [],
+      sanitize: picked.sanitize
+    };
+    const contents =
+      picked.format === 'json'
+        ? buildOpsReportJson(baseInput)
+        : buildOpsReportMarkdown(baseInput);
+    const fileName = exportReportFileName(undefined, picked.format);
+    const filters: Record<string, string[]> =
+      picked.format === 'json'
+        ? { JSON: ['json'] }
+        : { Markdown: ['md'] };
     let target: vscode.Uri | undefined;
     try {
       target = await vscode.window.showSaveDialog({
         defaultUri: vscode.Uri.file(path.join(os.homedir(), fileName)),
-        filters: { Markdown: ['md'] },
+        filters,
         title: vscode.l10n.t('导出值班报告')
       });
     } catch {
@@ -103,13 +183,14 @@ export class WorkbenchService {
       return { ok: false }; // 取消：零 write、零 openTextDocument
     }
     try {
-      await fs.writeFile(target.fsPath, markdown, 'utf8');
+      await fs.writeFile(target.fsPath, contents, 'utf8');
       const doc = await vscode.workspace.openTextDocument(target);
       await vscode.window.showTextDocument(doc, { preview: false });
       this.ctx.log(`[export] 值班报告已导出：${target.fsPath}`);
       this.ctx.emitDuty?.('export', sid, {
         path: target.fsPath,
-        format: 'markdown',
+        format: picked.format,
+        sanitize: picked.sanitize,
         sessionId: sid
       });
       return { ok: true, path: target.fsPath };

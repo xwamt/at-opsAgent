@@ -42,7 +42,7 @@ import { describeError, HostContext } from './services/context';
 import { ModelService } from './services/modelService';
 import { createOtelExporter } from './services/otel';
 import { PlaybookService } from './services/playbookService';
-import { WorkbenchService } from './services/workbenchService';
+import { WorkbenchService, type ExportReportRequest } from './services/workbenchService';
 import { saveOpsDocFromTranscript } from './services/opsDocService';
 import { editEnvironmentFile } from './services/longTermMemory';
 import { memoryDirOf } from './services/stageLayers';
@@ -170,7 +170,7 @@ export class HostController {
       case 'chat/retry':
         return this.chat.retryLastPrompt();
       case 'chat/export':
-        return this.workbench.exportReport((payload as { sessionId?: string } | undefined)?.sessionId);
+        return this.workbench.exportReport(payload as ExportReportRequest);
       case 'clipboard/write':
         return this.workbench.writeClipboard(String((payload as { text?: string })?.text ?? ''));
       case 'model/set':
@@ -220,6 +220,12 @@ export class HostController {
       case 'session/delete': {
         const p = payload as { id?: string } | undefined;
         return this.chat.deleteSession(p?.id ?? '');
+      }
+      case 'evidence/pin': {
+        const p = payload as { taskId?: string; pinned?: boolean } | undefined;
+        const taskId = typeof p?.taskId === 'string' ? p.taskId : '';
+        const pinned = p?.pinned === true;
+        return this.chat.pinEvidence(taskId, pinned);
       }
       case 'opsDoc/save': {
         const p = payload as { itemId?: string } | undefined;
@@ -334,8 +340,8 @@ export class HostController {
     return this.approvals.applyApproval(req);
   }
 
-  async exportReport(sessionId?: string): Promise<{ ok: boolean; path?: string; error?: string }> {
-    return this.workbench.exportReport(sessionId);
+  async exportReport(req?: ExportReportRequest): Promise<{ ok: boolean; path?: string; error?: string }> {
+    return this.workbench.exportReport(req);
   }
 
   async exportAudit(): Promise<{ ok: boolean; path?: string; error?: string }> {

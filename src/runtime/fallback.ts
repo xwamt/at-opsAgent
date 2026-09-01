@@ -86,7 +86,7 @@ export function classifyPromptError(error: unknown): PromptErrorClass {
   return 'other';
 }
 
-function emitPromptErrorNotice(
+export function emitPromptErrorNotice(
   error: unknown,
   kind: PromptErrorClass,
   onEvent?: (e: OpsRuntimeEvent) => void
@@ -96,11 +96,14 @@ function emitPromptErrorNotice(
   let actions: NoticeAction[] | undefined;
   switch (kind) {
     case 'credential':
-      text = CREDENTIAL_NOTICE;
+      text =
+        sanitized.length > 0 && !CREDENTIAL_NOTICE.includes(sanitized)
+          ? `${CREDENTIAL_NOTICE}（${sanitized}）`
+          : CREDENTIAL_NOTICE;
       actions = [OPEN_SETTINGS_NOTICE_ACTION];
       break;
     case 'missing_config':
-      text = FALLBACK_NOTICE;
+      text = `${FALLBACK_NOTICE}\n（${sanitized}）`;
       actions = [OPEN_SETTINGS_NOTICE_ACTION];
       break;
     case 'transient':
@@ -109,6 +112,7 @@ function emitPromptErrorNotice(
       break;
     default:
       text = `模型调用失败：${sanitized}`;
+      actions = [RETRY_NOTICE_ACTION, OPEN_SETTINGS_NOTICE_ACTION];
       break;
   }
   onEvent?.({ type: 'text_delta', id: randomUUID(), text });

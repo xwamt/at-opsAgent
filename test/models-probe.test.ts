@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   describeNetworkError,
   fetchModelCatalog,
+  isReasoningModel,
   joinBaseUrl,
   parseModelList,
   probeOpenAiCompatible,
@@ -109,6 +110,22 @@ describe('probeOpenAiCompatible', () => {
   });
 });
 
+describe('isReasoningModel', () => {
+  it('智能识别 R1、O1、O3、QwQ、Reasoner 等深度思考模型', () => {
+    expect(isReasoningModel('deepseek-r1')).toBe(true);
+    expect(isReasoningModel('deepseek-ai/DeepSeek-R1')).toBe(true);
+    expect(isReasoningModel('deepseek-reasoner')).toBe(true);
+    expect(isReasoningModel('o1-mini')).toBe(true);
+    expect(isReasoningModel('o3-mini')).toBe(true);
+    expect(isReasoningModel('qwq-32b-preview')).toBe(true);
+    expect(isReasoningModel('claude-3-7-sonnet-20250219')).toBe(true);
+    expect(isReasoningModel('gpt-4o')).toBe(false);
+    expect(isReasoningModel('qwen-plus')).toBe(false);
+    expect(isReasoningModel('')).toBe(false);
+    expect(isReasoningModel(undefined)).toBe(false);
+  });
+});
+
 describe('fetchModelCatalog', () => {
   it('/models 成功 → 模型 id 清单', async () => {
     const fetchImpl = vi.fn(async () =>
@@ -118,11 +135,44 @@ describe('fetchModelCatalog', () => {
     expect(res).toEqual({ ok: true, models: ['deepseek-v3', 'qwen-max'] });
   });
 
-  it('响应非 OpenAI 兼容格式 → 明确报错', async () => {
+  it('/models 404 时自动 fallback 到 /v1/models', async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      calls.push(String(url));
+      if (String(url) === 'https://gw.local/models') return jsonResponse(404);
+      if (String(url) === 'https://gw.local/v1/models') {
+        return jsonResponse(200, { data: [{ id: 'gpt-4o' }] });
+      }
+      return jsonResponse(404);
+    }) as unknown as typeof fetch;
+    const res = await fetchModelCatalog({ baseUrl: 'https://gw.local', fetchImpl });
+    expect(res).toEqual({ ok: true, models: ['gpt-4o'] });
+    expect(calls).toContain('https://gw.local/models');
+    expect(calls).toContain('https://gw.local/v1/models');
+  });
+
+  it('兼容 Ollama /api/tags 端点与响应格式', async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      calls.push(String(url));
+      if (String(url).endsWith('/api/tags')) {
+        return jsonResponse(200, {
+          models: [{ name: 'llama3:latest', model: 'llama3:latest' }, { name: 'qwen2.5:7b' }]
+        });
+      }
+      return jsonResponse(404);
+    }) as unknown as typeof fetch;
+    const res = await fetchModelCatalog({ baseUrl: 'http://localhost:11434', fetchImpl });
+    expect(res).toEqual({ ok: true, models: ['llama3:latest', 'qwen2.5:7b'] });
+  });
+
+  it('响应非 OpenAI / Ollama 兼容格式 → 明确报错', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, { hello: 'world' })) as unknown as typeof fetch;
     const res = await fetchModelCatalog({ baseUrl: 'https://gw.local/v1', fetchImpl });
-    expect(res.ok).toBe(false);
-    expect(res.error).toContain('没有可用的模型 id');
+    expect(res).toEqual({
+      ok: false,
+      error: '目录响应里没有可用的模型 id（响应格式不是 OpenAI 兼容 /models 或 Ollama /api/tags）。'
+    });
   });
 
   it('401 → Key 无效分类', async () => {
@@ -146,3 +196,4 @@ describe('脱敏', () => {
     expect(msg).not.toContain('sk-abcdefgh1234');
   });
 });
+

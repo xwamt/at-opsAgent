@@ -9,7 +9,7 @@
  * 代码块 hover 复制：不把 Vue 事件写进 v-html。fence 仍由 markdown-it 输出 pre，
  * mounted/updated 时清旧 .ops-copy-btn 再插入按钮，复制 pre.innerText（不是 HTML）。
  */
-import { computed, onMounted, onUpdated, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue';
 import { t } from '../i18n';
 import { COPIED_FEEDBACK_MS, copyText } from '../lib/clipboard';
 import { renderMarkdown } from '../lib/markdown';
@@ -18,6 +18,8 @@ const props = defineProps<{ source: string; streaming?: boolean }>();
 
 const html = computed(() => renderMarkdown(props.source ?? '', !!props.streaming));
 const root = ref<HTMLElement | null>(null);
+
+let copyBindTimer: ReturnType<typeof setTimeout> | undefined;
 
 function ensureFence(pre: HTMLElement): HTMLElement {
   const parent = pre.parentElement;
@@ -31,15 +33,39 @@ function ensureFence(pre: HTMLElement): HTMLElement {
   return wrap;
 }
 
+function fenceLang(pre: HTMLElement): string | null {
+  const code = pre.querySelector('code');
+  if (!code) {
+    return null;
+  }
+  for (const cls of code.classList) {
+    if (cls.startsWith('language-')) {
+      return cls.slice('language-'.length);
+    }
+    if (cls.startsWith('lang-')) {
+      return cls.slice('lang-'.length);
+    }
+  }
+  return null;
+}
+
 function bindCopyButtons(): void {
   const host = root.value;
   if (!host) {
     return;
   }
   host.querySelectorAll('.ops-copy-btn').forEach((btn) => btn.remove());
+  host.querySelectorAll('.ops-md-fence__lang').forEach((el) => el.remove());
   host.querySelectorAll('pre.ops-codeblock, .ops-md pre, pre').forEach((node) => {
     const pre = node as HTMLElement;
     const fence = ensureFence(pre);
+    const lang = fenceLang(pre);
+    if (lang) {
+      const label = document.createElement('span');
+      label.className = 'ops-md-fence__lang ops-muted';
+      label.textContent = lang;
+      fence.appendChild(label);
+    }
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'ops-copy-btn';
@@ -55,6 +81,21 @@ function bindCopyButtons(): void {
     });
     fence.appendChild(btn);
   });
+}
+
+function scheduleBindCopyButtons(): void {
+  if (copyBindTimer !== undefined) {
+    clearTimeout(copyBindTimer);
+    copyBindTimer = undefined;
+  }
+  if (props.streaming) {
+    copyBindTimer = setTimeout(() => {
+      copyBindTimer = undefined;
+      bindCopyButtons();
+    }, 200);
+    return;
+  }
+  bindCopyButtons();
 }
 
 async function onCopyClick(btn: HTMLButtonElement, icon: HTMLElement, pre: HTMLElement): Promise<void> {
@@ -82,7 +123,13 @@ async function onCopyClick(btn: HTMLButtonElement, icon: HTMLElement, pre: HTMLE
 }
 
 onMounted(bindCopyButtons);
-onUpdated(bindCopyButtons);
+onUpdated(scheduleBindCopyButtons);
+
+onBeforeUnmount(() => {
+  if (copyBindTimer !== undefined) {
+    clearTimeout(copyBindTimer);
+  }
+});
 </script>
 
 <template>
@@ -95,24 +142,16 @@ onUpdated(bindCopyButtons);
   position: relative;
 }
 
-.ops-copy-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: var(--ops-radius, 4px);
-  background: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 80%, transparent);
-  color: var(--ops-muted, inherit);
-  cursor: pointer;
-  opacity: 0;
-  flex: 0 0 auto;
-  font-size: calc(var(--ops-font-size, 13px) - 2px);
-  line-height: 1;
-  white-space: nowrap;
+.ops-md-fence__lang {
+  position: absolute;
+  top: 4px;
+  left: var(--ops-space-2);
+  z-index: 1;
+  font-size: var(--ops-font-xs);
+  font-family: var(--ops-mono);
+  text-transform: lowercase;
+  pointer-events: none;
+  user-select: none;
 }
 
 .ops-md-fence > .ops-copy-btn {
@@ -120,27 +159,6 @@ onUpdated(bindCopyButtons);
   top: 4px;
   right: 4px;
   z-index: 1;
-}
-
-.ops-copy-btn:hover {
-  color: var(--ops-fg, inherit);
-  background: var(--ops-toolbar-hover-bg, rgba(127, 127, 127, 0.2));
-}
-
-.ops-copy-btn:focus-visible,
-.ops-md-fence:hover > .ops-copy-btn,
-.ops-copy-btn--copied {
-  opacity: 1;
-}
-
-.ops-copy-btn:focus-visible {
-  outline: 1px solid var(--ops-accent, #3794ff);
-  outline-offset: 1px;
-}
-
-.ops-copy-btn--copied {
-  width: auto;
-  padding: 0 6px;
 }
 
 /* highlight.js：贴近 VS Code token，避免 github-dark 与 --vscode-editor-background 打架 */

@@ -1,8 +1,9 @@
 # Reporting · 日常巡检
 
-Writer 按 service-inspection 模板产出：巡检结果表 + 整改计划表
+Writer 按 inspection-report 模板产出：巡检结果表 + 整改计划表
 （异常项自动生成整改行）。看板巡检卡归档。
 
 **主会话必须自己在对话里写出中文 markdown 巡检结论**（主机、负载、磁盘、
 内存、服务、异常、未检查项），不要假设 Writer 子代理会替你对用户说话；
-没派 Writer 时结论就是你唯一的产出物。close 之前先把结论上屏。
+没派 Writer 时结论就是你唯一的产出物。close 之前先把结论上屏，再用
+ops_write_ops_doc {docType:"inspection-report"} 落盘。

@@ -203,15 +203,19 @@ describe('playbook eval · PlaybookService.closePlaybook（closeRun 单真源）
     expect(fromInvestigating).toEqual(['synthesizing', 'reporting', 'closed']);
 
     const notices = store.itemsOf(sid).filter((item) => item.kind === 'notice');
-    const exportNotice = notices.find(
+    const exportNotices = notices.filter(
       (item) =>
         item.kind === 'notice' && item.actions?.some((action) => action.request === 'chat/export')
     );
-    expect(exportNotice).toMatchObject({
+    expect(exportNotices.some((item) => item.text.includes('reporting'))).toBe(true);
+    const closedExportNotice = exportNotices.find((item) =>
+      item.text.includes('巡检已关闭')
+    );
+    expect(closedExportNotice).toMatchObject({
       kind: 'notice',
       text: '巡检已关闭。可导出值班报告。'
     });
-    expect(exportNotice?.kind === 'notice' ? exportNotice.actions : undefined).toEqual(
+    expect(closedExportNotice?.kind === 'notice' ? closedExportNotice.actions : undefined).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: 'export-report',

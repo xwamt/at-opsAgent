@@ -163,7 +163,7 @@ export type OpsRuntimeEvent =
   | { type: 'text_delta'; id: string; text: string }
   | { type: 'thinking_delta'; id: string; text: string }
   | {
-      type: 'tool_start' | 'tool_end';
+      type: 'tool_start' | 'tool_update' | 'tool_end';
       id: string;
       name: string;
       ok?: boolean;

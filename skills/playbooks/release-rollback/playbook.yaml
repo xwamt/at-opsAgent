@@ -29,11 +29,11 @@ stages:
     prompt: references/verifying.md
   - id: reporting
     prompt: references/reporting.md
-    artifact: service-deployment
+    artifact: deployment
     parallelGroup:
       - id: writer
         role: writer
         allowTools: []
         riskCeiling: read
-        goal: 产出 service-deployment 工件
+        goal: 产出 deployment 工件
   - id: closed

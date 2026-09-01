@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { getLocale, t } from '../i18n';
 import { useOpsStore } from '../store';
 
@@ -8,6 +8,7 @@ const query = ref('');
 const renamingId = ref<string | null>(null);
 const renameDraft = ref('');
 const renameInput = ref<HTMLInputElement | null>(null);
+const deleteConfirmId = ref<string | null>(null);
 
 const filteredSessions = computed(() => {
   const q = query.value.trim().toLowerCase();
@@ -45,12 +46,34 @@ function cancelRename(): void {
   renamingId.value = null;
 }
 
-function confirmDelete(sessionId: string, title: string): void {
-  const ok = window.confirm(`${t('historyDeleteConfirm')}\n${title}`);
-  if (ok) {
-    store.deleteSession(sessionId);
-  }
+function requestDelete(sessionId: string): void {
+  deleteConfirmId.value = sessionId;
 }
+
+function cancelDelete(): void {
+  deleteConfirmId.value = null;
+}
+
+function commitDelete(sessionId: string): void {
+  store.deleteSession(sessionId);
+  deleteConfirmId.value = null;
+}
+
+watch(
+  () => store.pendingRenameSessionId,
+  async (sessionId) => {
+    if (!sessionId || !store.historyOpen) {
+      return;
+    }
+    const session =
+      store.historySessions.find((item) => item.id === sessionId) ??
+      store.sessions.find((item) => item.id === sessionId);
+    store.pendingRenameSessionId = null;
+    if (session) {
+      await startRename(session.id, session.title);
+    }
+  }
+);
 
 function formatTime(createdAt: number): string {
   if (!createdAt) {
@@ -66,6 +89,10 @@ function formatTime(createdAt: number): string {
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
+    if (deleteConfirmId.value) {
+      cancelDelete();
+      return;
+    }
     if (renamingId.value) {
       cancelRename();
       return;
@@ -116,8 +143,26 @@ onBeforeUnmount(() => {
           v-for="session in filteredSessions"
           :key="session.id"
           class="history__item"
-          :class="{ 'history__item--current': session.id === store.sessionId }"
+          :class="{ 'history__item--current': session.id === store.sessionId, 'history__item--confirm': deleteConfirmId === session.id }"
         >
+          <template v-if="deleteConfirmId === session.id">
+            <span class="history__confirm-text ops-muted">{{ t('historyDeleteConfirmInline') }}</span>
+            <button
+              type="button"
+              class="ops-btn ops-btn--danger history__confirm-btn"
+              @click.stop="commitDelete(session.id)"
+            >
+              {{ t('historyDeleteConfirmBtn') }}
+            </button>
+            <button
+              type="button"
+              class="ops-btn ops-btn--secondary history__confirm-btn"
+              @click.stop="cancelDelete"
+            >
+              {{ t('historyDeleteCancelBtn') }}
+            </button>
+          </template>
+          <template v-else>
           <button
             v-if="renamingId !== session.id"
             type="button"
@@ -175,10 +220,11 @@ onBeforeUnmount(() => {
             class="ops-copy-btn history__icon-btn"
             :aria-label="t('historyDeleteAria')"
             :title="t('historyDeleteAria')"
-            @click.stop="confirmDelete(session.id, session.title)"
+            @click.stop="requestDelete(session.id)"
           >
             <span class="codicon codicon-trash" aria-hidden="true"></span>
           </button>
+          </template>
         </div>
         <p v-if="filteredSessions.length === 0" class="history__empty ops-muted">
           {{ t('historyEmpty') }}
@@ -236,8 +282,8 @@ onBeforeUnmount(() => {
 .history__head {
   display: flex;
   align-items: center;
-  gap: var(--ops-density);
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  gap: var(--ops-space-2);
+  padding: var(--ops-space-2) var(--ops-space-3);
   border-bottom: 1px solid var(--ops-border);
 }
 
@@ -250,13 +296,13 @@ onBeforeUnmount(() => {
 }
 
 .history__new {
-  padding: 1px calc(var(--ops-density) + 2px);
-  font-size: calc(var(--ops-font-size) - 2px);
+  padding: 1px var(--ops-space-2);
+  font-size: var(--ops-font-xs);
   white-space: nowrap;
 }
 
 .history__search {
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  padding: var(--ops-space-2) var(--ops-space-3);
   border-bottom: 1px solid var(--ops-border);
 }
 
@@ -268,7 +314,7 @@ onBeforeUnmount(() => {
   color: var(--ops-fg);
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
-  padding: 2px var(--ops-density);
+  padding: 2px var(--ops-space-2);
   font: inherit;
 }
 
@@ -283,7 +329,7 @@ onBeforeUnmount(() => {
   border-radius: var(--ops-radius);
   color: var(--ops-muted);
   cursor: pointer;
-  padding: 2px var(--ops-density);
+  padding: 2px var(--ops-space-2);
   line-height: 1;
 }
 
@@ -308,7 +354,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: var(--ops-density);
+  padding: var(--ops-space-2);
 }
 
 .history__item {
@@ -320,7 +366,7 @@ onBeforeUnmount(() => {
   background: transparent;
   border: none;
   border-radius: var(--ops-radius);
-  padding: var(--ops-density) calc(var(--ops-density) + 2px);
+  padding: var(--ops-space-2) var(--ops-space-2);
   color: var(--ops-fg);
   min-width: 0;
 }
@@ -354,6 +400,24 @@ onBeforeUnmount(() => {
   border-left: 2px solid var(--ops-accent);
 }
 
+.history__item--confirm {
+  flex-wrap: wrap;
+  gap: var(--ops-space-1);
+  background: color-mix(in srgb, var(--ops-warn) 8%, var(--ops-hover-bg));
+}
+
+.history__confirm-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--ops-font-xs);
+}
+
+.history__confirm-btn {
+  padding: 1px var(--ops-space-2);
+  font-size: var(--ops-font-xs);
+  white-space: nowrap;
+}
+
 .history__export,
 .history__icon-btn {
   opacity: 0;
@@ -371,7 +435,7 @@ onBeforeUnmount(() => {
 .history__item-row {
   display: flex;
   align-items: baseline;
-  gap: var(--ops-density);
+  gap: var(--ops-space-2);
   min-width: 0;
 }
 
@@ -384,23 +448,23 @@ onBeforeUnmount(() => {
 
 .history__item-badge {
   flex: 0 0 auto;
-  font-size: calc(var(--ops-font-size) - 3px);
+  font-size: var(--ops-font-xs);
   color: var(--ops-accent);
   border: 1px solid var(--ops-accent);
   border-radius: var(--ops-radius);
-  padding: 0 var(--ops-density);
+  padding: 0 var(--ops-space-2);
   line-height: 1.5;
 }
 
 .history__item-meta {
-  font-size: calc(var(--ops-font-size) - 3px);
+  font-size: var(--ops-font-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .history__empty {
-  margin: var(--ops-density);
+  margin: var(--ops-space-2);
   text-align: center;
 }
 </style>

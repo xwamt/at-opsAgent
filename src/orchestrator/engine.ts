@@ -84,6 +84,10 @@ export type EvidenceRef = {
   toolName?: string;
   pluginId?: string;
   artifactUri?: string;
+  /** metric ref：结构化时序点。 */
+  points?: number[];
+  from?: string;
+  to?: string;
 };
 
 /** evidence-note@1（skills/ops-agent-core/references/evidence-note.md） */

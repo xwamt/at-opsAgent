@@ -88,7 +88,7 @@
               "hint": { "type": "string" }
             }
           },
-          "artifact": { "enum": ["troubleshooting-report", "operation-record", "service-deployment", "service-inspection", "evidence-only", "security-triage"] }
+          "artifact": { "enum": ["troubleshooting-report", "operation-record", "deployment", "inspection-report", "handoff", "emergency-plan", "evidence-only", "security-triage"] }
         }
       }
     }

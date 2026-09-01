@@ -328,6 +328,24 @@ describe('ApprovalService · registerBrief + applyApproval 写 decision+ts', () 
 });
 
 describe('SessionStore · rename / delete', () => {
+  it('pinEvidence 按 taskId 切换 pinned 并 persist', () => {
+    const { store, filePath } = tempStore();
+    store.appendItem({
+      kind: 'evidence',
+      id: 'ev-1',
+      note: { taskId: 'inv-1', confidence: 'confirmed', summary: '连接池打满', refs: [] }
+    });
+    expect(store.pinEvidence('inv-1', true)).toBe(true);
+    expect(store.items.find((i) => i.kind === 'evidence')?.note.pinned).toBe(true);
+    expect(store.pinEvidence('missing', true)).toBe(false);
+    store.persistNow();
+
+    const revived = new SessionStore({ filePath });
+    expect(revived.items.find((i) => i.kind === 'evidence')?.note.pinned).toBe(true);
+    revived.dispose();
+    store.dispose();
+  });
+
   it('renameSession trim、空拒、超长截断，persist 写回标题', () => {
     const { store, filePath } = tempStore();
     const id = store.activeSessionId;

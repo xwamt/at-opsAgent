@@ -4,7 +4,13 @@
  * playbook 阶段轨迹；红线 = 报告绝不出现审批令牌 / API key。
  */
 import { describe, expect, it } from 'vitest';
-import { buildOpsReportMarkdown, exportReportFileName } from '../src/host/exportReport';
+import {
+  buildDutyReportV1,
+  buildOpsReportMarkdown,
+  buildOpsReportJson,
+  dutyReportV1Schema,
+  exportReportFileName
+} from '../src/host/exportReport';
 import { redactSecrets } from '../src/runtime/sanitize';
 import type { TranscriptItem } from '../src/protocol';
 
@@ -111,6 +117,9 @@ describe('buildOpsReportMarkdown', () => {
     const name = exportReportFileName(new Date(2026, 7, 28, 10, 5));
     expect(name).toBe('at-ops-report-20260828-1005.md');
     expect(name).not.toMatch(/[:*?"<>|]/);
+    expect(exportReportFileName(new Date(2026, 7, 28, 10, 5), 'json')).toBe(
+      'at-ops-report-20260828-1005.json'
+    );
   });
 
   it('工具 preview 含 Bearer 时输出 [REDACTED] 且不含 secret-token', () => {
@@ -135,6 +144,66 @@ describe('buildOpsReportMarkdown', () => {
     expect(md).toContain('[REDACTED]');
     expect(md).not.toContain('secret-token');
     expect(redactSecrets('Authorization: Bearer secret-token').hits).toBeGreaterThanOrEqual(1);
+  });
+
+  it('sanitize=false 时保留 Bearer 原文', () => {
+    const md = buildOpsReportMarkdown({
+      sessionId: 'sess-raw',
+      items: [
+        {
+          kind: 'tool',
+          id: 't-secret',
+          call: {
+            name: 'http.dump',
+            pluginId: 'at.http',
+            risk: 'read',
+            status: 'ok',
+            preview: 'Authorization: Bearer secret-token'
+          }
+        }
+      ],
+      timeline: [],
+      sanitize: false,
+      now: NOW
+    });
+    expect(md).toContain('secret-token');
+    expect(md).not.toContain('[REDACTED]');
+    expect(md).toContain('未脱敏');
+  });
+
+  it('buildOpsReportJson 产出 DutyReportV1 且 zod 校验通过', () => {
+    const json = buildOpsReportJson(fullInput());
+    const parsed = JSON.parse(json);
+    expect(dutyReportV1Schema.parse(parsed)).toMatchObject({
+      version: 1,
+      meta: { sessionId: 'sess-1', title: '支付网关 5xx' }
+    });
+    expect(parsed.toolCalls).toHaveLength(2);
+    expect(parsed.redaction.applied).toBe(true);
+  });
+
+  it('JSON 工具 preview 含 Bearer 时 redaction.hits>=1 且不含 secret-token', () => {
+    const report = buildDutyReportV1({
+      sessionId: 'sess-secret-json',
+      items: [
+        {
+          kind: 'tool',
+          id: 't-secret',
+          call: {
+            name: 'http.dump',
+            pluginId: 'at.http',
+            risk: 'read',
+            status: 'ok',
+            preview: 'Authorization: Bearer secret-token'
+          }
+        }
+      ],
+      timeline: [],
+      now: NOW
+    });
+    expect(report.redaction.hits).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(report)).not.toContain('secret-token');
+    expect(JSON.stringify(report)).toContain('[REDACTED]');
   });
 
   it('审批段优先读 item.decision（patched），timeline 仅作双源兜底', () => {

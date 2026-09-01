@@ -1,6 +1,6 @@
 /**
  * Markdown 渲染单例（Plan 10）：html:false；highlight.js 只注册
- * javascript / json / bash / yaml / python。流式时不高亮（未闭合 fence
+ * javascript / json / bash / yaml / python / promql。流式时不高亮（未闭合 fence
  * 仍走 markdown-it 默认 code）。不要 mermaid / shiki / KaTeX。
  *
  * highlight.js 只处理 fence 的代码文本（markdown-it 已抽出），返回的
@@ -35,6 +35,48 @@ hljs.registerAliases(['docker'], { languageName: 'dockerfile' });
 hljs.registerAliases(['js', 'mjs', 'cjs'], { languageName: 'javascript' });
 hljs.registerAliases(['py'], { languageName: 'python' });
 hljs.registerAliases(['yml'], { languageName: 'yaml' });
+
+/** PromQL：函数、duration 字面量、label matcher（OPT-9，~30 行自定义 language）。 */
+hljs.registerLanguage('promql', (hljs) => {
+  const DURATION = /\d+(?:ms|s|m|h|d|w|y)/;
+  return {
+    name: 'PromQL',
+    aliases: ['prometheus'],
+    case_insensitive: true,
+    keywords: {
+      keyword:
+        'rate irate increase delta histogram_quantile histogram_avg sum avg min max count count_values ' +
+        'stddev stdvar topk bottomk quantile label_replace label_join predict_linear absent absent_over_time ' +
+        'clamp clamp_min clamp_max changes resets deriv holt_winters',
+      literal: 'true false'
+    },
+    contains: [
+      hljs.COMMENT('#', '$'),
+      {
+        className: 'string',
+        begin: /"/,
+        end: /"/,
+        contains: [hljs.BACKSLASH_ESCAPE]
+      },
+      {
+        className: 'number',
+        begin: DURATION,
+        relevance: 2
+      },
+      {
+        className: 'attr',
+        begin: /\{/,
+        end: /\}/,
+        contains: [
+          { className: 'attr', begin: /[a-zA-Z_][\w]*/ },
+          { className: 'string', begin: /"/, end: /"/ },
+          { className: 'operator', begin: /[=~!]=?/ }
+        ]
+      },
+      hljs.NUMBER_MODE
+    ]
+  };
+});
 
 function highlightCode(str: string, lang: string): string {
   const name = lang.trim();

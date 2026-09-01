@@ -608,6 +608,19 @@ describe('models 表单：保存载荷与状态归一（key 永不回显；think
     expect(normalizeFetchedModels(['a', 'b'])).toEqual(['a', 'b']);
     expect(normalizeFetchedModels({})).toEqual([]);
   });
+
+  it('自定义模型与批量追加 i18n 文案完整性', () => {
+    setLocale('zh-CN');
+    expect(t('mUseCustomModel')).toBe('使用自定义模型');
+    expect(t('mAddCustomToBatch')).toBe('添加自定义模型');
+    expect(t('mCustomModelBadge')).toBe('自定义');
+    expect(t('mQuickSuggestions')).toBe('常用推荐');
+    setLocale('en');
+    expect(t('mUseCustomModel')).toBe('Use custom model');
+    expect(t('mAddCustomToBatch')).toBe('Add custom model');
+    expect(t('mCustomModelBadge')).toBe('Custom');
+    expect(t('mQuickSuggestions')).toBe('Suggested');
+  });
 });
 
 describe('host saveModelsForm / secrets（P1-1 多 provider；reasoning；per-provider 键）', () => {

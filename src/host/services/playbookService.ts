@@ -26,12 +26,15 @@ import { ensureVisibleInspectionReport } from './inspectionSummary';
 import { StageLayerInjector } from './stageLayers';
 import { emitPlaybookCloseMemoryNotices } from './longTermMemory';
 
-/** close 成功后的导出入口：request 走已有 `chat/export`（活动会话即可，无需 payload）。 */
-export const CLOSE_EXPORT_NOTICE_ACTION: NoticeAction = {
+/** reporting/closed 收尾导出入口：request 走已有 `chat/export`（活动会话即可，无需 payload）。 */
+export const EXPORT_REPORT_NOTICE_ACTION: NoticeAction = {
   id: 'export-report',
   label: '导出值班报告',
   request: 'chat/export'
 };
+
+/** @deprecated 使用 EXPORT_REPORT_NOTICE_ACTION */
+export const CLOSE_EXPORT_NOTICE_ACTION = EXPORT_REPORT_NOTICE_ACTION;
 
 export type PlaybookAdvanceResult = {
   ok: boolean;
@@ -284,15 +287,7 @@ export class PlaybookService {
     // Plan 01 T4: clear Hub selection only on the successful closed path.
     await clearHubSelection(this.ctx.hub, (m) => this.ctx.log(m), 'playbook-closed');
     const playbookId = this.ctx.store.playbookOf(sid)?.id ?? run.playbookId;
-    const item = {
-      kind: 'notice' as const,
-      id: randomUUID(),
-      variant: 'info' as const,
-      text: '巡检已关闭。可导出值班报告。',
-      actions: [CLOSE_EXPORT_NOTICE_ACTION]
-    };
-    this.ctx.store.appendItem(item, sid);
-    this.ctx.broadcastToSession(sid, 'transcript/append', { item });
+    this.emitExportNotice(sid, '巡检已关闭。可导出值班报告。');
     try {
       emitPlaybookCloseMemoryNotices(this.ctx, sid, playbookId);
     } catch (err) {
@@ -416,6 +411,19 @@ export class PlaybookService {
     return typeof this.orchestrator?.advanceTo === 'function';
   }
 
+  /** reporting/closed 阶段：带 chat/export 深链的导出 notice。 */
+  private emitExportNotice(sessionId: string, text: string): void {
+    const item = {
+      kind: 'notice' as const,
+      id: randomUUID(),
+      variant: 'info' as const,
+      text,
+      actions: [EXPORT_REPORT_NOTICE_ACTION]
+    };
+    this.ctx.store.appendItem(item, sessionId);
+    this.ctx.broadcastToSession(sessionId, 'transcript/append', { item });
+  }
+
   /** 阶段进入钩子：注入 L4、guidedManual 提示。子代理由主代理 ops_dispatch_subagent 派发，绝不在此自动下发。 */
   private handleStageEntered(
     sessionId: string,
@@ -424,6 +432,9 @@ export class PlaybookService {
     stage: string
   ): void {
     void this.layers.inject(sessionId, playbookId, stage);
+    if (stage === 'reporting') {
+      this.emitExportNotice(sessionId, '已进入 reporting 阶段。可导出值班报告。');
+    }
     void this.guided.maybeEmitNotice(sessionId, runId, playbookId, stage).catch((err) =>
       this.ctx.log(`[guidedManual] 提示失败: ${describeError(err)}`)
     );

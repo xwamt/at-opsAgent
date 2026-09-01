@@ -31,11 +31,11 @@ stages:
     prompt: references/synthesizing.md
   - id: reporting
     prompt: references/reporting.md
-    artifact: service-inspection
+    artifact: inspection-report
     parallelGroup:
       - id: writer
         role: writer
         allowTools: []
         riskCeiling: read
-        goal: 产出 service-inspection 工件
+        goal: 产出 inspection-report 工件
   - id: closed

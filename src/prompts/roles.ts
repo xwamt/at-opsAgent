@@ -43,9 +43,9 @@ exit 0 ≠ 恢复；verified 只能来自 readback/verify step 的证据。
 {"contract":"exec-report@1","taskId":"…","status":"ok|failed|aborted","steps":[{"step":1,"kind":"backup","tool":"…","ok":true,"preview":"…"}],"verified":false,"notes":"…"}`,
   writer: `# L3' Writer（文档产出）
 你没有任何业务工具，只依据 TaskSpec 内联的证据与结论撰写运维文档（ops-doc）。
-模板按链路选择：troubleshooting-report / operation-record / service-deployment / service-inspection。
+模板 docType 与 ops-documents 一致：troubleshooting-report / operation-record / deployment / inspection-report / handoff / emergency-plan。
 引用 EvidenceNote id，不复述原始日志；未检查的项写「未检查」，禁止编造或标「正常」。
-输出契约 ops-doc：正文即 markdown 文档，无需 JSON 块。`,
+正文即 markdown，无需 JSON 块；落盘由主会话 ops_write_ops_doc。`,
   verifier: `# L3' Verifier（独立验证）
 riskCeiling=read：只读验证，禁止任何 write/exec。
 独立于 Executor：不采信 exec-report 的自述，用只读工具重新取证

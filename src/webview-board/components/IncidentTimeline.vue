@@ -103,12 +103,12 @@ onBeforeUnmount(() => {
 }
 
 .tl__empty {
-  padding: calc(var(--ops-density) * 6) 0;
+  padding: var(--ops-space-4) 0;
   text-align: center;
 }
 
 .tl__empty-text {
-  margin: 0 0 calc(var(--ops-density) * 2);
+  margin: 0 0 var(--ops-space-3);
 }
 
 .tl__day {
@@ -116,10 +116,10 @@ onBeforeUnmount(() => {
   top: 0;
   z-index: 1;
   margin: 0;
-  padding: calc(var(--ops-density) - 2px) calc(var(--ops-density) * 2);
+  padding: var(--ops-space-1) var(--ops-space-3);
   background: var(--ops-bg);
   border-bottom: 1px solid var(--ops-border);
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
   font-weight: 600;
   letter-spacing: 0.4px;
 }
@@ -132,8 +132,8 @@ onBeforeUnmount(() => {
 
 .tl__row {
   display: flex;
-  gap: calc(var(--ops-density) * 2);
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  gap: var(--ops-space-3);
+  padding: var(--ops-space-1) var(--ops-space-3);
   border-bottom: 1px solid var(--ops-border);
   align-items: baseline;
 }
@@ -144,7 +144,7 @@ onBeforeUnmount(() => {
 
 .tl__time {
   flex: 0 0 84px;
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
   white-space: nowrap;
   cursor: default;
 }
@@ -154,7 +154,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   gap: 3px;
   align-items: center;
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
   white-space: nowrap;
 }
 
@@ -181,31 +181,31 @@ onBeforeUnmount(() => {
 }
 
 .tl__status {
-  margin-left: var(--ops-density);
-  font-size: calc(var(--ops-font-size) - 3px);
+  margin-left: var(--ops-space-1);
+  font-size: var(--ops-font-xs);
 }
 
 .tl__meta {
   display: flex;
-  gap: calc(var(--ops-density) * 2);
-  font-size: calc(var(--ops-font-size) - 3px);
+  gap: var(--ops-space-3);
+  font-size: var(--ops-font-xs);
 }
 
 .tl__confidence {
-  margin-left: var(--ops-density);
-  font-size: calc(var(--ops-font-size) - 3px);
+  margin-left: var(--ops-space-1);
+  font-size: var(--ops-font-xs);
 }
 
 .tl__pipeline {
-  margin-top: var(--ops-density);
+  margin-top: var(--ops-space-1);
 }
 
 .tl__host {
-  margin-top: var(--ops-density);
+  margin-top: var(--ops-space-1);
 }
 
 .tl__detail {
-  margin-top: var(--ops-density);
+  margin-top: var(--ops-space-1);
   max-height: 120px;
 }
 </style>

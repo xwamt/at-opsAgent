@@ -93,6 +93,7 @@ import {
   runCheckSubagentToolCall,
   runDispatchToolCall,
   skillRootsFor,
+  subscribeSessionEvents,
   truncateForModel,
   truncatePreview,
   truncateSummary,
@@ -370,12 +371,12 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('ops_dispatch_subagent');
     expect(prompt).toContain('ops_check_subagent');
     expect(prompt).toContain('自动启动');
-    expect(prompt).toContain('只是候选建议');
-    // P1-6：派发是阻塞式的，支持 tasks[] 并行
-    expect(L2_TOOL_DISCOVERY).toContain('阻塞');
-    expect(L2_TOOL_DISCOVERY).toContain('tasks[]');
-    expect(L2_TOOL_DISCOVERY).toContain('并行 tasks[] 必须给同一 timeWindow');
-    expect(L2_TOOL_DISCOVERY).toContain('waitMs');
+    // 派发细节（waitMs / tasks[] / timeWindow）在工具描述，不进 L2 常驻
+    expect(dispatchToolSpec.description).toContain('阻塞');
+    expect(dispatchToolSpec.description).toContain('tasks[]');
+    expect(dispatchToolSpec.description).toContain('waitMs');
+    expect(JSON.stringify(dispatchToolSpec.parameters)).toContain('timeWindow');
+    expect(JSON.stringify(dispatchToolSpec.parameters)).toContain('并行 tasks[] 必须给同一 timeWindow');
   });
 
   it('P0 §11：L3 不要求模型计算 SHA-256——哈希与 approvalToken 由 host 计算/附上', () => {
@@ -410,9 +411,11 @@ describe('prompts · client-first (docs/12)', () => {
     expect(L2_TOOL_DISCOVERY).toContain('主会话直接 run_remote_command');
   });
 
-  it('L2：pb.inspection 映射到 playbooks/daily-inspection/（id ≠ 目录名对照表）', () => {
-    expect(L2_TOOL_DISCOVERY).toContain('pb.inspection→playbooks/daily-inspection/');
-    expect(L2_TOOL_DISCOVERY).toContain('playbooks/daily-inspection/SKILL.md');
+  it('ops_read_skill 描述含 playbook id 短名→目录别名（不进 L2 常驻）', () => {
+    expect(L2_TOOL_DISCOVERY).not.toContain('pb.inspection→playbooks/daily-inspection/');
+    const spec = createReadSkillTool(['/tmp']);
+    expect(spec.description).toContain('playbooks/inspection/');
+    expect(spec.description).toContain('playbooks/daily-inspection/');
   });
 
   it('composeSystemPrompt() 组装 CORE+BOOTSTRAP+L1+L2+L3；仍含 select 引导', () => {
@@ -2403,6 +2406,46 @@ describe('prompt 错误分类与 429 一次退避（Plan 06 T1–T2）', () => {
       expect(notice.text).not.toContain('未配置模型');
     }
     expect(events.at(-1)).toEqual({ type: 'idle' });
+  });
+
+  it('subscribeSessionEvents：message_end 遇到 stopReason=error 或 errorMessage 广播 error notice 与 text_delta', () => {
+    const events: OpsRuntimeEvent[] = [];
+    let subscriber: ((event: any) => void) | undefined;
+    const fakeSession: any = {
+      subscribe: (fn: (e: any) => void) => {
+        subscriber = fn;
+        return () => {};
+      },
+      getContextUsage: () => ({ tokens: 100, contextWindow: 4000 })
+    };
+    const handlers: OpsRuntimeHandlers = {
+      hub: makeFakeHub(),
+      onEvent: (e) => events.push(e)
+    };
+
+    subscribeSessionEvents(fakeSession, handlers);
+    expect(subscriber).toBeDefined();
+
+    // 模拟 403 免费额度耗尽
+    subscriber?.({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '403: Free quota exhausted',
+        usage: { input: 0, output: 0 }
+      }
+    });
+
+    const textDelta = events.find((e) => e.type === 'text_delta');
+    expect(textDelta?.type).toBe('text_delta');
+    expect((textDelta as any)?.text).toContain('凭证失效或无权限');
+
+    const notice = events.find((e) => e.type === 'notice');
+    expect(notice?.type).toBe('notice');
+    expect((notice as any)?.variant).toBe('error');
+    expect((notice as any)?.text).toContain('403');
+    expect((notice as any)?.actions).toEqual([OPEN_SETTINGS_NOTICE_ACTION]);
   });
 });
 

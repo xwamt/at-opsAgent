@@ -9,6 +9,7 @@ import HistoryOverlay from './HistoryOverlay.vue';
 import PlaybookHeader from './PlaybookHeader.vue';
 import PlaybookPicker from './PlaybookPicker.vue';
 import SubagentInspector from './SubagentInspector.vue';
+import UsageStrip from './UsageStrip.vue';
 import WelcomeState from './WelcomeState.vue';
 
 const store = useOpsStore();
@@ -75,6 +76,7 @@ const store = useOpsStore();
           mock
         </span>
       </div>
+      <UsageStrip />
       <ApprovalBar v-if="store.pendingApproval" />
       <Composer />
     </div>
@@ -191,9 +193,9 @@ const store = useOpsStore();
 
 .chat-app__picker {
   position: absolute;
-  bottom: calc(100% + var(--ops-density));
-  left: calc(var(--ops-density) * 2);
-  right: calc(var(--ops-density) * 2);
+  bottom: calc(100% + var(--ops-space-2));
+  left: var(--ops-space-3);
+  right: var(--ops-space-3);
   z-index: 10;
 }
 
@@ -201,9 +203,9 @@ const store = useOpsStore();
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: calc(var(--ops-density) * 1.5);
-  padding: 2px calc(var(--ops-density) * 2);
-  font-size: calc(var(--ops-font-size) - 3px);
+  gap: var(--ops-space-2);
+  padding: 2px var(--ops-space-3);
+  font-size: var(--ops-font-xs);
   color: var(--ops-muted);
   min-width: 0;
 }
@@ -239,6 +241,6 @@ const store = useOpsStore();
   border: 1px dashed var(--ops-warn);
   color: var(--ops-warn);
   border-radius: var(--ops-radius);
-  padding: 0 var(--ops-density);
+  padding: 0 var(--ops-space-2);
 }
 </style>

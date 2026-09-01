@@ -7,6 +7,8 @@ const props = defineProps<{
   from?: string;
   to?: string;
   points?: number[];
+  /** regex 从 preview 推断点位时为 true。 */
+  inferred?: boolean;
 }>();
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
@@ -88,6 +90,7 @@ watch(() => props.points, draw, { deep: true });
   <figure class="metric">
     <figcaption class="metric__caption">
       <span v-if="props.title" class="metric__title ops-mono">{{ props.title }}</span>
+      <span v-if="props.inferred" class="metric__inferred ops-badge ops-muted">{{ t('metricInferred') }}</span>
       <span v-if="props.from || props.to" class="ops-muted metric__window">
         {{ props.from ?? '?' }} → {{ props.to ?? '?' }}
       </span>
@@ -107,9 +110,9 @@ watch(() => props.points, draw, { deep: true });
 
 .metric__caption {
   display: flex;
-  gap: calc(var(--ops-density) * 2);
+  gap: var(--ops-space-3);
   align-items: baseline;
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
   min-width: 0;
 }
 
@@ -122,6 +125,12 @@ watch(() => props.points, draw, { deep: true });
 
 .metric__window {
   white-space: nowrap;
+}
+
+.metric__inferred {
+  flex: 0 0 auto;
+  font-size: var(--ops-font-xs);
+  padding: 0 4px;
 }
 
 .metric__spark {
@@ -142,6 +151,6 @@ watch(() => props.points, draw, { deep: true });
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
 }
 </style>

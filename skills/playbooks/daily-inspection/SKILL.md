@@ -11,8 +11,9 @@ description: 日常/周巡检。先认已连接客户端；单机由主会话直
 
 ## 单机流程（仅一台已连接 SSH）
 
-1. ops_list_providers 识别 AT 客户端；
-2. at.terminal 健康 → list_ssh_servers + get_terminal_context
+1. 先读 L-env；at.terminal 已声明则立刻 ops_select_tools {pluginIds:["at.terminal"]}，
+   不要 ops_list_providers / get_tool / search 空转；
+2. select 后 list_ssh_servers + get_terminal_context
    （connected=true 优先，记下 serverId）；
 3. 工具不在暴露集时 ops_select_tools mode=add
    names=[list_ssh_servers, get_terminal_context, run_remote_command]

@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>命令卡与工具结果 · 设计草案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg-primary: #1d1d1f;
+    --bg-secondary: #2d2d2f;
+    --bg-tertiary: #3d3d3f;
+    --border: #424245;
+    --text-primary: #f5f5f7;
+    --text-secondary: #86868b;
+    --text-tertiary: #636366;
+    --accent: #0a84ff;
+    --accent-hover: #409cff;
+    --success: #34c759;
+    --warning: #ff9f0a;
+    --error: #ff3b30;
+    --selected-bg: rgba(10, 132, 255, 0.15);
+    --selected-border: #0a84ff;
+  }
+  body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.5;
+  }
+  .page { padding: 2rem; max-width: 980px; margin: 0 auto; }
+  h2 { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; }
+  h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--text-secondary); margin-bottom: 1.5rem; }
+  .section { margin-bottom: 2.25rem; }
+  .label { font-size: 0.7rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+  .options { display: flex; flex-direction: column; gap: 0.75rem; }
+  .option {
+    background: var(--bg-secondary);
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+  .option:hover { border-color: var(--accent); }
+  .option.selected { background: var(--selected-bg); border-color: var(--selected-border); }
+  .option .letter {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    width: 1.75rem; height: 1.75rem;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 0.85rem; flex-shrink: 0;
+  }
+  .option.selected .letter { background: var(--accent); color: white; }
+  .option .content { flex: 1; }
+  .option .content h3 { font-size: 0.95rem; margin-bottom: 0.15rem; }
+  .option .content p { color: var(--text-secondary); font-size: 0.85rem; margin: 0; }
+  .mockup {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+  }
+  .mockup-header {
+    background: var(--bg-tertiary);
+    padding: 0.5rem 1rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+  }
+  .mockup-body { padding: 1.5rem; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  @media (max-width: 700px) { .split { grid-template-columns: 1fr; } }
+  .pick-bar {
+    position: sticky; bottom: 0; left: 0; right: 0;
+    background: #2d2d2f; border-top: 1px solid #424245;
+    padding: 0.6rem 1.5rem; text-align: center;
+    font-size: 0.8rem; color: #86868b;
+  }
+  .pick-bar strong { color: #0a84ff; }
+</style>
+</head>
+<body>
+<div class="page">
+<style>
+  .intro { max-width: 880px; }
+  .note {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem;
+    border-radius: 0 8px 8px 0;
+    margin: 1rem 0 1.75rem;
+  }
+  .pane {
+    width: 392px;
+    max-width: 100%;
+    margin: 0 auto;
+    background: #1e1e1e;
+    color: #cccccc;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 12px;
+    line-height: 1.4;
+    border-radius: 8px;
+    padding: 10px;
+    border: 1px solid #3c3c3c;
+  }
+  .pane--wide { width: 100%; max-width: 720px; }
+  .hint {
+    font-size: 11px;
+    color: #8b8b8b;
+    margin-bottom: 8px;
+    letter-spacing: 0.02em;
+  }
+  .card {
+    cursor: default;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #252526;
+  }
+  .card.selected { border-width: 1px; }
+  .tc {
+    border: 1px solid #3c3c3c;
+    border-left: 3px solid #3fb950;
+    border-radius: 6px;
+    background: #1e1e1e;
+    overflow: hidden;
+  }
+  .tc--exec { border-left-color: #f85149; }
+  .tc--run { background: color-mix(in srgb, #1e1e1e 92%, #3794ff 8%); border-color: #2a4a6a; }
+  .tc--err { border-left-color: #f85149; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 5px 8px;
+    user-select: none;
+  }
+  .row--click { cursor: pointer; }
+  .row--click:hover { background: rgba(255,255,255,0.04); }
+  .chev { color: #8b8b8b; width: 12px; flex: 0 0 auto; font-size: 10px; }
+  .ico { color: #8b8b8b; flex: 0 0 auto; }
+  .name { font-weight: 600; color: #e6e6e6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .purpose { color: #cccccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .host {
+    color: #3794ff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #3fb950; flex: 0 0 auto; }
+  .dot--off { background: #6e7681; }
+  .badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 2px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .badge--read { color: #3fb950; border-color: rgba(63,185,80,.4); }
+  .badge--exec { color: #f85149; border-color: rgba(248,81,73,.4); }
+  .sp { flex: 1; }
+  .st { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  .st--ok { color: #3fb950; }
+  .st--run { color: #3794ff; }
+  .st--err { color: #f85149; }
+  .muted { color: #8b8b8b; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .cmd {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 0 6px 6px;
+    padding: 5px 8px;
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    border-radius: 2px;
+    font-size: 11px;
+  }
+  .cmd--collapsed { align-items: center; }
+  .prompt { color: #3794ff; font-weight: 700; user-select: none; }
+  .cmdtxt { color: #d4d4d4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmdtxt--wrap { white-space: pre-wrap; word-break: break-all; }
+  .copy {
+    color: #8b8b8b;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 2px;
+  }
+  .term {
+    margin: 0 6px 6px;
+    border: 1px solid #2d2d2d;
+    border-radius: 4px;
+    background: #0d0d0d;
+    overflow: hidden;
+  }
+  .term__hd {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: #161616;
+    border-bottom: 1px solid #2a2a2a;
+    font-size: 11px;
+  }
+  .term__title { font-weight: 600; letter-spacing: .4px; font-size: 10px; text-transform: uppercase; }
+  .term__live { color: #3794ff; display: inline-flex; gap: 4px; align-items: center; }
+  .exit { padding: 0 6px; border-radius: 2px; font-size: 10px; font-weight: 600; }
+  .exit--ok { color: #3fb950; background: rgba(63,185,80,.12); border: 1px solid rgba(63,185,80,.3); }
+  .exit--err { color: #f85149; background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.3); }
+  .term__bd {
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #d4d4d4;
+    max-height: 140px;
+    overflow: auto;
+  }
+  .ln { display: flex; gap: 8px; white-space: pre; }
+  .num { color: #555; width: 1.6em; text-align: right; user-select: none; flex: 0 0 auto; }
+  .cursor {
+    display: inline-block;
+    width: 7px; height: 13px;
+    background: #3794ff;
+    margin-left: 2px;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .errbox {
+    margin: 0 6px 6px;
+    padding: 6px 8px;
+    background: rgba(248,81,73,.12);
+    border: 1px solid rgba(248,81,73,.3);
+    border-radius: 2px;
+    color: #f85149;
+    font-size: 11px;
+  }
+  .data {
+    margin: 0 6px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .hostrow {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 7px 8px;
+    background: #181818;
+    border: 1px solid #2c2c2c;
+    border-radius: 4px;
+  }
+  .hostrow + .hostrow { margin-top: 4px; }
+  .hostrow__top { display: flex; align-items: center; gap: 8px; }
+  .hostrow__meta { color: #8b8b8b; font-size: 11px; padding-left: 15px; }
+  .kv {
+    display: grid;
+    grid-template-columns: 88px 1fr;
+    gap: 2px 10px;
+    font-size: 11px;
+    padding: 6px 8px;
+    background: #181818;
+    border: 1px solid #2c2c2c;
+    border-radius: 4px;
+  }
+  .k { color: #8b8b8b; }
+  .v { color: #d4d4d4; }
+  .json {
+    margin: 0 6px 6px;
+    padding: 8px;
+    background: #181818;
+    border: 1px solid #2c2c2c;
+    border-radius: 2px;
+    color: #c8c8c8;
+    font-size: 10.5px;
+    line-height: 1.45;
+    max-height: 160px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .foot { color: #6e6e6e; font-size: 10px; padding: 0 8px 6px; }
+  .states { display: flex; flex-direction: column; gap: 14px; }
+  .click-hint { font-size: 11px; color: var(--text-secondary); margin-top: 8px; }
+  .layout-opt .pane { pointer-events: none; }
+  .dim { opacity: .55; }
+  .tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    padding: 1px 7px;
+    border-radius: 99px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .cols .tc { min-width: 0; }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+</style>
+
+<div class="intro">
+  <h2>命令卡与工具结果 · 设计草案</h2>
+  <p class="subtitle">先看布局，点选你倾向的方案。确认前不会改代码。</p>
+  <div class="note">
+    你描述的「横向三栏」按三行叠栏理解：侧边栏宽度装不下三列。标题栏始终可见；命令行可单独折叠；终端实时刷输出。
+  </div>
+</div>
+
+<div class="section">
+  <h3>1. 现在 vs 目标</h3>
+  <p class="subtitle">左侧是现状：标题靠命令首词猜意图，Purpose 被当成命令首行；折叠后看不出主机与目的。</p>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">现状 · 展开</div>
+      <div class="mockup-body">
+        <div class="pane">
+          <div class="hint">聊天侧栏 · ToolCallCard</div>
+          <div class="tc tc--exec">
+            <div class="row">
+              <span class="chev">▾</span>
+              <span class="ico">▣</span>
+              <span class="name">磁盘 · 99.90 · # Purpose: 检查磁盘使用率</span>
+              <span class="badge badge--exec">执行</span>
+              <span class="sp"></span>
+              <span class="st st--ok">✓ 完成</span>
+              <span class="muted">1.2s</span>
+            </div>
+            <div class="cmd cmd--collapsed">
+              <span class="host">[99.90]</span>
+              <span class="prompt">$</span>
+              <span class="cmdtxt"># Purpose: 检查磁盘使用率</span>
+            </div>
+            <div class="term">
+              <div class="term__hd">
+                <span class="term__title">Terminal</span>
+                <span class="muted">4 行</span>
+                <span class="sp"></span>
+                <span class="exit exit--ok">exit: 0</span>
+              </div>
+              <div class="term__bd mono">
+                <div class="ln"><span class="num">1</span><span>Filesystem      Size  Used Avail Use%</span></div>
+                <div class="ln"><span class="num">2</span><span>/dev/vda1        40G   37G  3.1G  93% /</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">目标 · 推荐方案 A</div>
+      <div class="mockup-body">
+        <div class="pane">
+          <div class="hint">标题 = 主机 + Purpose；命令单独一行</div>
+          <div class="tc">
+            <div class="row row--click">
+              <span class="chev">▾</span>
+              <span class="dot"></span>
+              <span class="host">99.90</span>
+              <span class="muted">·</span>
+              <span class="purpose">检查磁盘使用率</span>
+              <span class="badge badge--read">只读</span>
+              <span class="sp"></span>
+              <span class="st st--ok">✓ 完成</span>
+              <span class="muted">1.2s</span>
+            </div>
+            <div class="cmd cmd--collapsed">
+              <span class="chev">▾</span>
+              <span class="prompt">$</span>
+              <span class="cmdtxt">df -h</span>
+              <span class="copy">复制</span>
+            </div>
+            <div class="term">
+              <div class="term__hd">
+                <span class="term__title">Terminal</span>
+                <span class="muted">4 行</span>
+                <span class="sp"></span>
+                <span class="exit exit--ok">exit: 0</span>
+              </div>
+              <div class="term__bd mono">
+                <div class="ln"><span class="num">1</span><span>Filesystem      Size  Used Avail Use%</span></div>
+                <div class="ln"><span class="num">2</span><span>/dev/vda1        40G   37G  3.1G  93% /</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>2. 命令卡布局 — 选一个</h3>
+  <p class="subtitle">点卡片即可。A 最贴你的三行描述，也最适合侧栏宽度。</p>
+  <div class="options">
+    <div class="option layout-opt" data-choice="a-stacked" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>三行叠栏 <span class="tag">推荐</span></h3>
+        <p>第一行标题（折叠后仍在）→ 第二行命令（可单独折）→ 第三行终端实时输出。整卡折叠只留标题。</p>
+        <div style="margin-top:12px">
+          <div class="pane">
+            <div class="tc">
+              <div class="row">
+                <span class="chev">▾</span>
+                <span class="dot"></span>
+                <span class="host">99.90</span>
+                <span class="muted">·</span>
+                <span class="purpose">检查磁盘使用率</span>
+                <span class="sp"></span>
+                <span class="st st--ok">✓</span>
+                <span class="muted">1.2s</span>
+              </div>
+              <div class="cmd cmd--collapsed">
+                <span class="chev">▾</span>
+                <span class="prompt">$</span>
+                <span class="cmdtxt">df -h /var /data</span>
+              </div>
+              <div class="term">
+                <div class="term__hd"><span class="term__title">Terminal</span><span class="sp"></span><span class="exit exit--ok">exit: 0</span></div>
+                <div class="term__bd mono" style="max-height:52px">
+                  <div class="ln"><span class="num">1</span><span>/dev/vda1  93% /</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option layout-opt" data-choice="b-cmd-collapsed" onclick="toggleSelect(this)">
+      <div class="letter">B</div>
+      <div class="content">
+        <h3>同三行，命令默认收起</h3>
+        <p>结构同 A，但成功后命令行自动折成单行摘要，避免长脚本占高。运行中默认展开。</p>
+        <div style="margin-top:12px">
+          <div class="pane">
+            <div class="tc">
+              <div class="row">
+                <span class="chev">▾</span>
+                <span class="dot"></span>
+                <span class="host">99.90</span>
+                <span class="muted">·</span>
+                <span class="purpose">备份 nginx 配置</span>
+                <span class="sp"></span>
+                <span class="st st--ok">✓</span>
+              </div>
+              <div class="cmd cmd--collapsed">
+                <span class="chev">▸</span>
+                <span class="prompt">$</span>
+                <span class="cmdtxt">cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak.20260901-0950 && cmp …</span>
+              </div>
+              <div class="term">
+                <div class="term__hd"><span class="term__title">Terminal</span><span class="sp"></span><span class="exit exit--ok">exit: 0</span></div>
+                <div class="term__bd mono" style="max-height:52px">
+                  <div class="ln"><span class="num">1</span><span>OK</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option layout-opt" data-choice="c-split" onclick="toggleSelect(this)">
+      <div class="letter">C</div>
+      <div class="content">
+        <h3>左右分栏（不推荐）</h3>
+        <p>标题之下左命令、右终端。宽板可以，侧栏约 380px 时命令会被压成一条细缝。</p>
+        <div style="margin-top:12px">
+          <div class="pane pane--wide">
+            <div class="tc">
+              <div class="row">
+                <span class="chev">▾</span>
+                <span class="host">99.90</span>
+                <span class="muted">·</span>
+                <span class="purpose">检查磁盘使用率</span>
+                <span class="sp"></span>
+                <span class="st st--ok">✓</span>
+              </div>
+              <div class="cols" style="padding:0 6px 6px">
+                <div class="cmd cmd--collapsed" style="margin:0">
+                  <span class="prompt">$</span>
+                  <span class="cmdtxt">df -h</span>
+                </div>
+                <div class="term" style="margin:0">
+                  <div class="term__hd"><span class="term__title">Term</span></div>
+                  <div class="term__bd mono" style="max-height:44px"><div class="ln"><span class="num">1</span><span>93%</span></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>3. 交互态（方案 A 演示）</h3>
+  <p class="subtitle">点标题折叠整卡；点命令行只折命令。运行中终端贴底刷新并带光标。</p>
+  <div class="mockup">
+    <div class="mockup-header">可点击试折叠</div>
+    <div class="mockup-body">
+      <div class="pane" style="width:420px">
+        <div class="states">
+          <div>
+            <div class="hint">折叠 · 只留标题栏</div>
+            <div class="tc" id="demo-collapsed">
+              <div class="row row--click" onclick="toggleCard('demo-full')">
+                <span class="chev">▸</span>
+                <span class="dot"></span>
+                <span class="host">99.90</span>
+                <span class="muted">·</span>
+                <span class="purpose">检查磁盘使用率</span>
+                <span class="badge badge--read">只读</span>
+                <span class="sp"></span>
+                <span class="st st--ok">✓ 完成</span>
+                <span class="muted">1.2s</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="hint">展开 · 点命令行可单独折叠长命令</div>
+            <div class="tc" id="demo-full">
+              <div class="row row--click" onclick="var b=document.getElementById('demo-body'); b.style.display=b.style.display==='none'?'block':'none'; this.querySelector('.chev').textContent=b.style.display==='none'?'▸':'▾';">
+                <span class="chev">▾</span>
+                <span class="dot"></span>
+                <span class="host">99.90</span>
+                <span class="muted">·</span>
+                <span class="purpose">检查磁盘使用率</span>
+                <span class="badge badge--read">只读</span>
+                <span class="sp"></span>
+                <span class="st st--ok">✓ 完成</span>
+                <span class="muted">1.2s</span>
+              </div>
+              <div id="demo-body">
+                <div class="cmd" id="demo-cmd">
+                  <span class="chev row--click" onclick="var t=document.getElementById('cmd-full'); var s=document.getElementById('cmd-short'); if(t.style.display==='none'){t.style.display='block';s.style.display='none'; this.textContent='▾';}else{t.style.display='none';s.style.display='block'; this.textContent='▸';}">▾</span>
+                  <span class="prompt">$</span>
+                  <span id="cmd-short" class="cmdtxt" style="display:none">journalctl -u nginx -n 80 --no-pager --since "10 min ago"</span>
+                  <span id="cmd-full" class="cmdtxt cmdtxt--wrap">journalctl -u nginx -n 80 --no-pager --since "10 min ago"</span>
+                  <span class="copy">复制</span>
+                </div>
+                <div class="term">
+                  <div class="term__hd">
+                    <span class="term__title">Terminal</span>
+                    <span class="muted">12 行</span>
+                    <span class="sp"></span>
+                    <span class="exit exit--ok">exit: 0</span>
+                  </div>
+                  <div class="term__bd mono">
+                    <div class="ln"><span class="num">1</span><span>Sep 01 09:41:02 nginx[1122]: worker process started</span></div>
+                    <div class="ln"><span class="num">2</span><span>Sep 01 09:41:08 nginx[1122]: 200 GET /health</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="hint">运行中 · 实时输出 + 呼吸光标</div>
+            <div class="tc tc--run">
+              <div class="row">
+                <span class="chev">▾</span>
+                <span class="dot"></span>
+                <span class="host">99.92</span>
+                <span class="muted">·</span>
+                <span class="purpose">查看负载与登录会话</span>
+                <span class="badge badge--read">只读</span>
+                <span class="sp"></span>
+                <span class="st st--run">◌ 执行中</span>
+                <span class="muted">3.4s</span>
+              </div>
+              <div class="cmd cmd--collapsed">
+                <span class="chev">▾</span>
+                <span class="prompt">$</span>
+                <span class="cmdtxt">uptime && w</span>
+              </div>
+              <div class="term">
+                <div class="term__hd">
+                  <span class="term__title">Terminal</span>
+                  <span class="muted">2 行</span>
+                  <span class="term__live">● live</span>
+                  <span class="sp"></span>
+                </div>
+                <div class="term__bd mono">
+                  <div class="ln"><span class="num">1</span><span>09:48:11 up 42 days,  0.38, 0.35, 0.31</span></div>
+                  <div class="ln"><span class="num">2</span><span>root     pts/0    192.168.1.8</span></div>
+                  <div class="ln" style="padding-left: calc(1.6em + 8px)"><span class="cursor"></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="hint">失败 · 终端保留输出，下方错误条</div>
+            <div class="tc tc--err">
+              <div class="row">
+                <span class="chev">▾</span>
+                <span class="dot" style="background:#f85149"></span>
+                <span class="host">99.90</span>
+                <span class="muted">·</span>
+                <span class="purpose">语法校验 nginx</span>
+                <span class="badge badge--exec">执行</span>
+                <span class="sp"></span>
+                <span class="st st--err">✕ 失败</span>
+                <span class="muted">0.4s</span>
+              </div>
+              <div class="cmd cmd--collapsed">
+                <span class="chev">▾</span>
+                <span class="prompt">$</span>
+                <span class="cmdtxt">nginx -t</span>
+              </div>
+              <div class="term">
+                <div class="term__hd">
+                  <span class="term__title">Terminal</span>
+                  <span class="sp"></span>
+                  <span class="exit exit--err">exit: 1</span>
+                </div>
+                <div class="term__bd mono">
+                  <div class="ln"><span class="num">1</span><span style="color:#f85149">nginx: [emerg] unexpected "}" in /etc/nginx/nginx.conf:42</span></div>
+                </div>
+              </div>
+              <div class="errbox">REMOTE_EXIT_1 · nginx 配置语法错误</div>
+            </div>
+          </div>
+        </div>
+        <p class="click-hint">无 Purpose 时回退：磁盘 · df -h（沿用现有命令意图表）。主机未知则只显示 Purpose。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>4. 普通工具结果 — 别再丢整段 JSON</h3>
+  <p class="subtitle">你给的 list_ssh_servers 回包会被剥掉 ok/attemptCount 外壳，按类型渲染。未知工具走键值表，解析失败才回退 JSON。</p>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">现状</div>
+      <div class="mockup-body">
+        <div class="pane">
+          <div class="tc">
+            <div class="row">
+              <span class="chev">▾</span>
+              <span class="name">SSH 目标 · list_ssh_servers</span>
+              <span class="badge badge--read">只读</span>
+              <span class="sp"></span>
+              <span class="st st--ok">✓ 完成</span>
+              <span class="muted">11ms</span>
+            </div>
+            <pre class="json mono">{
+  "ok": true,
+  "result": {
+    "servers": [
+      {"id":"4d1fbefc-…","label":"99.90",
+       "host":"192.168.99.90","port":22,
+       "username":"root","connected":true,
+       "agentCommandTrust":"full",
+       "agentCommandAutoApprove":true}
+    ]
+  },
+  "attemptCount": 1,
+  "durationMs": 11
+}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">目标 · 结构化列表</div>
+      <div class="mockup-body">
+        <div class="pane">
+          <div class="tc">
+            <div class="row">
+              <span class="chev">▾</span>
+              <span class="name">SSH 目标</span>
+              <span class="muted">2 台 · 均已连接</span>
+              <span class="badge badge--read">只读</span>
+              <span class="sp"></span>
+              <span class="st st--ok">✓ 完成</span>
+              <span class="muted">11ms</span>
+            </div>
+            <div class="data">
+              <div class="hostrow">
+                <div class="hostrow__top">
+                  <span class="dot"></span>
+                  <span class="host">99.90</span>
+                  <span class="mono">192.168.99.90:22</span>
+                  <span class="sp"></span>
+                  <span class="muted">root</span>
+                </div>
+                <div class="hostrow__meta">已连接 · 信任 full · 自动批准</div>
+              </div>
+              <div class="hostrow">
+                <div class="hostrow__top">
+                  <span class="dot"></span>
+                  <span class="host">99.92</span>
+                  <span class="mono">192.168.99.92:22</span>
+                  <span class="sp"></span>
+                  <span class="muted">root</span>
+                </div>
+                <div class="hostrow__meta">已连接 · 信任 full · 自动批准</div>
+              </div>
+            </div>
+            <div class="foot">1 次尝试 · 11ms · 点标题折叠</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>5. 未知工具怎么渲 — 选一个</h3>
+  <p class="subtitle">list_ssh_servers / get_terminal_context 会做专用视图。其余走通用规则。</p>
+  <div class="options">
+    <div class="option" data-choice="data-typed" onclick="toggleSelect(this)">
+      <div class="letter">1</div>
+      <div class="content">
+        <h3>剥壳 + 专用视图 + 键值回退 <span class="tag">推荐</span></h3>
+        <p>去掉 {ok, result, attemptCount, durationMs}。已知工具用卡片/表格；对象数组自动成表；普通对象成键值；失败才 pretty JSON。页脚保留耗时与尝试次数。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="data-tree" onclick="toggleSelect(this)">
+      <div class="letter">2</div>
+      <div class="content">
+        <h3>统一 JSON 树</h3>
+        <p>所有工具同一套可折叠树。实现快，但 SSH 主机、Jenkins 构建这类运维对象不会比现状清晰多少。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="data-json-pretty" onclick="toggleSelect(this)">
+      <div class="letter">3</div>
+      <div class="content">
+        <h3>只美化 JSON（最小改动）</h3>
+        <p>缩进、语法色、折叠长字段。信息不丢，但仍要人读结构。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>6. 数据怎么接到这三行上</h3>
+  <p class="subtitle">这是实现约束，不改协议也能做，但建议把 args 和 result 分开存，避免结束时把命令冲掉。</p>
+  <div class="mockup">
+    <div class="mockup-header">字段来源</div>
+    <div class="mockup-body">
+      <div class="kv" style="max-width:640px">
+        <div class="k">标题 · 主机</div>
+        <div class="v">args.serverName / label / host；没有则用 result 里的 server</div>
+        <div class="k">标题 · Purpose</div>
+        <div class="v">命令首行 <span class="mono"># Purpose:</span>；缺失则回退命令意图表（磁盘/内存/…）</div>
+        <div class="k">第二行 · 命令</div>
+        <div class="v">去掉 Purpose 注释后的正文；长命令默认可折</div>
+        <div class="k">第三行 · 终端</div>
+        <div class="v">result.stdout / 流式 partialResult；ANSI 仍走现有 TerminalViewer</div>
+        <div class="k">风险徽标</div>
+        <div class="v">沿用 policy 推断：只读命令显示「只读」，即便工具声明是 exec</div>
+        <div class="k">折叠规则</div>
+        <div class="v">默认折叠整卡（标题仍在）。write/exec 运行中自动展开。成功后命令行可按你在第 2 节的选择默认收起。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+<div class="pick-bar" id="pick">点选上面的方案，然后回到对话里告诉我你的选择</div>
+<script>
+function toggleSelect(el) {
+  const group = el.closest('.options') || el.parentElement;
+  for (const n of group.querySelectorAll('.option.selected')) n.classList.remove('selected');
+  el.classList.add('selected');
+  const title = el.querySelector('h3');
+  const bar = document.getElementById('pick');
+  bar.innerHTML = '已选：<strong>' + (title ? title.innerText.replace(/\s+/g,' ') : el.dataset.choice) + '</strong> · 请回到对话确认';
+}
+</script>
+</body>
+</html>

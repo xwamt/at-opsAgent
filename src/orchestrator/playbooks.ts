@@ -55,8 +55,10 @@ export type GuidedManualDef = {
 export type ArtifactKind =
   | 'troubleshooting-report'
   | 'operation-record'
-  | 'service-deployment'
-  | 'service-inspection'
+  | 'deployment'
+  | 'inspection-report'
+  | 'handoff'
+  | 'emergency-plan'
   | 'evidence-only'
   | 'security-triage';
 

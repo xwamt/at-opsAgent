@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { t } from '../i18n';
+import { copyText } from '../lib/clipboard';
 import { useOpsStore } from '../store';
-import { usagePercent } from '../store-helpers';
 import { getVsCodeApi } from '../vscode-api';
 import ModelSelector from './ModelSelector.vue';
 
@@ -11,8 +11,13 @@ const draft = ref('');
 const textarea = ref<HTMLTextAreaElement | null>(null);
 /** 未配置时按了发送 ⇒ 显示内联提示条（P0-B 拦截，不静默走 fallback）。 */
 const blockedHint = ref(false);
+const overflowOpen = ref(false);
+const overflowRef = ref<HTMLElement | null>(null);
 
 const PLAYBOOK_RE = /^\/playbook(\s|$)/;
+const EXPORT_RE = /^\/export(\s|$)/;
+const COPY_RE = /^\/copy(\s|$)/;
+const RENAME_RE = /^\/rename(\s|$)/;
 
 const placeholder = computed(() =>
   !store.configured
@@ -33,34 +38,27 @@ const rows = computed(() => {
   return Math.min(6, Math.max(2, lines));
 });
 
-// context 水位（P1-4）：usage evt 驱动的细进度条 + hover 详情
-const contextPct = computed(() => usagePercent(store.usage));
-const usageTitle = computed(() => {
-  const usage = store.usage;
-  if (!usage) {
-    return '';
-  }
-  const parts: string[] = [];
-  if (contextPct.value !== null) {
-    parts.push(
-      `${t('usageContext')} ${contextPct.value}%（${usage.contextUsed}/${usage.contextWindow}）`
-    );
-  }
-  if (usage.inputTokens !== undefined) {
-    parts.push(`${t('usageInput')} ${usage.inputTokens}`);
-  }
-  if (usage.outputTokens !== undefined) {
-    parts.push(`${t('usageOutput')} ${usage.outputTokens}`);
-  }
-  return parts.join(' · ');
-});
-
 onMounted(() => {
   const state = getVsCodeApi().getState() as { draft?: string } | undefined;
   if (state?.draft) {
     draft.value = state.draft;
   }
+  document.addEventListener('click', onDocumentClick);
 });
+
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick);
+});
+
+function onDocumentClick(event: MouseEvent): void {
+  if (!overflowOpen.value) {
+    return;
+  }
+  const root = overflowRef.value;
+  if (root && !root.contains(event.target as Node)) {
+    overflowOpen.value = false;
+  }
+}
 
 function persistDraft(): void {
   const api = getVsCodeApi();
@@ -100,10 +98,39 @@ store.$onAction(({ name, after }) => {
   });
 });
 
+function toggleOverflow(): void {
+  overflowOpen.value = !overflowOpen.value;
+}
+
+function closeOverflow(): void {
+  overflowOpen.value = false;
+}
+
 /** @资产：host QuickPick（asset/pick req）；res 由 store 回填 attachments。 */
 function addAsset(): void {
   store.pickAsset();
+  closeOverflow();
   textarea.value?.focus();
+}
+
+function openPlaybook(): void {
+  store.togglePicker('playbook');
+  closeOverflow();
+}
+
+function toggleConclusionMode(): void {
+  store.toggleConclusionMode();
+  closeOverflow();
+}
+
+function lastAssistantText(): string | null {
+  for (let i = store.items.length - 1; i >= 0; i -= 1) {
+    const item = store.items[i];
+    if (item?.kind === 'assistant' && item.text && !item.error) {
+      return item.text;
+    }
+  }
+  return null;
 }
 
 function send(): void {
@@ -111,7 +138,28 @@ function send(): void {
   if (!text) {
     return;
   }
-  // slash 命令不发给 host，改为打开 picker
+  // slash /copy：复制最后一条 assistant 正文，不发给 host
+  if (COPY_RE.test(text)) {
+    const msg = lastAssistantText();
+    if (msg) {
+      void copyText(msg);
+    }
+    draft.value = '';
+    return;
+  }
+  // slash 命令不发给 host
+  if (EXPORT_RE.test(text)) {
+    store.post('chat/export', {});
+    draft.value = '';
+    return;
+  }
+  if (RENAME_RE.test(text)) {
+    if (store.sessionId) {
+      store.requestRenameSession(store.sessionId);
+    }
+    draft.value = '';
+    return;
+  }
   if (PLAYBOOK_RE.test(text)) {
     store.activePicker = 'playbook';
     return;
@@ -167,72 +215,59 @@ function onKeydown(event: KeyboardEvent): void {
         :aria-label="t('composerInputAria')"
         @keydown="onKeydown"
       ></textarea>
+      <p class="composer__keyhint ops-muted">{{ t('composerKeyHint') }}</p>
       <div class="composer__toolbar">
         <div class="composer__tools">
           <ModelSelector />
-          <button
-            type="button"
-            class="composer__tool"
-            :aria-label="t('composerAttachAria')"
-            :title="t('composerAttachAria')"
-            @click="addAsset"
-          >
-            <span class="codicon codicon-mention" aria-hidden="true"></span>
-          </button>
-          <button
-            type="button"
-            class="composer__tool"
-            :aria-expanded="store.activePicker === 'playbook'"
-            :aria-label="t('composerPlaybookHint')"
-            :title="t('composerPlaybookHint')"
-            @click="store.togglePicker('playbook')"
-          >
-            <span class="codicon codicon-book" aria-hidden="true"></span>
-          </button>
-          <button
-            type="button"
-            class="composer__tool"
-            :class="{ 'composer__tool--on': store.conclusionMode }"
-            :aria-pressed="store.conclusionMode"
-            :aria-label="t('conclusionModeAria')"
-            :title="t('conclusionMode')"
-            @click="store.toggleConclusionMode()"
-          >
-            <span class="codicon codicon-filter" aria-hidden="true"></span>
-          </button>
-          <!-- context 水位细条（P1-4）：hover 显示 token 详情，高水位染色 -->
-          <div
-            v-if="contextPct !== null"
-            class="composer__usage"
-            role="progressbar"
-            :aria-label="t('usageAria')"
-            :aria-valuenow="contextPct"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            :title="usageTitle"
-          >
-            <span
-              class="composer__usage-fill"
-              :class="{
-                'composer__usage-fill--warn': contextPct >= 80 && contextPct < 95,
-                'composer__usage-fill--crit': contextPct >= 95
-              }"
-              :style="{ width: contextPct + '%' }"
-            ></span>
+          <div ref="overflowRef" class="composer__overflow">
+            <button
+              type="button"
+              class="composer__tool"
+              :aria-expanded="overflowOpen"
+              :aria-haspopup="true"
+              :aria-label="t('composerOverflowAria')"
+              :title="t('composerOverflowAria')"
+              @click.stop="toggleOverflow"
+            >
+              <span class="codicon codicon-ellipsis" aria-hidden="true"></span>
+            </button>
+            <div v-if="overflowOpen" class="composer__overflow-menu" role="menu">
+              <button
+                type="button"
+                class="composer__overflow-item"
+                role="menuitem"
+                @click="addAsset"
+              >
+                <span class="codicon codicon-mention" aria-hidden="true"></span>
+                {{ t('composerAttachAria') }}
+              </button>
+              <button
+                type="button"
+                class="composer__overflow-item"
+                role="menuitem"
+                :aria-expanded="store.activePicker === 'playbook'"
+                @click="openPlaybook"
+              >
+                <span class="codicon codicon-book" aria-hidden="true"></span>
+                {{ t('composerPlaybookHint') }}
+              </button>
+              <button
+                type="button"
+                class="composer__overflow-item"
+                role="menuitemcheckbox"
+                :aria-checked="store.conclusionMode"
+                :aria-label="t('conclusionModeAria')"
+                :class="{ 'composer__overflow-item--on': store.conclusionMode }"
+                @click="toggleConclusionMode"
+              >
+                <span class="codicon codicon-filter" aria-hidden="true"></span>
+                {{ t('conclusionMode') }}
+              </button>
+            </div>
           </div>
         </div>
         <div class="composer__actions">
-          <!-- 软停 / 硬停两档（P2）：Cancel 等当前工具结束；Stop 立即 abort -->
           <template v-if="store.streaming">
-            <button
-              type="button"
-              class="ops-btn ops-btn--secondary"
-              :aria-label="t('composerCancelAria')"
-              :title="t('composerCancelAria')"
-              @click="store.abortRun('cancel')"
-            >
-              <span class="codicon codicon-stop-circle" aria-hidden="true"></span> {{ t('composerCancel') }}
-            </button>
             <button
               type="button"
               class="ops-btn ops-btn--danger"
@@ -372,14 +407,20 @@ function onKeydown(event: KeyboardEvent): void {
   outline: none;
 }
 
-/* 井内工具条：左 = 模型/@/playbook/水位，右 = 取消/停止/发送（Continue/Cline 布局） */
+.composer__keyhint {
+  margin: 0;
+  font-size: var(--ops-font-xs);
+  line-height: 1.2;
+}
+
+/* 井内工具条：左 = 模型/overflow，右 = 停止/发送（Continue/Cline 布局） */
 .composer__toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--ops-space-1);
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .composer__tools {
@@ -415,36 +456,62 @@ function onKeydown(event: KeyboardEvent): void {
   outline-offset: 1px;
 }
 
-.composer__tool--on {
-  color: var(--ops-accent);
+.composer__overflow {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.composer__overflow-menu {
+  position: absolute;
+  bottom: calc(100% + var(--ops-space-1));
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  background: var(--ops-input-bg);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--ops-fg) 12%, transparent);
+  padding: var(--ops-space-1) 0;
+}
+
+.composer__overflow-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--ops-fg);
+  cursor: pointer;
+  padding: var(--ops-space-1) var(--ops-space-2);
+  font-size: var(--ops-font-sm);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.composer__overflow-item .codicon {
+  font-size: var(--ops-font-md);
+  color: var(--ops-muted);
+  flex: 0 0 auto;
+}
+
+.composer__overflow-item:hover {
   background: var(--ops-toolbar-hover-bg);
 }
 
-/* context 水位细条：4px 高，accent/warn/crit 动态填充 */
-.composer__usage {
-  flex: 0 1 72px;
-  min-width: 32px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--ops-hover-bg);
-  overflow: hidden;
-  align-self: center;
+.composer__overflow-item:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: -1px;
 }
 
-.composer__usage-fill {
-  display: block;
-  height: 100%;
-  background: var(--ops-accent);
-  border-radius: 2px;
-  transition: width 200ms ease, background 200ms ease;
+.composer__overflow-item--on {
+  color: var(--ops-accent);
 }
 
-.composer__usage-fill--warn {
-  background: var(--ops-warn);
-}
-
-.composer__usage-fill--crit {
-  background: var(--ops-crit);
+.composer__overflow-item--on .codicon {
+  color: var(--ops-accent);
 }
 
 .composer__actions {

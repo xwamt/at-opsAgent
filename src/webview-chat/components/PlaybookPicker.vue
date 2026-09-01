@@ -67,7 +67,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
   box-shadow: var(--ops-shadow);
-  padding: var(--ops-density);
+  padding: var(--ops-space-1);
   max-height: 320px;
   overflow-y: auto;
   display: flex;
@@ -77,20 +77,20 @@ onBeforeUnmount(() => {
 }
 
 .pbpick__head {
-  font-size: calc(var(--ops-font-size) - 2px);
-  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
+  font-size: var(--ops-font-xs);
+  padding: var(--ops-space-1) var(--ops-space-2);
 }
 
 .pbpick__item {
   display: grid;
   grid-template-columns: max-content 1fr max-content;
   align-items: baseline;
-  gap: 2px calc(var(--ops-density) * 2);
+  gap: 2px var(--ops-space-3);
   text-align: left;
   background: transparent;
   border: none;
   border-radius: var(--ops-radius);
-  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
+  padding: var(--ops-space-1) var(--ops-space-2);
   color: var(--ops-fg);
   cursor: pointer;
 }
@@ -116,7 +116,7 @@ onBeforeUnmount(() => {
 }
 
 .pbpick__id {
-  font-size: calc(var(--ops-font-size) - 3px);
+  font-size: var(--ops-font-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -124,6 +124,6 @@ onBeforeUnmount(() => {
 
 .pbpick__desc {
   grid-column: 1 / -1;
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
 }
 </style>

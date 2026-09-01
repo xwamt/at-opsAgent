@@ -14,7 +14,7 @@ import {
 } from '../src/hub-host';
 import { shouldSkipAtSeriesMcpServer } from '../src/mcp-client/atSeriesDedup';
 import type { HubHost, ToolChangeEvent } from '../src/protocol';
-import { L2_TOOL_DISCOVERY } from '../src/prompts/layers';
+import { L3_OUTPUT_FORMAT } from '../src/prompts/layers';
 
 const HOST_APP = 'vscode';
 const TOKEN = 'test-bridge-token-0123456789abcdef0123456789abcdef';
@@ -286,9 +286,9 @@ describe('AtSeriesHubHost (against a fake Bridge)', () => {
     expect(res.error?.code).toBe('UNAVAILABLE');
     expect(res.error?.message).toBe(BACKGROUND_ACCESS_MESSAGE);
     expect(res.error?.message).toContain('UNAVAILABLE');
-    expect(L2_TOOL_DISCOVERY).toContain('UNAVAILABLE');
-    expect(L2_TOOL_DISCOVERY).toMatch(/原样交给用户/);
-    expect(L2_TOOL_DISCOVERY).toMatch(/不要改写/);
+    expect(L3_OUTPUT_FORMAT).toContain('UNAVAILABLE');
+    expect(L3_OUTPUT_FORMAT).toMatch(/原样交给用户/);
+    expect(L3_OUTPUT_FORMAT).toMatch(/不要改写/);
   });
 
   it('returns NOT_FOUND for unknown tools', async () => {

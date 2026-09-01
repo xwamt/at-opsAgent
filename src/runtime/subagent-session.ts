@@ -394,16 +394,33 @@ export async function runSubagentSession(
           transcript = finalizeSubagentAssistant(transcript, assistantMsgId);
           assistantMsgId = null;
         }
-        const toolEv = event as { toolName?: string; toolCallId?: string; toolCall?: { id?: string; name?: string } };
+        const toolEv = event as {
+          toolName?: string;
+          toolCallId?: string;
+          toolCall?: { id?: string; name?: string };
+          args?: unknown;
+        };
         const toolName = toolEv.toolName ?? toolEv.toolCall?.name ?? 'tool';
         const toolCallId = toolEv.toolCallId ?? toolEv.toolCall?.id ?? randomUUID();
         const descriptor = descriptors.find((d) => d.name === toolName);
         const risk = descriptor?.risk ?? 'exec';
         const pluginId = descriptor?.pluginId;
+        const rawArgs = toolEv.args;
+        let preview: string | undefined;
+        if (rawArgs && typeof rawArgs === 'object') {
+          try {
+            preview = JSON.stringify(rawArgs);
+          } catch {
+            preview = String(rawArgs);
+          }
+        } else if (typeof rawArgs === 'string') {
+          preview = rawArgs;
+        }
         transcript = startSubagentTool(transcript, toolCallId, {
           name: toolName,
           pluginId,
           risk,
+          preview,
           startedAt: Date.now()
         });
         steps.push({

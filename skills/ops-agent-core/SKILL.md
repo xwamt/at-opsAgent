@@ -32,9 +32,9 @@ description: >
 
 ## L2 工具发现（要点）
 
-discover → select → call：`ops_list_providers` →（按需 `ops_search_tools` /
-`ops_get_tool`）→ 一轮 `ops_select_tools` → 用一等工具名调用。Playbook 已
-代发 select 时直接用当前已选 pluginId，不再自行 select。provider 级纪律与
+有 L-env 现场层就以它为准，不要 `ops_list_providers`。声明工具立刻
+`ops_select_tools`，禁止对声明名 `ops_get_tool` / `ops_search_tools`。
+Playbook 已代发 select 时直接用当前已选 pluginId。provider 级纪律与
 易错项见下方 vendor SuperOps 附录。
 
 ## L3 输出契约

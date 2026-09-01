@@ -141,6 +141,8 @@ export {
   type TruncateForModelContext
 } from './tool-gate';
 
+export { subscribeSessionEvents, toUsageView } from './session-events';
+
 export {
   FALLBACK_NOTICE,
   FALLBACK_INIT_FAILURE_PREFIX,

@@ -91,10 +91,10 @@ function onQueryInput(event: Event): void {
 .board__head {
   display: flex;
   align-items: center;
-  gap: calc(var(--ops-density) * 2);
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  gap: var(--ops-space-3);
+  padding: var(--ops-space-1) var(--ops-space-3);
   border-bottom: 1px solid var(--ops-border);
-  font-size: calc(var(--ops-font-size) - 1px);
+  font-size: var(--ops-font-sm);
 }
 
 .board__title {
@@ -106,34 +106,34 @@ function onQueryInput(event: Event): void {
   border: 1px dashed var(--ops-warn);
   color: var(--ops-warn);
   border-radius: var(--ops-radius);
-  padding: 0 var(--ops-density);
-  font-size: calc(var(--ops-font-size) - 2px);
+  padding: 0 var(--ops-space-1);
+  font-size: var(--ops-font-xs);
 }
 
 .board__toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: calc(var(--ops-density) * 2);
-  padding: var(--ops-density) calc(var(--ops-density) * 2);
+  gap: var(--ops-space-3);
+  padding: var(--ops-space-1) var(--ops-space-3);
   border-bottom: 1px solid var(--ops-border);
 }
 
 .board__pills {
   display: inline-flex;
-  gap: var(--ops-density);
+  gap: var(--ops-space-1);
 }
 
 .board__pill {
   display: inline-flex;
   align-items: center;
-  gap: calc(var(--ops-density) - 2px);
+  gap: var(--ops-space-1);
   border: 1px solid var(--ops-border);
   border-radius: 999px;
-  padding: 1px calc(var(--ops-density) * 1.5);
+  padding: 1px var(--ops-space-2);
   background: transparent;
   color: var(--ops-muted);
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -168,9 +168,9 @@ function onQueryInput(event: Event): void {
 }
 
 .board__pill-count {
-  font-size: calc(var(--ops-font-size) - 3px);
+  font-size: var(--ops-font-xs);
   border-radius: 999px;
-  padding: 0 calc(var(--ops-density) - 1px);
+  padding: 0 var(--ops-space-1);
   background: var(--vscode-badge-background, var(--ops-hover-bg));
   color: var(--vscode-badge-foreground, var(--ops-muted));
   line-height: 1.5;
@@ -185,8 +185,8 @@ function onQueryInput(event: Event): void {
   background: var(--ops-input-bg);
   color: var(--ops-input-fg);
   font-family: inherit;
-  font-size: calc(var(--ops-font-size) - 1px);
-  padding: calc(var(--ops-density) - 2px) var(--ops-density);
+  font-size: var(--ops-font-sm);
+  padding: var(--ops-space-1) var(--ops-space-1);
 }
 
 .board__search:focus-visible {

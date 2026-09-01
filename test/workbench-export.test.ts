@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const vscodeMocks = vi.hoisted(() => ({
   showSaveDialog: vi.fn(),
+  showQuickPick: vi.fn(),
   showTextDocument: vi.fn(),
   openTextDocument: vi.fn(),
   clipboardWriteText: vi.fn(),
@@ -22,10 +23,10 @@ const vscodeMocks = vi.hoisted(() => ({
 vi.mock('vscode', () => ({
   window: {
     showSaveDialog: vscodeMocks.showSaveDialog,
+    showQuickPick: vscodeMocks.showQuickPick,
     showTextDocument: vscodeMocks.showTextDocument,
     showWarningMessage: vi.fn(),
-    showErrorMessage: vi.fn(),
-    showQuickPick: vi.fn()
+    showErrorMessage: vi.fn()
   },
   workspace: {
     openTextDocument: vscodeMocks.openTextDocument,
@@ -75,8 +76,15 @@ afterEach(() => {
   }
 });
 
+function mockExportPicks(format: 'markdown' | 'json' = 'markdown', sanitize = true): void {
+  vscodeMocks.showQuickPick
+    .mockResolvedValueOnce({ label: format, format })
+    .mockResolvedValueOnce({ label: sanitize ? 'sanitize' : 'raw', sanitize });
+}
+
 beforeEach(() => {
   vscodeMocks.showSaveDialog.mockReset();
+  vscodeMocks.showQuickPick.mockReset();
   vscodeMocks.showTextDocument.mockReset().mockResolvedValue(undefined);
   vscodeMocks.openTextDocument.mockReset().mockResolvedValue({});
   vscodeMocks.clipboardWriteText.mockReset().mockResolvedValue(undefined);
@@ -108,6 +116,7 @@ describe('WorkbenchService.exportReport', () => {
     store.appendItem({ kind: 'user', id: 'u1', text: '取消不应落盘' });
     store.persistNow();
 
+    mockExportPicks();
     vscodeMocks.showSaveDialog.mockResolvedValue(undefined);
     const writePromise = vi.spyOn(nodeFs.promises, 'writeFile');
     const tmp = os.tmpdir();
@@ -131,6 +140,7 @@ describe('WorkbenchService.exportReport', () => {
     store.appendItem({ kind: 'user', id: 'u1', text: '支付网关 5xx 飙升' });
     store.persistNow();
 
+    mockExportPicks('markdown', true);
     const targetPath = path.join(dir, 'duty-report.md');
     vscodeMocks.showSaveDialog.mockResolvedValue({ fsPath: targetPath });
     const writePromise = vi.spyOn(nodeFs.promises, 'writeFile').mockResolvedValue(undefined);
@@ -163,16 +173,39 @@ describe('WorkbenchService.exportReport', () => {
       true
     );
 
+    mockExportPicks();
     const targetPath = path.join(dir, 'first-session.md');
     vscodeMocks.showSaveDialog.mockResolvedValue({ fsPath: targetPath });
     const writePromise = vi.spyOn(nodeFs.promises, 'writeFile').mockResolvedValue(undefined);
 
-    await makeWorkbench(store).exportReport(first);
+    await makeWorkbench(store).exportReport({ sessionId: first });
 
     expect(writePromise).toHaveBeenCalledTimes(1);
     const markdown = String(writePromise.mock.calls[0]![1]);
     expect(markdown).toContain('FIRST_SESSION_UNIQUE');
     expect(markdown).not.toContain('SECOND_SESSION_UNIQUE');
+  });
+
+  it('format=json 写出 DutyReportV1 JSON；preset 跳过 QuickPick', async () => {
+    const { store, dir } = tempStore();
+    store.appendItem({ kind: 'user', id: 'u1', text: 'json-export' });
+    store.persistNow();
+
+    const targetPath = path.join(dir, 'duty-report.json');
+    vscodeMocks.showSaveDialog.mockResolvedValue({ fsPath: targetPath });
+    const writePromise = vi.spyOn(nodeFs.promises, 'writeFile').mockResolvedValue(undefined);
+
+    const result = await makeWorkbench(store).exportReport({
+      format: 'json',
+      sanitize: true
+    });
+
+    expect(result.ok).toBe(true);
+    expect(vscodeMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(writePromise).toHaveBeenCalledTimes(1);
+    const json = String(writePromise.mock.calls[0]![1]);
+    expect(json).toContain('"version": 1');
+    expect(json).toContain('json-export');
   });
 });
 
@@ -257,9 +290,11 @@ describe('HostController 路由 clipboard/write 与 chat/export', () => {
       extensionPath: dir
     });
     try {
+      mockExportPicks();
       vscodeMocks.showSaveDialog.mockResolvedValue(undefined);
       const result = await controller.handleRequest('chat/export', undefined);
       expect(result).toEqual({ ok: false });
+      expect(vscodeMocks.showQuickPick).toHaveBeenCalledTimes(2);
       expect(vscodeMocks.showSaveDialog).toHaveBeenCalledTimes(1);
     } finally {
       controller.dispose();

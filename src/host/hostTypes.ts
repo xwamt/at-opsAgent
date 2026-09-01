@@ -147,6 +147,7 @@ export type RuntimeEventLike =
   | { type: 'text_delta'; id: string; text: string }
   | { type: 'thinking_delta'; id: string; text: string }
   | { type: 'tool_start'; id: string; name: string; ok?: boolean; preview?: string; error?: string }
+  | { type: 'tool_update'; id: string; name: string; ok?: boolean; preview?: string; error?: string }
   | { type: 'tool_end'; id: string; name: string; ok?: boolean; preview?: string; error?: string }
   /** 上下文/成本水位（D-runtime 落地后开始发送；host 前向兼容）。 */
   | ({ type: 'usage' } & UsageView)
@@ -206,7 +207,14 @@ export interface RuntimeHandlers {
       taskId: string;
       confidence: 'confirmed' | 'hypothesis' | 'pending';
       summary: string;
-      refs?: Array<{ kind: string; preview: string; artifactUri?: string }>;
+      refs?: Array<{
+        kind: string;
+        preview: string;
+        artifactUri?: string;
+        points?: number[];
+        from?: string;
+        to?: string;
+      }>;
     };
   }) => void;
   /**

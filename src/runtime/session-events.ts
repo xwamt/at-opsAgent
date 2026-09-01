@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 
 import type { UsageView } from '../protocol';
+import { classifyPromptError, emitPromptErrorNotice } from './fallback';
 import { truncatePreview } from './tool-gate';
 import type { OpsRuntimeEvent, OpsRuntimeHandlers } from './types';
 
@@ -37,7 +38,8 @@ function extractResultText(result: unknown): string {
 /** pi Usage（pi-ai）+ 会话上下文水位 → 协议 UsageView 的宽松映射。 */
 export function toUsageView(
   usage: { input?: unknown; output?: unknown; cost?: { total?: unknown } },
-  contextUsage?: { tokens?: number | null; contextWindow?: number }
+  contextUsage?: { tokens?: number | null; contextWindow?: number },
+  totals?: { totalInput?: number; totalOutput?: number; totalCost?: number }
 ): UsageView {
   const view: UsageView = {};
   if (typeof usage.input === 'number') view.inputTokens = usage.input;
@@ -48,6 +50,9 @@ export function toUsageView(
   if (typeof contextUsage?.contextWindow === 'number') {
     view.contextWindow = contextUsage.contextWindow;
   }
+  if (typeof totals?.totalInput === 'number') view.totalInputTokens = totals.totalInput;
+  if (typeof totals?.totalOutput === 'number') view.totalOutputTokens = totals.totalOutput;
+  if (typeof totals?.totalCost === 'number') view.totalCostUsd = totals.totalCost;
   return view;
 }
 
@@ -65,6 +70,9 @@ export function subscribeSessionEvents(
 ): () => void {
   // P0-C：事件 id 用 randomUUID——续接/重建会话后 id 绝不与历史消息串写。
   let currentMessageId = randomUUID();
+  let cumulativeInputTokens = 0;
+  let cumulativeOutputTokens = 0;
+  let cumulativeCostUsd = 0;
   const emit = (e: OpsRuntimeEvent): void => handlers.onEvent?.(e);
 
   return session.subscribe((event: AgentSessionEvent) => {
@@ -87,12 +95,37 @@ export function subscribeSessionEvents(
       }
       case 'message_end': {
         // P1-4：assistant 消息落定时上报 token/成本/上下文水位。
-        const message = event.message as { role?: string; usage?: Record<string, unknown> };
-        if (message.role === 'assistant' && message.usage !== undefined) {
-          emit({
-            type: 'usage',
-            ...toUsageView(message.usage, session.getContextUsage())
-          });
+        const message = event.message as {
+          role?: string;
+          usage?: Record<string, unknown>;
+          stopReason?: string;
+          errorMessage?: string;
+        };
+        if (message.role === 'assistant') {
+          if (message.stopReason === 'error' || (typeof message.errorMessage === 'string' && message.errorMessage.length > 0)) {
+            const errText = message.errorMessage ?? `模型调用失败（stopReason=${message.stopReason}）`;
+            const kind = classifyPromptError(errText);
+            emitPromptErrorNotice(errText, kind, emit);
+          }
+          if (message.usage !== undefined) {
+            const inTok = typeof message.usage.input === 'number' ? message.usage.input : 0;
+            const outTok = typeof message.usage.output === 'number' ? message.usage.output : 0;
+            const costVal =
+              typeof (message.usage.cost as { total?: unknown })?.total === 'number'
+                ? ((message.usage.cost as { total: number }).total)
+                : 0;
+            cumulativeInputTokens += inTok;
+            cumulativeOutputTokens += outTok;
+            cumulativeCostUsd += costVal;
+            emit({
+              type: 'usage',
+              ...toUsageView(message.usage, session.getContextUsage(), {
+                totalInput: cumulativeInputTokens,
+                totalOutput: cumulativeOutputTokens,
+                totalCost: cumulativeCostUsd
+              })
+            });
+          }
         }
         break;
       }
@@ -111,11 +144,46 @@ export function subscribeSessionEvents(
         }
         break;
       }
-      case 'tool_execution_start':
+      case 'tool_execution_start': {
         currentMessageId = randomUUID();
-        emit({ type: 'tool_start', id: event.toolCallId, name: event.toolName });
+        const rawArgs = (event as { args?: unknown }).args;
+        let preview: string | undefined;
+        if (rawArgs && typeof rawArgs === 'object') {
+          try {
+            preview = JSON.stringify(rawArgs);
+          } catch {
+            preview = String(rawArgs);
+          }
+        } else if (typeof rawArgs === 'string') {
+          preview = rawArgs;
+        }
+        emit({
+          type: 'tool_start',
+          id: event.toolCallId,
+          name: event.toolName,
+          ...(preview ? { preview: truncatePreview(preview) } : {})
+        });
         hooks.onToolActivity?.('start', event.toolCallId);
         break;
+      }
+      case 'tool_execution_update': {
+        const updateEvent = event as {
+          toolCallId: string;
+          toolName: string;
+          args?: unknown;
+          partialResult?: unknown;
+        };
+        const text = extractResultText(updateEvent.partialResult);
+        if (text) {
+          emit({
+            type: 'tool_update',
+            id: updateEvent.toolCallId,
+            name: updateEvent.toolName,
+            preview: truncatePreview(text)
+          });
+        }
+        break;
+      }
       case 'tool_execution_end': {
         currentMessageId = randomUUID();
         const preview = truncatePreview(extractResultText(event.result));

@@ -43,6 +43,10 @@
   --ops-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
   --ops-toolbar-hover-bg: var(--vscode-toolbar-hoverBackground, var(--ops-hover-bg));
 
+  /* 侧滑 drawer（SubagentInspector 等） */
+  --ops-drawer-duration: 0.2s;
+  --ops-drawer-ease: ease-out;
+
   /* 用户消息「井」底色（Copilot 式分组）：inactiveSelection → textBlockQuote → 灰兜底 */
   --ops-user-msg-bg: var(
     --vscode-editor-inactiveSelectionBackground,
@@ -184,6 +188,10 @@ button {
   color: var(--ops-btn-fg);
 }
 
+.ops-btn:hover:not([disabled]) {
+  background: var(--vscode-button-hoverBackground, var(--ops-btn-bg));
+}
+
 .ops-btn:focus-visible {
   outline: 1px solid var(--ops-accent);
   outline-offset: 1px;
@@ -193,6 +201,10 @@ button {
   background: var(--ops-btn2-bg);
   color: var(--ops-btn2-fg);
   border-color: var(--ops-border);
+}
+
+.ops-btn--secondary:hover:not([disabled]) {
+  background: var(--vscode-button-secondaryHoverBackground, var(--ops-btn2-bg));
 }
 
 .ops-btn--danger {
@@ -379,4 +391,67 @@ button {
 .ansi-dim { opacity: 0.7; }
 .ansi-italic { font-style: italic; }
 .ansi-underline { text-decoration: underline; }
+
+/* ---- Copy button（OPT-4：常显低对比，hover 全对比） ---- */
+.ops-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ops-space-1);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--ops-radius-ctl);
+  background: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 80%, transparent);
+  color: var(--ops-muted);
+  cursor: pointer;
+  opacity: 0.45;
+  flex: 0 0 auto;
+  font-size: var(--ops-font-xs);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ops-copy-btn:hover,
+.ops-copy-btn:focus-visible,
+.ops-copy-btn--copied {
+  opacity: 1;
+  color: var(--ops-fg);
+  background: var(--ops-toolbar-hover-bg);
+}
+
+.ops-copy-btn:focus-visible {
+  outline: 1px solid var(--ops-accent);
+  outline-offset: 1px;
+}
+
+.ops-copy-btn--copied {
+  width: auto;
+  padding: 0 var(--ops-space-2);
+}
+
+/* ---- 侧滑 drawer 动画（SubagentInspector 等） ---- */
+
+@keyframes ops-drawer-slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0.92;
+  }
+
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.ops-drawer-panel {
+  animation: ops-drawer-slide-in var(--ops-drawer-duration) var(--ops-drawer-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ops-drawer-panel {
+    animation: none !important;
+  }
+}
 

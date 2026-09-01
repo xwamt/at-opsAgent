@@ -33,11 +33,13 @@ describe('MarkdownBlock.vue 约束', () => {
     'utf8'
   );
 
-  it('streaming 可选 prop；copy 按钮逻辑仍在 mounted/updated', () => {
+  it('streaming 可选 prop；copy 按钮 mounted + updated 防抖', () => {
     expect(src).toContain('streaming?: boolean');
     expect(src).toContain('onMounted(bindCopyButtons)');
-    expect(src).toContain('onUpdated(bindCopyButtons)');
+    expect(src).toContain('onUpdated(scheduleBindCopyButtons)');
     expect(src).toContain('ops-copy-btn');
+    expect(src).toContain('ops-md-fence__lang');
+    expect(src).toMatch(/200/);
   });
 
   it('高亮走 core+白名单，不是 highlight.js 全量包', () => {
@@ -54,6 +56,17 @@ describe('MarkdownBlock.vue 约束', () => {
     expect(lib).toContain("highlight.js/lib/languages/dockerfile");
     expect(lib).toContain("highlight.js/lib/languages/ini");
     expect(lib).toContain("highlight.js/lib/languages/nginx");
+  });
+
+  it('PromQL fence 高亮函数、duration 与 label matcher', () => {
+    const html = renderMarkdown(
+      '```promql\nrate(http_requests_total{job="api"}[5m])\n```',
+      false
+    );
+    expect(html).toContain('hljs');
+    expect(html).toContain('rate');
+    expect(html).toContain('5m');
+    expect(html).toContain('job');
   });
 
   it('支持 SQL / Diff / Shell 别名的高亮渲染', () => {

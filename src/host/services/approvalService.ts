@@ -11,7 +11,7 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
-import type { ApprovalRespondReq } from '../../protocol';
+import type { ApprovalBriefView, ApprovalRespondReq } from '../../protocol';
 import type { PolicyContext, ToolCallOrigin } from '../../core';
 import {
   deriveCommandSetHash,
@@ -26,6 +26,7 @@ import {
 import { resolveToolRisk } from '../../mcp-client/riskLookup';
 import { buildApprovalCommandSet, buildApprovalElements } from '../approvalGate';
 import type { ApprovalBriefLike } from '../hostTypes';
+import { formatApprovalAuditLine } from '../../webview-chat/store-helpers';
 import { postApprovalWebhook, toBriefView } from './approvalNotify';
 import { describeError, type HostContext } from './context';
 import { isOpsWriteOpsDocCommandSet, tryPreviewOpsDocDiff } from './opsDocService';
@@ -381,6 +382,8 @@ export class ApprovalService {
       kind: 'approval' as const,
       id: randomUUID(),
       briefId: view.id,
+      targetLabel: view.targetLabel,
+      risk: view.risk,
       decision: 'pending' as const
     };
     ctx.store.appendItem(item, sessionId);
@@ -406,15 +409,37 @@ export class ApprovalService {
   private patchApprovalItem(
     briefId: string,
     sessionId: string,
-    decision: 'approved' | 'rejected' | 'timeout'
+    decision: 'approved' | 'rejected' | 'timeout',
+    ts = Date.now()
   ): void {
     const item = this.ctx.store.itemsOf(sessionId).find(
       (i) => i.kind === 'approval' && i.briefId === briefId
     );
     if (!item) return;
-    const patch = { decision, ts: Date.now() };
+    const patch = { decision, ts };
     this.ctx.store.patchItem(item.id, patch, sessionId);
     this.ctx.broadcastToSession(sessionId, 'transcript/patch', { itemId: item.id, patch });
+  }
+
+  /** 决议后追加 system 行，Codex 式 audit 留痕（结论模式仍可见）。 */
+  private appendApprovalAuditLine(
+    brief: ApprovalBriefView,
+    sessionId: string,
+    decision: 'approved' | 'rejected' | 'timeout',
+    ts: number
+  ): void {
+    const text = formatApprovalAuditLine({
+      kind: 'approval',
+      id: '',
+      briefId: brief.id,
+      targetLabel: brief.targetLabel,
+      risk: brief.risk,
+      decision,
+      ts
+    });
+    const item = { kind: 'system' as const, id: randomUUID(), text, ts };
+    this.ctx.store.appendItem(item, sessionId);
+    this.ctx.broadcastToSession(sessionId, 'transcript/append', { item });
   }
 
   /** orchestrator approval/resolved 事件：清理视图与映射（幂等）。 */
@@ -467,7 +492,9 @@ export class ApprovalService {
       }
     }
     // 事件路径（approval/resolved）已清理时为幂等 no-op。
-    if (ctx.store.resolveBrief(req.briefId, sessionId)) {
+    const ts = Date.now();
+    const brief = ctx.store.resolveBrief(req.briefId, sessionId);
+    if (brief) {
       ctx.broadcastToSession(sessionId, 'approval/resolve', {
         briefId: req.briefId,
         decision: req.decision
@@ -480,7 +507,10 @@ export class ApprovalService {
       { kind: 'approval', briefId: req.briefId, decision: req.decision },
       sessionId
     );
-    this.patchApprovalItem(req.briefId, sessionId, req.decision);
+    this.patchApprovalItem(req.briefId, sessionId, req.decision, ts);
+    if (brief) {
+      this.appendApprovalAuditLine(brief, sessionId, req.decision, ts);
+    }
     ctx.emitDuty?.('approval_decision', sessionId, {
       briefId: req.briefId,
       decision: req.decision
@@ -534,7 +564,9 @@ export class ApprovalService {
     reason: 'user' | 'timeout' | 'abort'
   ): void {
     this.currentApprovals.delete(sessionId);
-    if (this.ctx.store.resolveBrief(briefId, sessionId)) {
+    const ts = Date.now();
+    const brief = this.ctx.store.resolveBrief(briefId, sessionId);
+    if (brief) {
       this.ctx.broadcastToSession(sessionId, 'approval/resolve', {
         briefId,
         decision: 'rejected'
@@ -553,7 +585,10 @@ export class ApprovalService {
       },
       sessionId
     );
-    this.patchApprovalItem(briefId, sessionId, decision);
+    this.patchApprovalItem(briefId, sessionId, decision, ts);
+    if (brief) {
+      this.appendApprovalAuditLine(brief, sessionId, decision, ts);
+    }
     this.ctx.emitDuty?.('approval_decision', sessionId, {
       briefId,
       decision,

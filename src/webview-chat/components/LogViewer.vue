@@ -115,7 +115,7 @@ function openInEditor(): void {
   color: var(--vscode-editor-foreground, var(--ops-fg));
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
-  padding: calc(var(--ops-density) * 1.5);
+  padding: var(--ops-space-2);
   max-height: 220px;
   overflow: auto;
   line-height: 1.45;
@@ -123,7 +123,7 @@ function openInEditor(): void {
 
 .logv__line {
   display: flex;
-  gap: calc(var(--ops-density) * 2);
+  gap: var(--ops-space-3);
   min-width: 0;
 }
 
@@ -166,10 +166,10 @@ function openInEditor(): void {
 }
 
 .logv__truncated {
-  margin-top: var(--ops-density);
+  margin-top: var(--ops-space-2);
   display: flex;
   align-items: center;
-  gap: calc(var(--ops-density) * 2);
+  gap: var(--ops-space-3);
   font-size: calc(var(--ops-font-size) - 2px);
 }
 
@@ -177,11 +177,11 @@ function openInEditor(): void {
   color: var(--ops-warn);
   border: 1px solid var(--ops-warn);
   border-radius: var(--ops-radius);
-  padding: 0 var(--ops-density);
+  padding: 0 var(--ops-space-2);
 }
 
 .logv__open {
-  padding: 0 calc(var(--ops-density) * 1.5);
+  padding: 0 var(--ops-space-2);
   font-size: calc(var(--ops-font-size) - 2px);
   line-height: 1.7;
 }

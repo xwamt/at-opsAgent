@@ -29,10 +29,10 @@ const props = defineProps<{
 .hchip {
   display: inline-flex;
   align-items: center;
-  gap: var(--ops-density);
+  gap: var(--ops-space-2);
   border: 1px solid var(--ops-border);
   border-radius: var(--ops-radius);
-  padding: 0 calc(var(--ops-density) + 2px);
+  padding: 0 var(--ops-space-2);
   font-size: calc(var(--ops-font-size) - 2px);
   line-height: 1.7;
   white-space: nowrap;

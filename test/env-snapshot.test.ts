@@ -131,10 +131,9 @@ describe('L0/L2 新契约（docs/13 §4.3）', () => {
 
   it('L2：providers/L-env 后立刻 select；get_tool 仅限 live catalog；同工具连败即停', () => {
     expect(L2_TOOL_DISCOVERY).toContain('立刻 ops_select_tools');
-    expect(L2_TOOL_DISCOVERY).toContain('live catalog 里已存在');
-    expect(L2_TOOL_DISCOVERY).toContain('不要 get_tool——直接 select');
-    expect(L2_TOOL_DISCOVERY).toContain('只在工具名完全未知');
-    expect(L2_TOOL_DISCOVERY).toContain('连续 2 次空结果/失败');
+    expect(L2_TOOL_DISCOVERY).toContain('live catalog');
+    expect(L2_TOOL_DISCOVERY).toContain('不要 ops_get_tool');
+    expect(L2_TOOL_DISCOVERY).toContain('连续 2 次空结果');
     expect(L2_TOOL_DISCOVERY).toContain('桥未就绪');
   });
 

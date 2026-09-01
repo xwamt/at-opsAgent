@@ -44,6 +44,7 @@ import {
   type SettingsTabId,
   type ConfiguredModelItem,
   type ConfiguredProviderGroup,
+  isReasoningModel,
   normalizeConfiguredModels,
   normalizeConfiguredProviders
 } from './helpers';
@@ -491,8 +492,21 @@ export const useSettingsStore = defineStore('ops-settings', {
       this.providerGroups = this.providerGroups.filter((p) => p.providerId !== providerId);
     },
 
-    batchAddFetchedModels(providerId: string, baseUrl: string, modelIds: string[]): void {
-      const models = modelIds.map((id) => ({ id, name: id, reasoning: false }));
+    batchAddFetchedModels(
+      providerId: string,
+      baseUrl: string,
+      modelIds: Array<string | { id: string; name?: string; reasoning?: boolean }>
+    ): void {
+      const models = modelIds.map((item) => {
+        if (typeof item === 'string') {
+          return { id: item, name: item, reasoning: isReasoningModel(item) };
+        }
+        return {
+          id: item.id,
+          name: item.name || item.id,
+          reasoning: item.reasoning !== undefined ? item.reasoning : isReasoningModel(item.id)
+        };
+      });
       this.post('models/save', {
         providerId,
         baseUrl,
@@ -632,15 +646,26 @@ export const useSettingsStore = defineStore('ops-settings', {
     },
 
     /** 「拉取模型列表」：GET {baseUrl}/models（host 路由 models/fetch），回填建议。 */
-    fetchModels(): void {
-      const baseUrl = this.models.baseUrl.trim();
+    fetchModels(options?: { providerId?: string; baseUrl?: string; apiKey?: string }): void {
+      const baseUrl = options?.baseUrl?.trim() || this.models.baseUrl.trim();
+      const provider = options?.providerId?.trim() || this.models.providerId.trim() || 'custom';
+      const apiKey = options?.apiKey?.trim() || (this.models.apiKey ? this.models.apiKey.trim() : undefined);
       if (baseUrl.length === 0) {
         this.setStatus('models', false, t('mRequired'));
         return;
       }
       this.fetchingModels = true;
       this.setStatus('models', true, t('mFetching'));
-      this.post('models/fetch', buildModelsFetchReq(this.models));
+      this.post('models/fetch', {
+        baseUrl,
+        provider,
+        ...(apiKey ? { apiKey } : {})
+      });
+    },
+
+    /** 别名兼容：ModelsTab 调用的方法名 */
+    fetchModelsList(options?: { providerId?: string; baseUrl?: string; apiKey?: string }): void {
+      this.fetchModels(options);
     },
 
     oauthLogin(): void {
@@ -653,9 +678,17 @@ export const useSettingsStore = defineStore('ops-settings', {
       this.post('models/oauth', { providerId });
     },
 
+    loginOauth(): void {
+      this.oauthLogin();
+    },
+
     openModelsJson(): void {
       const req = openModelsFileReq(this.modelsChannel);
       this.post(req.type, req.payload);
+    },
+
+    openModelsFile(): void {
+      this.openModelsJson();
     },
 
     openAuthJson(): void {

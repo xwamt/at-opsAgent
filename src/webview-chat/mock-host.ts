@@ -376,6 +376,16 @@ export function installMockHost(): void {
       MOCK_SESSIONS.unshift(session);
       currentSessionId = session.id;
       emitHydrate(session.id);
+    } else if (msg.type === 'opsDoc/save') {
+      emitRes(msg.id ?? '', 'opsDoc/save', {
+        ok: true,
+        path: 'ops-docs/mock/inspection-report.md'
+      });
+      emit('transcript/append', {
+        kind: 'system',
+        id: `sys-opsdoc-${Date.now().toString(36)}`,
+        text: '[mock] 已写入 ops-docs/mock/inspection-report.md'
+      });
     } else if (msg.type === 'guidedManual/complete') {
       emit('playbook/stage', { id: 'pb.config-change', stage: 'Verifying' });
       emit('transcript/append', {

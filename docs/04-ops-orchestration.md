@@ -35,11 +35,11 @@ Orchestrator 持有状态；模型不能直接把状态写成 Closed。非法迁
 |----|------|-------------|----------|----------|------|
 | `pb.incident` | 故障排查 | `replace at.grafana`，一次 `add` 主机/日志 | exec（审批后） | — | troubleshooting-report |
 | `pb.metric-anomaly` | 指标异常 | `replace at.grafana` | read | — | 证据便签 |
-| `pb.release` | 发布与回滚 | `replace at.jenkins`，`add at.terminal` | exec | **GuidedManual** 触发构建 | service-deployment |
+| `pb.release` | 发布与回滚 | `replace at.jenkins`，`add at.terminal` | exec | **GuidedManual** 触发构建 | deployment |
 | `pb.config-change` | 配置变更 | `replace at.nacos` | read | **GuidedManual** 发布/回滚 | operation-record |
 | `pb.db` | 慢查询/容量 | `replace at.jumpserver` 或 `at.database`，`add at.grafana` | exec | Database 无弹窗 → 强制会话批 | 诊断纪要 |
 | `pb.host-emergency` | 主机应急 | `replace at.terminal` 或 `at.jumpserver` | exec | — | operation-record |
-| `pb.inspection` | 日常巡检 | 按 checklist 分组 | read | 不就地修 | service-inspection |
+| `pb.inspection` | 日常巡检 | 按 checklist 分组 | read | 不就地修 | inspection-report |
 | `pb.security-triage` | 安全初判 | 单 provider 最小面 | **强制 read** | 遏制升级人工 | 证据清单 + 初判 |
 
 触发：主代理判断后调用 `ops_start_playbook`（目录来自 `ops_list_playbooks`；yaml `triggers.kind=nl` 的 patterns 只作为 whenToUse 提示词进工具描述）/ 用户点 PlaybookPicker / 看板新建 / 粘贴告警后仍由主代理决定。host **不做** NL 关键词/正则匹配自动启动链路。不确定时问一句，不静默开 pb.incident。
@@ -155,11 +155,11 @@ MCP 不能触发构建或发布配置。阶段产出：
 
 ### L2 工具发现（随 Hub 版本）
 
-嵌入形态用 `ops_list_providers` / `ops_search_tools` / `ops_get_tool` / `ops_select_tools`。Playbook 已代发 select 时告知模型「当前已选 pluginId=…，直接用一等工具名」。易错：`nacos_list_instances` ≠ 服务主机（主机在 `nacos_list_service_instances`）。
+嵌入形态用 `ops_list_providers` / `ops_search_tools` / `ops_get_tool` / `ops_select_tools`。有 L-env 时直接 select。Playbook 已代发 select 时告知模型「当前已选 pluginId=…，直接用一等工具名」。Nacos 易错点见 SuperOps `nacos.md`（`nacos_list_instances` ≠ 服务主机）。
 
 ### L3 输出格式
 
-EvidenceNote、9 要素审批简报、三态结论、文档模板选择、C9（未确认根因不开长报告）。
+EvidenceNote（仅调查/合成）、9 要素审批简报（仅 write/exec）、三态结论、文档模板选择、C9（未确认根因不开长报告）。闲聊不要出便签或简报。
 
 ### L4 链路注入
 

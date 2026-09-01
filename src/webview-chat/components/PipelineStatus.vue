@@ -74,9 +74,9 @@ const duration = computed(() => {
 .pipe__row {
   display: flex;
   align-items: center;
-  gap: calc(var(--ops-density) * 1.5);
+  gap: var(--ops-space-2);
   min-width: 0;
-  font-size: calc(var(--ops-font-size) - 1px);
+  font-size: var(--ops-font-sm);
 }
 
 .pipe__icon {
@@ -110,7 +110,7 @@ const duration = computed(() => {
   align-items: center;
   gap: 3px;
   white-space: nowrap;
-  font-size: calc(var(--ops-font-size) - 2px);
+  font-size: var(--ops-font-xs);
 }
 
 .pipe__result--building {

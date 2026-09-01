@@ -7,6 +7,7 @@
  * toggleHistory 让 chat webview 开关历史抽屉。
  */
 import * as vscode from 'vscode';
+import { formatApprovalBriefMarkdown } from '../webview-chat/lib/approval-brief';
 import { showBoardPanel } from './boardView';
 import type { ChatViewProvider } from './chatView';
 import { diagnoseHub } from './diagnose';
@@ -188,6 +189,28 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     }
   );
 
+  // webview 审批栏「在编辑器中查看」深链：brief 转 markdown 虚拟文档。
+  const openBrief = vscode.commands.registerCommand(
+    'atOpsAgent.openBrief',
+    async (briefId?: string) => {
+      const id = typeof briefId === 'string' && briefId.length > 0 ? briefId : controller.store.pendingBriefs[0]?.id;
+      const brief = id ? controller.store.pendingBriefs.find((entry) => entry.id === id) : undefined;
+      if (!brief) {
+        void vscode.window.showWarningMessage('找不到审批简报（可能已决议或会话已切换）。');
+        return;
+      }
+      try {
+        const markdown = formatApprovalBriefMarkdown(brief);
+        const doc = await vscode.workspace.openTextDocument({ content: markdown, language: 'markdown' });
+        await vscode.window.showTextDocument(doc, { preview: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        output.appendLine(`[brief/open] 打开失败: ${message}`);
+        void vscode.window.showErrorMessage(`无法打开简报：${message}`);
+      }
+    }
+  );
+
   // 用户确认的环境别名：打开 memory/environment.json；保存时 schema + 刮密。
   const editEnvironment = vscode.commands.registerCommand(
     'atOpsAgent.memory.editEnvironment',
@@ -212,7 +235,8 @@ export function registerCommands(deps: CommandDeps): vscode.Disposable[] {
     setImWebhookSecret,
     editEnvironment,
     escalateSelect,
-    openArtifact
+    openArtifact,
+    openBrief
   ];
 }
 

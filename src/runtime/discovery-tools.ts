@@ -268,7 +268,10 @@ export const discoveryToolSpecs: readonly DiscoveryToolSpec[] = [
   {
     name: 'ops_list_providers',
     label: 'Ops：列出能力插件',
-    description: '列出已接入的 AT 能力插件（provider）、健康状态、桥接数与工具名清单。开始任务前先看这里。',
+    description:
+      '列出已接入的 AT 能力插件（provider）、健康状态、桥接数与声明工具名。' +
+      '系统提示词已有 L-env 现场层时不必先调本工具；没有 L-env 才用它认客户端。' +
+      '禁止用本工具代替 ops_select_tools。',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     execute: async (hub) => JSON.stringify(listProviders(hub))
   },

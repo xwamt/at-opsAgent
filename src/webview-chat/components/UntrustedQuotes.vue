@@ -29,13 +29,13 @@ const props = defineProps<{
   border: 1px solid var(--ops-warn);
   border-left-width: 3px;
   border-radius: var(--ops-radius);
-  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
+  padding: var(--ops-space-2) var(--ops-space-2);
 }
 
 .untrusted__head {
   display: flex;
   align-items: baseline;
-  gap: calc(var(--ops-density) * 1.5);
+  gap: var(--ops-space-2);
   flex-wrap: wrap;
 }
 
@@ -50,8 +50,8 @@ const props = defineProps<{
 }
 
 .untrusted__quote {
-  margin: var(--ops-density) 0 0;
-  padding: var(--ops-density) calc(var(--ops-density) * 1.5);
+  margin: var(--ops-space-2) 0 0;
+  padding: var(--ops-space-2) var(--ops-space-2);
   border-left: 2px solid var(--ops-warn);
   background: var(--ops-code-bg);
   color: var(--ops-muted);
