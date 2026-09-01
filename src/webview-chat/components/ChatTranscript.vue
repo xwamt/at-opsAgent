@@ -403,7 +403,29 @@ async function copyMessage(id: string, text: string): Promise<void> {
 
       <template v-else-if="entry.kind === 'item'">
         <div v-if="entry.item.kind === 'user'" class="transcript__msg transcript__msg--user">
-          <span class="transcript__who">{{ t('roleUser') }}</span>
+          <span class="transcript__who-row">
+            <span class="transcript__who">{{ t('roleUser') }}</span>
+            <button
+              type="button"
+              class="ops-copy-btn transcript__copy-msg"
+              :disabled="!entry.item.piEntryId"
+              :title="entry.item.piEntryId ? t('editUserMessage') : t('editUserMessageUnavailable')"
+              :aria-label="t('editUserMessage')"
+              @click.stop="store.editUserMessage(entry.item.id)"
+            >
+              <span class="codicon codicon-edit" aria-hidden="true"></span>
+            </button>
+            <button
+              type="button"
+              class="ops-copy-btn transcript__copy-msg"
+              :disabled="!entry.item.piEntryId"
+              :title="entry.item.piEntryId ? t('deleteUserMessage') : t('editUserMessageUnavailable')"
+              :aria-label="t('deleteUserMessage')"
+              @click.stop="store.deleteUserMessage(entry.item.id)"
+            >
+              <span class="codicon codicon-trash" aria-hidden="true"></span>
+            </button>
+          </span>
           <div class="transcript__text transcript__well">{{ entry.item.text }}</div>
         </div>
 

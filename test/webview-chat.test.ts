@@ -34,6 +34,7 @@ import {
   assistantDisplay,
   buildHistoryList,
   buildPromptPayload,
+  buildChatEditPayload,
   buildRenderList,
   buildTimelineStrip,
   buildWelcomeSuggestions,
@@ -215,6 +216,35 @@ describe('Composer/store prompt 组装（steer / followUp / attachments）', () 
     expect(payload?.text).toBe('看看这台机器');
     expect(payload?.attachments).toEqual([{ kind: 'file', uri: 'host://prod-gw-01' }]);
     expect(buildPromptPayload('   ', { streaming: false, canFollowUp: true })).toBeNull();
+  });
+});
+
+describe('用户消息编辑入口', () => {
+  it('ChatTranscript 为用户气泡提供编辑/删除按钮', () => {
+    const src = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ChatTranscript.vue'),
+      'utf8'
+    );
+    expect(src).toContain("entry.item.kind === 'user'");
+    expect(src).toContain('editUserMessage');
+    expect(src).toContain('deleteUserMessage');
+    expect(src).toContain('codicon-edit');
+    expect(src).toContain('codicon-trash');
+  });
+
+  it('buildChatEditPayload 组装 chat/edit 载荷', () => {
+    expect(buildChatEditPayload('u2', 'edit')).toEqual({ itemId: 'u2', action: 'edit' });
+    expect(buildChatEditPayload('u2', 'delete')).toEqual({ itemId: 'u2', action: 'delete' });
+    expect(buildChatEditPayload('', 'edit')).toBeNull();
+  });
+
+  it('Composer 监听 pendingComposerDraft 预填输入框', () => {
+    const src = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/Composer.vue'),
+      'utf8'
+    );
+    expect(src).toContain('pendingComposerDraft');
+    expect(src).toContain('textarea.value?.focus()');
   });
 });
 
@@ -1666,6 +1696,8 @@ describe('终端命令执行组件（Kilo / Cursor 终端解耦，2026-08-31）'
     expect(card).toContain('classifyToolDataView');
     expect(card).toContain('tool__host-row');
     expect(card).not.toContain('class="tool__plugin');
+    expect(card).toContain('const expanded = ref(false)');
+    expect(card).not.toMatch(/expanded = ref\(isRunning\.value &&/);
   });
 
   it('数据工具 i18n zh/en 齐备', () => {

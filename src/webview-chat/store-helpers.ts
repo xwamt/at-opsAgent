@@ -41,6 +41,15 @@ export function canFollowUpFrom(items: readonly TranscriptItem[], streaming: boo
   return false;
 }
 
+export function buildChatEditPayload(
+  itemId: string,
+  action: 'edit' | 'delete'
+): { itemId: string; action: 'edit' | 'delete' } | null {
+  if (!itemId) return null;
+  if (action !== 'edit' && action !== 'delete') return null;
+  return { itemId, action };
+}
+
 /** chat/prompt payload：流式中 ⇒ steer；刚结束一轮 ⇒ followUp；空文本 ⇒ null（不发）。 */
 export function buildPromptPayload(
   text: string,

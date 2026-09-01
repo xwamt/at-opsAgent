@@ -16,6 +16,7 @@ import {
   activeSubagentCards,
   buildHistoryList,
   buildPromptPayload,
+  buildChatEditPayload,
   buildRenderList,
   buildTimelineStrip,
   filterTranscriptForView,
@@ -169,7 +170,9 @@ export const useOpsStore = defineStore('ops-chat', {
     /** 结论模式（Focus）：只渲染 assistant + evidence + notice；不持久化。 */
     conclusionMode: false,
     /** atOpsAgent.ui.showThinking，默认 true；结论模式另关 thinking。 */
-    showThinking: true
+    showThinking: true,
+    /** host chat/edit 成功后预填 Composer；Composer watch 后清空。 */
+    pendingComposerDraft: '' as string
   }),
 
   getters: {
@@ -260,6 +263,18 @@ export const useOpsStore = defineStore('ops-chat', {
       }
       this.post('chat/prompt', payload);
       this.attachments = [];
+    },
+
+    editUserMessage(itemId: string): void {
+      const payload = buildChatEditPayload(itemId, 'edit');
+      if (payload) this.post('chat/edit', payload);
+    },
+    deleteUserMessage(itemId: string): void {
+      const payload = buildChatEditPayload(itemId, 'delete');
+      if (payload) this.post('chat/edit', payload);
+    },
+    applyComposerDraft(text: string): void {
+      this.pendingComposerDraft = text;
     },
 
     /** 软停 cancel = 等当前工具结束；硬停 stop = 立即 abort（P2 双档中止）。 */
@@ -438,6 +453,13 @@ export const useOpsStore = defineStore('ops-chat', {
         case 'hydrate':
           this.applyHydrate(asRecord(payload) as HydratePayload);
           break;
+        case 'chat/edit': {
+          const res = asRecord(payload);
+          if (res.ok === true && typeof res.editorText === 'string') {
+            this.pendingComposerDraft = res.editorText;
+          }
+          break;
+        }
         case 'asset/pick': {
           const res = asRecord(payload) as Partial<AssetPickRes>;
           if (Array.isArray(res.items)) {

@@ -24,7 +24,7 @@ const MOCK_SESSIONS = [
 ];
 
 const HYDRATE_ITEMS: TranscriptItem[] = [
-  { kind: 'user', id: 'u1', text: '线上网关 5xx 突增，帮我查' },
+  { kind: 'user', id: 'u1', text: '线上网关 5xx 突增，帮我查', piEntryId: 'pi-u1' },
   {
     kind: 'thinking',
     id: 'th1',
@@ -255,6 +255,19 @@ export function installMockHost(): void {
           { kind: 'terminal', label: 'prod-gw-01', text: '', uri: 'host://prod-gw-01' }
         ]
       });
+    } else if (msg.type === 'chat/edit') {
+      const payload = (msg.payload ?? {}) as { itemId?: string; action?: string };
+      const itemId = typeof payload.itemId === 'string' ? payload.itemId : '';
+      const index = HYDRATE_ITEMS.findIndex((row) => row.id === itemId);
+      const target = index >= 0 ? HYDRATE_ITEMS[index] : undefined;
+      const editorText = target?.kind === 'user' ? target.text : '';
+      if (index >= 0) HYDRATE_ITEMS.splice(index);
+      emitRes(msg.id ?? '', 'chat/edit', {
+        ok: true,
+        rewindExecuted: false,
+        ...(payload.action === 'edit' ? { editorText } : {})
+      });
+      emitHydrate(currentSessionId);
     } else if (msg.type === 'chat/abort') {
       const mode = ((msg.payload ?? {}) as { mode?: string }).mode ?? 'stop';
       emit('turn/end', {});

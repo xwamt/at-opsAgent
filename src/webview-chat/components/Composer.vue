@@ -76,6 +76,18 @@ watch(draft, (next, prev) => {
   }
 });
 
+watch(
+  () => store.pendingComposerDraft,
+  (text) => {
+    if (typeof text === 'string' && text.length > 0) {
+      draft.value = text;
+      store.pendingComposerDraft = '';
+      persistDraft();
+      textarea.value?.focus();
+    }
+  }
+);
+
 // 配好模型后自动收起拦截提示
 watch(
   () => store.configured,
