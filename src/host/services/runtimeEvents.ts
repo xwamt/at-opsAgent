@@ -71,16 +71,29 @@ export class RuntimeEventRouter {
         for (const tid of [...this.thinkingStartedAt.keys()]) {
           this.finalizeThinking(sid, tid);
         }
-        const descriptor = ctx.hub.listAllTools().find((t) => t.name === e.name);
+        const descriptor = ctx.hub?.listAllTools?.()?.find((t) => t.name === e.name);
+        const startedAt = Date.now();
         const call: ToolCallView = {
           name: e.name,
           pluginId: descriptor?.pluginId,
           risk: resolveToolRisk(e.name, descriptor),
           status: 'running',
-          preview: e.preview
+          preview: e.preview,
+          inputPreview: e.preview,
+          startedAt
         };
-        ctx.store.appendItem({ kind: 'tool', id: e.id, call }, sid);
+        ctx.store.appendItem({ kind: 'tool', id: e.id, call, ts: startedAt }, sid);
         ctx.broadcastToSession(sid, 'tool/start', { itemId: e.id, call });
+        break;
+      }
+      case 'tool_update': {
+        const item = ctx.store.findItem(e.id, sid);
+        if (item?.kind !== 'tool') break;
+        item.call = {
+          ...item.call,
+          preview: e.preview ?? item.call.preview
+        };
+        ctx.broadcastToSession(sid, 'tool/update', { itemId: e.id, call: item.call });
         break;
       }
       case 'tool_end': {

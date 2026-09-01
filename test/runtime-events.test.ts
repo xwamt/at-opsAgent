@@ -38,6 +38,7 @@ function fakeRouter(): {
   const broadcasts: Broadcast[] = [];
   const ctx = {
     store,
+    hub: { listAllTools: () => [] },
     broadcastToSession: (_sid: string, type: string, payload: unknown) => {
       broadcasts.push({ type, payload });
     }
@@ -49,6 +50,24 @@ function fakeRouter(): {
   });
   return { router, store, sid: store.activeSessionId, broadcasts, idled };
 }
+
+const SCREENSHOT_ENVELOPE = JSON.stringify({
+  ok: true,
+  result: {
+    serverId: '4d1fbefc-aeef-42e9-9008-62c04915affe',
+    serverLabel: '99.90',
+    host: '192.168.99.90',
+    command: 'hostname',
+    exitCode: 0,
+    stdout: 'cl\n',
+    stderr: '',
+    durationMs: 258,
+    timedOut: false,
+    truncated: false
+  },
+  attemptCount: 1,
+  durationMs: 261
+});
 
 describe('RuntimeEventRouter：thinking / assistant 分 id（P0-id）', () => {
   it('thinking 先到、正文后到：两项都在，正文不被吞', () => {
@@ -157,5 +176,86 @@ describe('RuntimeEventRouter：thinking / assistant 分 id（P0-id）', () => {
     expect(thinking?.kind === 'thinking' && thinking.steps.join('')).toBe('推理');
     expect(store.findItem('msg1:assistant:assistant', sid)).toBeUndefined();
     expect(store.findItem('msg1:thinking:thinking', sid)).toBeUndefined();
+  });
+
+  it('tool_start 携带 preview 参数下发；tool_update 增量更新；tool_end 结算', () => {
+    const { router, store, sid, broadcasts } = fakeRouter();
+    const argsJson = JSON.stringify({ serverName: '192.168.99.92', command: 'free -m' });
+    router.route(sid, {
+      type: 'tool_start',
+      id: 'tool-1',
+      name: 'run_remote_command',
+      preview: argsJson
+    });
+
+    const item1 = store.findItem('tool-1', sid);
+    expect(item1?.kind).toBe('tool');
+    if (item1?.kind === 'tool') {
+      expect(item1.call.name).toBe('run_remote_command');
+      expect(item1.call.status).toBe('running');
+      expect(item1.call.preview).toBe(argsJson);
+    }
+    expect(broadcasts.some((b) => b.type === 'tool/start')).toBe(true);
+
+    // tool_update 更新中间增量
+    router.route(sid, {
+      type: 'tool_update',
+      id: 'tool-1',
+      name: 'run_remote_command',
+      preview: 'total used free\nMem: 16G 8G 8G'
+    });
+    const item2 = store.findItem('tool-1', sid);
+    if (item2?.kind === 'tool') {
+      expect(item2.call.preview).toContain('Mem: 16G');
+    }
+    expect(broadcasts.some((b) => b.type === 'tool/update')).toBe(true);
+
+    // tool_end 完成
+    router.route(sid, {
+      type: 'tool_end',
+      id: 'tool-1',
+      name: 'run_remote_command',
+      ok: true,
+      preview: JSON.stringify({ stdout: 'total used free\nMem: 16G 8G 8G', exitCode: 0 })
+    });
+    const item3 = store.findItem('tool-1', sid);
+    if (item3?.kind === 'tool') {
+      expect(item3.call.status).toBe('ok');
+      expect(item3.call.preview).toContain('exitCode');
+    }
+    expect(broadcasts.some((b) => b.type === 'tool/end')).toBe(true);
+  });
+
+  it('tool_start 冻结 inputPreview；update/end 只改 preview', () => {
+    const { router, store, sid } = fakeRouter();
+    const argsJson = JSON.stringify({
+      command: '# Purpose: 查看负载\nuptime',
+      serverId: 's1'
+    });
+    router.route(sid, {
+      type: 'tool_start',
+      id: 'tool-keep',
+      name: 'run_remote_command',
+      preview: argsJson
+    });
+    router.route(sid, {
+      type: 'tool_update',
+      id: 'tool-keep',
+      name: 'run_remote_command',
+      preview: '09:48 up 42 days'
+    });
+    router.route(sid, {
+      type: 'tool_end',
+      id: 'tool-keep',
+      name: 'run_remote_command',
+      ok: true,
+      preview: SCREENSHOT_ENVELOPE
+    });
+    const item = store.findItem('tool-keep', sid);
+    expect(item?.kind).toBe('tool');
+    if (item?.kind === 'tool') {
+      expect(item.call.inputPreview).toBe(argsJson);
+      expect(item.call.preview).toBe(SCREENSHOT_ENVELOPE);
+    }
   });
 });

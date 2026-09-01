@@ -148,6 +148,7 @@ export function startSubagentTool(
     name: string;
     pluginId?: string;
     risk?: 'read' | 'write' | 'exec';
+    preview?: string;
     startedAt?: number;
   }
 ): SubagentTranscript {
@@ -157,6 +158,8 @@ export function startSubagentTool(
     pluginId: initial.pluginId,
     risk: initial.risk ?? 'exec',
     status: 'running',
+    preview: initial.preview,
+    inputPreview: initial.preview,
     startedAt: initial.startedAt ?? Date.now()
   };
 

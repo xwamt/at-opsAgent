@@ -124,6 +124,7 @@ function pickToolCall(source: AnyRecord): Partial<ToolCallView> {
     'durationMs',
     'truncated',
     'preview',
+    'inputPreview',
     'artifactUri',
     'errorCode',
     'errorMessage'

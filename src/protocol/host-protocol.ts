@@ -95,6 +95,9 @@ export type UsageView = {
   contextUsed?: number;
   contextWindow?: number;
   costUsd?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalCostUsd?: number;
 };
 
 export type NoticeAction = { id: string; label: string; command?: string; request?: string };
@@ -161,6 +164,8 @@ export type ToolCallView = {
   durationMs?: number;
   truncated?: boolean;
   preview?: string;
+  /** tool/start 的 args JSON；update/end 不得覆盖。 */
+  inputPreview?: string;
   artifactUri?: string;
   errorCode?: string;
   errorMessage?: string;
