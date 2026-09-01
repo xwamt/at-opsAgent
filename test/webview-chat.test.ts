@@ -220,16 +220,27 @@ describe('Composer/store prompt 组装（steer / followUp / attachments）', () 
 });
 
 describe('用户消息编辑入口', () => {
-  it('ChatTranscript 为用户气泡提供编辑/删除按钮', () => {
+  it('ChatTranscript 为用户气泡提供编辑按钮，不含删除', () => {
     const src = readFileSync(
       path.join(process.cwd(), 'src/webview-chat/components/ChatTranscript.vue'),
       'utf8'
     );
     expect(src).toContain("entry.item.kind === 'user'");
     expect(src).toContain('editUserMessage');
-    expect(src).toContain('deleteUserMessage');
     expect(src).toContain('codicon-edit');
-    expect(src).toContain('codicon-trash');
+    expect(src).not.toContain('deleteUserMessage');
+    expect(src).not.toContain('codicon-trash');
+    // 编辑不依赖 piEntryId 回填：按钮可点，host 在发送时再解析 JSONL id
+    expect(src).not.toMatch(/:disabled="!entry\.item\.piEntryId"/);
+  });
+
+  it('用户气泡拉满 transcript 宽度，不留右侧 88% 空隙', () => {
+    const src = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ChatTranscript.vue'),
+      'utf8'
+    );
+    expect(src).not.toMatch(/\.transcript__msg--user[\s\S]{0,200}max-width:\s*88%/);
+    expect(src).toMatch(/\.transcript__msg--user[\s\S]{0,200}width:\s*100%/);
   });
 
   it('buildChatEditPayload 组装 chat/edit 载荷', () => {
@@ -1080,6 +1091,149 @@ describe('classifyToolDataView', () => {
     expect(view.kind).toBe('kv');
     if (view.kind === 'kv') {
       expect(view.entries.map((e) => e.key)).toEqual(['job', 'build']);
+      expect(view.entries[0]?.view).toEqual({ kind: 'scalar', text: 'api' });
+      expect(view.entries[1]?.view).toEqual({ kind: 'scalar', text: '12' });
+    }
+  });
+
+  it('ops_select_tools：selected/exposed 字符串数组 → chips，禁止 JSON 字符串', () => {
+    const parsed = parseToolOutputPreview(
+      JSON.stringify({
+        ok: true,
+        result: {
+          selected: ['get_terminal_context', 'list_ssh_servers', 'run_remote_command'],
+          exposed: ['get_terminal_context', 'list_ssh_servers']
+        },
+        attemptCount: 1
+      })
+    );
+    const view = classifyToolDataView(parsed.payload);
+    expect(view.kind).toBe('kv');
+    if (view.kind !== 'kv') return;
+    expect(view.entries.map((e) => e.key)).toEqual(['selected', 'exposed']);
+    expect(view.entries[0]?.view).toEqual({
+      kind: 'chips',
+      items: ['get_terminal_context', 'list_ssh_servers', 'run_remote_command']
+    });
+    expect(view.entries[1]?.view.kind).toBe('chips');
+  });
+
+  it('get_terminal_context：终端对象/数组 → 与 SSH 目标相同的 servers 卡片，非 JSON 字符串', () => {
+    const terminal = {
+      terminalId: 'c5f1e80a-1',
+      serverId: 'bbe22691-1',
+      label: '新加坡-技术-hysteris2',
+      host: '13.212.58.92',
+      port: 22,
+      username: 'ubuntu',
+      connected: true,
+      focused: true,
+      default: true
+    };
+    const parsed = parseToolOutputPreview(
+      JSON.stringify({
+        ok: true,
+        result: {
+          focusedTerminal: terminal,
+          defaultConnectedTerminal: terminal,
+          connectedTerminals: [terminal],
+          knownTerminals: [terminal]
+        },
+        attemptCount: 1
+      })
+    );
+    const view = classifyToolDataView(parsed.payload);
+    expect(view.kind).toBe('kv');
+    if (view.kind !== 'kv') return;
+    const byKey = Object.fromEntries(view.entries.map((e) => [e.key, e.view]));
+    expect(byKey.focusedTerminal?.kind).toBe('servers');
+    expect(byKey.connectedTerminals?.kind).toBe('servers');
+    expect(byKey.knownTerminals?.kind).toBe('servers');
+    if (byKey.focusedTerminal?.kind === 'servers') {
+      expect(byKey.focusedTerminal.servers[0]?.label).toBe('新加坡-技术-hysteris2');
+      expect(byKey.focusedTerminal.servers[0]?.host).toBe('13.212.58.92');
+      expect(byKey.focusedTerminal.servers[0]?.connected).toBe(true);
+      expect(byKey.focusedTerminal.servers[0]?.focused).toBe(true);
+      expect(byKey.focusedTerminal.servers[0]?.autoApprove).toBeUndefined();
+    }
+  });
+
+  it('ops_list_providers：providers[] → provider 卡片，hostApp/catalog 仍为标量', () => {
+    const parsed = parseToolOutputPreview(
+      JSON.stringify({
+        ok: true,
+        result: {
+          hostApp: 'antigravity-ide',
+          providers: [
+            {
+              pluginId: 'at.terminal',
+              displayName: 'AT Terminal',
+              pluginVersion: '0.1.0',
+              healthy: true,
+              bridgeCount: 1,
+              connectedTargets: 1,
+              liveToolCount: 12,
+              toolNames: ['run_remote_command', 'sftp_read_file', 'get_terminal_context']
+            }
+          ],
+          catalogLiveToolCount: 81
+        },
+        attemptCount: 1
+      })
+    );
+    const view = classifyToolDataView(parsed.payload);
+    expect(view.kind).toBe('kv');
+    if (view.kind !== 'kv') return;
+    const byKey = Object.fromEntries(view.entries.map((e) => [e.key, e.view]));
+    expect(byKey.hostApp).toEqual({ kind: 'scalar', text: 'antigravity-ide' });
+    expect(byKey.catalogLiveToolCount).toEqual({ kind: 'scalar', text: '81' });
+    expect(byKey.providers?.kind).toBe('providers');
+    if (byKey.providers?.kind === 'providers') {
+      expect(byKey.providers.providers[0]?.pluginId).toBe('at.terminal');
+      expect(byKey.providers.providers[0]?.displayName).toBe('AT Terminal');
+      expect(byKey.providers.providers[0]?.healthy).toBe(true);
+      expect(byKey.providers.providers[0]?.toolNames).toContain('run_remote_command');
+    }
+  });
+
+  it('ops_search_tools：tools[] 对象数组 → table，不是 JSON 字符串', () => {
+    const parsed = parseToolOutputPreview(
+      JSON.stringify({
+        ok: true,
+        result: {
+          total: 2,
+          returned: 2,
+          tools: [
+            {
+              name: 'grafana_query_prometheus',
+              title: '查询 Prometheus',
+              pluginId: 'at.grafana',
+              risk: 'read',
+              descriptionPreview: 'PromQL',
+              live: true
+            },
+            {
+              name: 'run_remote_command',
+              title: '远程命令',
+              pluginId: 'at.terminal',
+              risk: 'exec',
+              descriptionPreview: 'SSH',
+              live: true
+            }
+          ]
+        },
+        attemptCount: 1
+      })
+    );
+    const view = classifyToolDataView(parsed.payload);
+    expect(view.kind).toBe('kv');
+    if (view.kind !== 'kv') return;
+    const tools = view.entries.find((e) => e.key === 'tools')?.view;
+    expect(tools?.kind).toBe('table');
+    if (tools?.kind === 'table') {
+      expect(tools.rows).toHaveLength(2);
+      expect(tools.columns).toContain('name');
+      expect(tools.columns).toContain('pluginId');
     }
   });
 });
@@ -1694,10 +1848,21 @@ describe('终端命令执行组件（Kilo / Cursor 终端解耦，2026-08-31）'
     expect(card).toContain('cmdExpanded');
     expect(card).toContain('tool__cmd-toggle');
     expect(card).toContain('classifyToolDataView');
-    expect(card).toContain('tool__host-row');
+    expect(card).toContain('ToolDataViewBlock');
     expect(card).not.toContain('class="tool__plugin');
     expect(card).toContain('const expanded = ref(false)');
     expect(card).not.toMatch(/expanded = ref\(isRunning\.value &&/);
+  });
+
+  it('ToolDataViewBlock：chips / host 卡 / provider 卡，不再把嵌套 JSON 当文本', () => {
+    const block = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ToolDataViewBlock.vue'),
+      'utf8'
+    );
+    expect(block).toContain('tool__chip');
+    expect(block).toContain('tool__host-row');
+    expect(block).toContain("view.kind === 'providers'");
+    expect(block).not.toContain('formatKvCell(e.value)');
   });
 
   it('数据工具 i18n zh/en 齐备', () => {
@@ -1706,9 +1871,14 @@ describe('终端命令执行组件（Kilo / Cursor 终端解耦，2026-08-31）'
     expect(t('toolAutoApprove')).toBe('自动批准');
     expect(t('toolNeedApprove')).toBe('需批准');
     expect(tf('toolServerCount', { count: 2 })).toBe('2 台');
+    expect(tf('toolProviderCount', { count: 6 })).toBe('6 个插件');
+    expect(t('toolHealthy')).toBe('健康');
+    expect(t('toolFocused')).toBe('焦点');
     setLocale('en');
     expect(t('toolAutoApprove')).toBe('auto-approve');
     expect(tf('toolServerCount', { count: 2 })).toBe('2 hosts');
+    expect(tf('toolProviderCount', { count: 6 })).toBe('6 plugins');
+    expect(t('toolHealthy')).toBe('healthy');
   });
 
   it('TerminalViewer：具备终端顶栏、退出码徽标、自动贴底开关与呼吸光标', () => {

@@ -69,7 +69,7 @@ Activity Bar: AT Ops Agent
 |------|------|-------------------|-----------|
 | `ChatApp.vue` | 主壳：header + 欢迎/transcript + dock | store | hydrate |
 | `WelcomeState.vue` | 空会话欢迎 + 建议卡 | sessions / suggestions | — |
-| `ChatTranscript.vue` | 消息/卡片；用户气泡编辑/删除 → `chat/edit`；流式 assistant 走 MarkdownBlock | `items[]` | `transcript/append`, `transcript/patch`, `chat/edit` |
+| `ChatTranscript.vue` | 消息/卡片；用户气泡编辑（回溯并预填输入框）→ `chat/edit`；流式 assistant 走 MarkdownBlock | `items[]` | `transcript/append`, `transcript/patch`, `chat/edit` |
 | `MarkdownBlock.vue` | markdown-it `html:false`；`streaming` 时不高亮 | `source`, `streaming?` | — |
 | `ToolCallCard.vue` | 单次工具：名、risk、耗时、截断、错误码；默认折叠，点击标题展开 | `call` | `tool/start\|update\|end` |
 | `ApprovalBar.vue` | 会话审批；9 要素展开 | `brief`, `dualConfirmHint` | `approval/request` → `approval/respond` |

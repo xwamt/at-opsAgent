@@ -79,17 +79,8 @@ export function subscribeSessionEvents(
     switch (event.type) {
       case 'message_start': {
         const message = event.message as { role?: string; content?: unknown };
-        const role = message.role;
-        if (role === 'assistant') {
+        if (message.role === 'assistant') {
           currentMessageId = randomUUID();
-        } else if (role === 'user') {
-          const text = userMessageText(message);
-          const match = session
-            .getUserMessagesForForking()
-            .find((row) => row.text === text);
-          if (match) {
-            emit({ type: 'user_entry', piEntryId: match.entryId, text: match.text });
-          }
         }
         break;
       }
@@ -207,27 +198,24 @@ export function subscribeSessionEvents(
         hooks.onToolActivity?.('end', event.toolCallId);
         break;
       }
-      case 'agent_end':
+      case 'agent_end': {
+        // pi 在 message_end 的 listener 返回之后才把用户条写入 JSONL，
+        // 所以 message_start 时 getUserMessagesForForking() 还没有本条。
+        // agent_end 时整轮已落盘：从新到旧发 user_entry，host 按「同正文最后一条未回填」对齐。
+        const rows =
+          typeof session.getUserMessagesForForking === 'function'
+            ? session.getUserMessagesForForking()
+            : [];
+        for (let i = rows.length - 1; i >= 0; i -= 1) {
+          const row = rows[i];
+          emit({ type: 'user_entry', piEntryId: row.entryId, text: row.text });
+        }
         emit({ type: 'idle' });
         hooks.onIdle?.();
         break;
+      }
       default:
         break;
     }
   });
-}
-
-function userMessageText(message: { content?: unknown }): string {
-  const content = message.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) =>
-        part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string'
-          ? (part as { text: string }).text
-          : ''
-      )
-      .join('');
-  }
-  return '';
 }

@@ -260,17 +260,20 @@ export class ChatService {
         if (!runtime?.navigateToUserEntry) return { cancelled: true };
         return runtime.navigateToUserEntry(entryId);
       },
-      truncateFrom: (itemId) => this.ctx.store.truncateFrom(itemId, sessionId)
+      truncateFrom: (itemId) => this.ctx.store.truncateFrom(itemId, sessionId),
+      forking: runtime?.userMessagesForForking?.() ?? []
     });
-    if (result.ok) {
-      this.ctx.approvals.clearSession(sessionId);
-      this.ctx.broadcast('hydrate', this.snapshot());
-      if (result.rewindExecuted) {
-        this.ctx.emitAssistantNotice(
-          '仅撤回了对话上下文。已在目标系统执行的操作不会自动撤销。',
-          sessionId
-        );
-      }
+    if (!result.ok) {
+      this.ctx.emitAssistantNotice(result.reason ?? '无法编辑这条消息', sessionId);
+      return result;
+    }
+    this.ctx.approvals.clearSession(sessionId);
+    this.ctx.broadcast('hydrate', this.snapshot());
+    if (result.rewindExecuted) {
+      this.ctx.emitAssistantNotice(
+        '仅撤回了对话上下文。已在目标系统执行的操作不会自动撤销。',
+        sessionId
+      );
     }
     return result;
   }

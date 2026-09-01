@@ -408,22 +408,11 @@ async function copyMessage(id: string, text: string): Promise<void> {
             <button
               type="button"
               class="ops-copy-btn transcript__copy-msg"
-              :disabled="!entry.item.piEntryId"
-              :title="entry.item.piEntryId ? t('editUserMessage') : t('editUserMessageUnavailable')"
+              :title="t('editUserMessage')"
               :aria-label="t('editUserMessage')"
               @click.stop="store.editUserMessage(entry.item.id)"
             >
               <span class="codicon codicon-edit" aria-hidden="true"></span>
-            </button>
-            <button
-              type="button"
-              class="ops-copy-btn transcript__copy-msg"
-              :disabled="!entry.item.piEntryId"
-              :title="entry.item.piEntryId ? t('deleteUserMessage') : t('editUserMessageUnavailable')"
-              :aria-label="t('deleteUserMessage')"
-              @click.stop="store.deleteUserMessage(entry.item.id)"
-            >
-              <span class="codicon codicon-trash" aria-hidden="true"></span>
             </button>
           </span>
           <div class="transcript__text transcript__well">{{ entry.item.text }}</div>
@@ -719,7 +708,7 @@ async function copyMessage(id: string, text: string): Promise<void> {
   box-sizing: border-box;
 }
 
-/* Copilot 式分组：角色标签在上，正文在下；用户消息右侧成井，Agent 左侧全宽 */
+/* Copilot 式分组：角色标签在上，正文在下；用户消息与 Agent 同宽，角色行靠右 */
 .transcript__msg {
   display: flex;
   flex-direction: column;
@@ -728,9 +717,13 @@ async function copyMessage(id: string, text: string): Promise<void> {
 }
 
 .transcript__msg--user {
+  width: 100%;
+  max-width: 100%;
+  align-items: stretch;
+}
+
+.transcript__msg--user .transcript__who-row {
   align-self: flex-end;
-  align-items: flex-end;
-  max-width: 88%;
 }
 
 .transcript__msg--agent {

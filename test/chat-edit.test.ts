@@ -3,7 +3,7 @@
  * 纯函数 applyChatEdit，不启 VS Code。
  */
 import { describe, expect, it, vi } from 'vitest';
-import { applyChatEdit } from '../src/host/services/chatEdit';
+import { applyChatEdit, resolvePiEntryId } from '../src/host/services/chatEdit';
 import type { TranscriptItem } from '../src/protocol';
 
 function items(): TranscriptItem[] {
@@ -62,7 +62,7 @@ describe('applyChatEdit', () => {
     expect(res.editorText).toBeUndefined();
   });
 
-  it('无 piEntryId → 拒绝，不 navigate', async () => {
+  it('无 piEntryId 且无 forking → 拒绝，不 navigate', async () => {
     const navigate = vi.fn();
     const res = await applyChatEdit({
       action: 'edit',
@@ -76,6 +76,46 @@ describe('applyChatEdit', () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toContain('无法回溯');
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('无 piEntryId 时按 forking 文本对齐解析 entryId 并编辑', async () => {
+    const transcript: TranscriptItem[] = [
+      { kind: 'user', id: 'u1', text: '第一问' },
+      { kind: 'assistant', id: 'a1', text: '答' }
+    ];
+    const navigate = vi.fn(async () => ({ cancelled: false, editorText: '第一问' }));
+    const res = await applyChatEdit({
+      action: 'edit',
+      itemId: 'u1',
+      streaming: false,
+      items: transcript,
+      abort: vi.fn(),
+      navigate,
+      truncateFrom: (id) => {
+        const index = transcript.findIndex((row) => row.id === id);
+        transcript.splice(index);
+        return { ok: true, removed: 2, rewindExecuted: false };
+      },
+      forking: [{ entryId: 'jsonl-1', text: '第一问' }]
+    });
+    expect(navigate).toHaveBeenCalledWith('jsonl-1');
+    expect(res).toEqual({ ok: true, editorText: '第一问', rewindExecuted: false });
+  });
+
+  it('resolvePiEntryId：重复正文按出现次序对齐', () => {
+    expect(
+      resolvePiEntryId(
+        [
+          { kind: 'user', id: 'u1', text: '同样' },
+          { kind: 'user', id: 'u2', text: '同样' }
+        ],
+        'u2',
+        [
+          { entryId: 'e1', text: '同样' },
+          { entryId: 'e2', text: '同样' }
+        ]
+      )
+    ).toBe('e2');
   });
 
   it('navigate cancelled → 不截 UI', async () => {

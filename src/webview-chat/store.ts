@@ -269,10 +269,6 @@ export const useOpsStore = defineStore('ops-chat', {
       const payload = buildChatEditPayload(itemId, 'edit');
       if (payload) this.post('chat/edit', payload);
     },
-    deleteUserMessage(itemId: string): void {
-      const payload = buildChatEditPayload(itemId, 'delete');
-      if (payload) this.post('chat/edit', payload);
-    },
     applyComposerDraft(text: string): void {
       this.pendingComposerDraft = text;
     },

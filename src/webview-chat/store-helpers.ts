@@ -351,7 +351,14 @@ const COMMAND_INTENT_ZH: Record<string, string> = {
   docker: '容器',
   journalctl: '日志',
   hostname: '主机',
-  list_ssh_servers: 'SSH 目标'
+  list_ssh_servers: 'SSH 目标',
+  ops_select_tools: '选择工具',
+  ops_clear_tool_selection: '清空选择',
+  ops_list_providers: '插件目录',
+  ops_search_tools: '搜索工具',
+  ops_get_tool: '工具详情',
+  get_terminal_context: '终端上下文',
+  jumpserver_get_terminal_context: '终端上下文'
 };
 
 export function unwrapHubPayload(raw: unknown): {
@@ -604,15 +611,55 @@ export type ToolServerRow = {
   port?: number;
   username?: string;
   connected: boolean;
+  focused?: boolean;
+  isDefault?: boolean;
   trust?: string;
   autoApprove?: boolean;
 };
 
+export type ToolProviderRow = {
+  pluginId: string;
+  displayName: string;
+  healthy: boolean;
+  pluginVersion?: string;
+  bridgeCount?: number;
+  connectedTargets?: number;
+  liveToolCount?: number;
+  toolNames: string[];
+};
+
 export type ToolDataView =
+  | { kind: 'scalar'; text: string }
+  | { kind: 'chips'; items: string[] }
   | { kind: 'servers'; servers: ToolServerRow[] }
+  | { kind: 'providers'; providers: ToolProviderRow[] }
   | { kind: 'table'; columns: string[]; rows: Record<string, unknown>[] }
-  | { kind: 'kv'; entries: { key: string; value: unknown }[] }
+  | { kind: 'kv'; entries: { key: string; view: ToolDataView }[] }
   | { kind: 'json'; text: string };
+
+const HOST_META_KEYS = new Set([
+  'id',
+  'terminalId',
+  'serverId',
+  'label',
+  'serverLabel',
+  'name',
+  'host',
+  'ip',
+  'port',
+  'username',
+  'user',
+  'connected',
+  'focused',
+  'default',
+  'authType',
+  'agentCommandTrust',
+  'trust',
+  'agentCommandAutoApprove',
+  'autoApprove'
+]);
+
+const CLASSIFY_MAX_DEPTH = 6;
 
 function asServerRow(raw: unknown): ToolServerRow | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -620,31 +667,118 @@ function asServerRow(raw: unknown): ToolServerRow | undefined {
   const label = pickStr(rec, ['label', 'serverLabel', 'name']) ?? '';
   const host = pickStr(rec, ['host', 'ip']) ?? '';
   if (!label && !host) return undefined;
+  const autoApprove =
+    typeof rec.agentCommandAutoApprove === 'boolean'
+      ? rec.agentCommandAutoApprove
+      : typeof rec.autoApprove === 'boolean'
+        ? rec.autoApprove
+        : undefined;
   return {
-    id: pickStr(rec, ['id']),
+    id: pickStr(rec, ['id', 'terminalId']),
     label: label || host,
     host: host || label,
     port: pickNum(rec, ['port']),
     username: pickStr(rec, ['username', 'user']),
     connected: rec.connected === true,
+    focused: rec.focused === true ? true : undefined,
+    isDefault: rec.default === true ? true : undefined,
     trust: pickStr(rec, ['agentCommandTrust', 'trust']),
-    autoApprove: rec.agentCommandAutoApprove === true
+    autoApprove
   };
 }
 
-export function classifyToolDataView(payload: unknown): ToolDataView {
-  if (
-    Array.isArray(payload) &&
-    payload.length &&
-    payload.every((x) => x && typeof x === 'object' && !Array.isArray(x))
-  ) {
-    const rows = payload.map((x) => asRecord(x));
-    const colSet = new Set<string>();
-    for (const row of rows) {
-      for (const k of Object.keys(row)) colSet.add(k);
+function isHostish(rec: AnyRecord): boolean {
+  const host = pickStr(rec, ['host', 'ip']);
+  const label = pickStr(rec, ['label', 'serverLabel', 'name']);
+  if (!host && !label) return false;
+  return (
+    pickStr(rec, ['terminalId', 'serverId', 'username', 'user']) !== undefined ||
+    typeof rec.connected === 'boolean' ||
+    typeof rec.port === 'number' ||
+    pickStr(rec, ['agentCommandTrust', 'trust']) !== undefined
+  );
+}
+
+function isMostlyHostObject(rec: AnyRecord): boolean {
+  if (!isHostish(rec)) return false;
+  return Object.keys(rec).every((k) => HOST_META_KEYS.has(k));
+}
+
+function looksLikeHostArray(items: unknown[]): boolean {
+  return (
+    items.length > 0 &&
+    items.every((x) => x && typeof x === 'object' && !Array.isArray(x) && isHostish(asRecord(x)))
+  );
+}
+
+function asProviderRow(raw: unknown): ToolProviderRow | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const rec = asRecord(raw);
+  const pluginId = pickStr(rec, ['pluginId', 'id']);
+  if (!pluginId) return undefined;
+  const toolNames = Array.isArray(rec.toolNames)
+    ? rec.toolNames.filter((x): x is string => typeof x === 'string')
+    : [];
+  return {
+    pluginId,
+    displayName: pickStr(rec, ['displayName', 'label', 'name']) ?? pluginId,
+    healthy: rec.healthy === true,
+    pluginVersion: pickStr(rec, ['pluginVersion', 'version']),
+    bridgeCount: pickNum(rec, ['bridgeCount']),
+    connectedTargets: pickNum(rec, ['connectedTargets']),
+    liveToolCount: pickNum(rec, ['liveToolCount']),
+    toolNames
+  };
+}
+
+function isProviderish(rec: AnyRecord): boolean {
+  return Boolean(pickStr(rec, ['pluginId'])) && (typeof rec.displayName === 'string' || Array.isArray(rec.toolNames));
+}
+
+function jsonView(payload: unknown): ToolDataView {
+  try {
+    return { kind: 'json', text: JSON.stringify(payload, null, 2) ?? '' };
+  } catch {
+    return { kind: 'json', text: String(payload) };
+  }
+}
+
+function classifyObjectArray(items: unknown[]): ToolDataView {
+  if (looksLikeHostArray(items)) {
+    const servers = items.map(asServerRow).filter((s): s is ToolServerRow => Boolean(s));
+    if (servers.length === items.length) return { kind: 'servers', servers };
+  }
+  if (items.every((x) => x && typeof x === 'object' && !Array.isArray(x) && isProviderish(asRecord(x)))) {
+    const providers = items.map(asProviderRow).filter((p): p is ToolProviderRow => Boolean(p));
+    if (providers.length === items.length) return { kind: 'providers', providers };
+  }
+  const rows = items.map((x) => asRecord(x));
+  const colSet = new Set<string>();
+  for (const row of rows) {
+    for (const k of Object.keys(row)) colSet.add(k);
+  }
+  const columns = [...colSet].filter((c) => !/^id$|^uuid$/i.test(c));
+  return { kind: 'table', columns, rows };
+}
+
+export function classifyToolDataView(payload: unknown, depth = 0): ToolDataView {
+  if (depth > CLASSIFY_MAX_DEPTH) {
+    return jsonView(payload);
+  }
+  if (payload === null || payload === undefined) {
+    return { kind: 'scalar', text: '' };
+  }
+  if (typeof payload === 'string' || typeof payload === 'number' || typeof payload === 'boolean') {
+    return { kind: 'scalar', text: String(payload) };
+  }
+  if (Array.isArray(payload)) {
+    if (payload.every((x) => typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean')) {
+      return { kind: 'chips', items: payload.map(String) };
     }
-    const columns = [...colSet].filter((c) => !/^id$|^uuid$/i.test(c));
-    return { kind: 'table', columns, rows };
+    if (payload.length && payload.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
+      return classifyObjectArray(payload);
+    }
+    return jsonView(payload);
   }
   if (payload && typeof payload === 'object') {
     const rec = asRecord(payload);
@@ -652,13 +786,53 @@ export function classifyToolDataView(payload: unknown): ToolDataView {
       const servers = rec.servers.map(asServerRow).filter((s): s is ToolServerRow => Boolean(s));
       if (servers.length) return { kind: 'servers', servers };
     }
-    return { kind: 'kv', entries: Object.keys(rec).map((key) => ({ key, value: rec[key] })) };
+    if (isMostlyHostObject(rec)) {
+      const row = asServerRow(rec);
+      if (row) return { kind: 'servers', servers: [row] };
+    }
+    return {
+      kind: 'kv',
+      entries: Object.keys(rec).map((key) => ({
+        key,
+        view: classifyToolDataView(rec[key], depth + 1)
+      }))
+    };
   }
-  try {
-    return { kind: 'json', text: JSON.stringify(payload, null, 2) ?? '' };
-  } catch {
-    return { kind: 'json', text: String(payload) };
+  return jsonView(payload);
+}
+
+export function toolDataViewHasContent(view: ToolDataView): boolean {
+  switch (view.kind) {
+    case 'servers':
+      return view.servers.length > 0;
+    case 'providers':
+      return view.providers.length > 0;
+    case 'chips':
+      return view.items.length > 0;
+    case 'table':
+      return view.rows.length > 0;
+    case 'kv':
+      return view.entries.some((e) => toolDataViewHasContent(e.view));
+    case 'scalar':
+    case 'json':
+      return view.text.trim().length > 0;
   }
+}
+
+export function toolDataViewCountLabel(view: ToolDataView): { key: 'toolServerCount' | 'toolProviderCount'; count: number } | undefined {
+  if (view.kind === 'servers') {
+    return { key: 'toolServerCount', count: view.servers.length };
+  }
+  if (view.kind === 'providers') {
+    return { key: 'toolProviderCount', count: view.providers.length };
+  }
+  if (view.kind === 'kv') {
+    const providers = view.entries.find((e) => e.key === 'providers' && e.view.kind === 'providers');
+    if (providers?.view.kind === 'providers') {
+      return { key: 'toolProviderCount', count: providers.view.providers.length };
+    }
+  }
+  return undefined;
 }
 
 export function formatKvCell(value: unknown): string {

@@ -5,15 +5,17 @@ import { t, tf } from '../i18n';
 import { useCopiedFlag } from '../lib/clipboard';
 import {
   classifyToolDataView,
-  formatKvCell,
   formatAbsoluteTime,
   formatRelativeTime,
   isCommandToolCall,
   isSubagentToolCall,
   parseToolOutputPreview,
-  toolCallHeadline
+  toolCallHeadline,
+  toolDataViewCountLabel,
+  toolDataViewHasContent
 } from '../store-helpers';
 import TerminalViewer from './TerminalViewer.vue';
+import ToolDataViewBlock from './ToolDataViewBlock.vue';
 
 const props = defineProps<{ call: ToolCallView }>();
 
@@ -183,13 +185,9 @@ const displayOutput = computed(() => {
 
 const dataView = computed(() => classifyToolDataView(parsed.value.payload));
 
-const dataHasRows = computed(() => {
-  const view = dataView.value;
-  if (view.kind === 'servers') return view.servers.length > 0;
-  if (view.kind === 'table') return view.rows.length > 0;
-  if (view.kind === 'kv') return view.entries.length > 0;
-  return Boolean(view.text);
-});
+const dataHasRows = computed(() => toolDataViewHasContent(dataView.value));
+
+const dataCount = computed(() => toolDataViewCountLabel(dataView.value));
 
 async function copyDataContent(): Promise<void> {
   const view = dataView.value;
@@ -351,9 +349,9 @@ const artifactHref = computed(() =>
           <div class="tool__data-header">
             <span class="tool__data-title ops-muted">{{ t('toolDataPreview') }}</span>
             <span
-              v-if="dataView.kind === 'servers'"
+              v-if="dataCount"
               class="ops-muted ops-mono"
-            >{{ tf('toolServerCount', { count: dataView.servers.length }) }}</span>
+            >{{ tf(dataCount.key, { count: dataCount.count }) }}</span>
             <button
               v-if="dataHasRows"
               type="button"
@@ -367,50 +365,7 @@ const artifactHref = computed(() =>
               <span v-if="copiedData">{{ t('copied') }}</span>
             </button>
           </div>
-          <div v-if="dataView.kind === 'servers'" class="tool__data-list">
-            <div
-              v-for="row in dataView.servers"
-              :key="row.id || row.host"
-              class="tool__host-row"
-              :title="row.id"
-            >
-              <div class="tool__host-row__top">
-                <span
-                  class="tool__host-dot"
-                  :class="row.connected ? 'tool__host-dot--on' : 'tool__host-dot--off'"
-                ></span>
-                <span class="tool__host-label ops-mono">{{ row.label }}</span>
-                <span class="ops-mono">{{ row.host }}<template v-if="row.port">:{{ row.port }}</template></span>
-                <span class="ops-muted">{{ row.username }}</span>
-              </div>
-              <div class="ops-muted tool__host-row__meta">
-                {{ row.connected ? t('connected') : t('disconnected') }}
-                <template v-if="row.trust"> · {{ tf('toolTrust', { trust: row.trust }) }}</template>
-                · {{ row.autoApprove ? t('toolAutoApprove') : t('toolNeedApprove') }}
-              </div>
-            </div>
-          </div>
-          <div v-else-if="dataView.kind === 'table'" class="tool__data-table-wrap">
-            <table class="tool__data-table">
-              <thead>
-                <tr>
-                  <th v-for="col in dataView.columns" :key="col" class="ops-muted">{{ col }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(row, i) in dataView.rows" :key="i">
-                  <td v-for="col in dataView.columns" :key="col" class="ops-mono">{{ formatKvCell(row[col]) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-else-if="dataView.kind === 'kv'" class="tool__kv">
-            <div v-for="e in dataView.entries" :key="e.key" class="tool__kv-row">
-              <span class="tool__kv-k ops-muted">{{ e.key }}</span>
-              <span class="tool__kv-v ops-mono">{{ formatKvCell(e.value) }}</span>
-            </div>
-          </div>
-          <pre v-else-if="dataView.text" class="ops-codeblock tool__data-code ops-mono">{{ dataView.text }}</pre>
+          <ToolDataViewBlock v-if="dataHasRows" :view="dataView" />
           <div v-else-if="isRunning" class="tool__data-running ops-muted">
             <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
             <span>{{ t('toolRunningTimer') }}</span>
@@ -688,110 +643,8 @@ const artifactHref = computed(() =>
   padding: 0 2px;
 }
 
-.tool__host-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 7px 8px;
-  background: var(--ops-code-bg);
-  border: 1px solid var(--ops-border);
-  border-radius: var(--ops-radius-ctl);
-}
-
-.tool__host-row + .tool__host-row {
-  margin-top: 4px;
-}
-
-.tool__host-row__top {
-  display: flex;
-  align-items: center;
-  gap: var(--ops-space-2);
-  min-width: 0;
-}
-
-.tool__host-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  background: var(--ops-pending);
-}
-
-.tool__host-dot--on {
-  background: var(--ops-healthy);
-}
-
-.tool__host-dot--off {
-  background: var(--ops-pending);
-}
-
-.tool__host-label {
-  font-weight: 600;
-  color: var(--ops-accent);
-}
-
-.tool__host-row__meta {
-  padding-left: 15px;
-  font-size: var(--ops-font-xs);
-}
-
-.tool__kv {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
-  background: var(--ops-code-bg);
-  border: 1px solid var(--ops-border);
-  border-radius: var(--ops-radius-ctl);
-}
-
-.tool__kv-row {
-  display: grid;
-  grid-template-columns: 88px 1fr;
-  gap: 2px 10px;
-  font-size: var(--ops-font-xs);
-}
-
-.tool__kv-v {
-  word-break: break-all;
-}
-
-.tool__data-table-wrap {
-  overflow: auto;
-  max-height: 200px;
-  border: 1px solid var(--ops-border);
-  border-radius: var(--ops-radius-ctl);
-}
-
-.tool__data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--ops-font-xs);
-}
-
-.tool__data-table th,
-.tool__data-table td {
-  text-align: left;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--ops-border);
-}
-
 .tool__data-copy {
   opacity: 0.8;
-}
-
-.tool__data-code {
-  max-height: 200px;
-  overflow-x: auto;
-  overflow-y: auto;
-  background: var(--ops-code-bg);
-  border: 1px solid var(--ops-border);
-  border-radius: var(--ops-radius-ctl);
-  padding: var(--ops-space-2);
-  font-size: var(--ops-font-xs);
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 
 .tool__data-running {

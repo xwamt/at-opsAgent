@@ -2456,6 +2456,33 @@ describe('prompt 错误分类与 429 一次退避（Plan 06 T1–T2）', () => {
     expect(events.at(-1)).toEqual({ type: 'idle' });
   });
 
+  it('subscribeSessionEvents：user_entry 在 agent_end 回填（message_start 时 JSONL 还没有这条）', () => {
+    const events: OpsRuntimeEvent[] = [];
+    let subscriber: ((event: any) => void) | undefined;
+    let forking: Array<{ entryId: string; text: string }> = [];
+    const fakeSession: any = {
+      subscribe: (fn: (e: any) => void) => {
+        subscriber = fn;
+        return () => {};
+      },
+      getContextUsage: () => ({ tokens: 100, contextWindow: 4000 }),
+      getUserMessagesForForking: () => forking
+    };
+    subscribeSessionEvents(fakeSession, {
+      hub: makeFakeHub(),
+      onEvent: (e) => events.push(e)
+    });
+
+    subscriber?.({ type: 'message_start', message: { role: 'user', content: '查流量' } });
+    expect(events.filter((e) => e.type === 'user_entry')).toEqual([]);
+
+    forking = [{ entryId: 'e-1', text: '查流量' }];
+    subscriber?.({ type: 'agent_end', messages: [] });
+    expect(events.filter((e) => e.type === 'user_entry')).toEqual([
+      { type: 'user_entry', piEntryId: 'e-1', text: '查流量' }
+    ]);
+  });
+
   it('subscribeSessionEvents：message_end 遇到 stopReason=error 或 errorMessage 广播 error notice 与 text_delta', () => {
     const events: OpsRuntimeEvent[] = [];
     let subscriber: ((event: any) => void) | undefined;
