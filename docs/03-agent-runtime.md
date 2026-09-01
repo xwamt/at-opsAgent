@@ -110,6 +110,8 @@ type OpsCustomEntry =
 
 崩溃恢复：扩展重启后加载最近会话到最后完整 `turn_end`；进行中的 tool_call 标 `interrupted`。
 
+用户编辑/删除已发送消息走 `AgentSession.navigateTree`（同 JSONL 截断），禁止只改 UI、不调用 git checkpoint。原文回到 Composer；已在目标系统执行的命令不会撤销。
+
 ## 5. Compaction
 
 运维数据比代码 diff 更大。三层：

@@ -69,9 +69,9 @@ Activity Bar: AT Ops Agent
 |------|------|-------------------|-----------|
 | `ChatApp.vue` | 主壳：header + 欢迎/transcript + dock | store | hydrate |
 | `WelcomeState.vue` | 空会话欢迎 + 建议卡 | sessions / suggestions | — |
-| `ChatTranscript.vue` | 消息/卡片；流式 assistant 走 MarkdownBlock | `items[]` | `transcript/append`, `transcript/patch` |
+| `ChatTranscript.vue` | 消息/卡片；用户气泡编辑/删除 → `chat/edit`；流式 assistant 走 MarkdownBlock | `items[]` | `transcript/append`, `transcript/patch`, `chat/edit` |
 | `MarkdownBlock.vue` | markdown-it `html:false`；`streaming` 时不高亮 | `source`, `streaming?` | — |
-| `ToolCallCard.vue` | 单次工具：名、risk、耗时、截断、错误码 | `call` | `tool/start\|update\|end` |
+| `ToolCallCard.vue` | 单次工具：名、risk、耗时、截断、错误码；默认折叠，点击标题展开 | `call` | `tool/start\|update\|end` |
 | `ApprovalBar.vue` | 会话审批；9 要素展开 | `brief`, `dualConfirmHint` | `approval/request` → `approval/respond` |
 | `SubagentBoard.vue` | 子代理卡片组 | `agents[]` | `subagent/upsert` |
 | `SubagentInspector.vue` | 子代理详情 overlay（ChatApp Teleport） | inspected card | `subagent/abort` |
@@ -84,7 +84,7 @@ Activity Bar: AT Ops Agent
 | `ModelSelector.vue` | Composer 模型切换 | `models, current` | `model/set` |
 | `PlaybookHeader.vue` | 当前 playbook / 阶段 | `playbook` | `playbook/stage` |
 | `PlaybookPicker.vue` | 选链路 | `playbooks, active` | `playbook/start` |
-| `Composer.vue` | 输入、@资产、steer/followUp | `mode: steer\|followUp` | `chat/prompt` |
+| `Composer.vue` | 输入、@资产、steer/followUp；可被 host 预填 `editorText` | `mode: steer\|followUp` | `chat/prompt` |
 | `UntrustedQuotes.vue` | 不可信引用警示（思考块唯一可见面） | `quotes[]` | `thinking/delta` |
 
 思考过程 **不是**独立 `ThinkingTrace` 组件：CoT 不展开。能力清单在 **Settings Webview**（`src/webview-settings/`），不在 Chat TreeView。

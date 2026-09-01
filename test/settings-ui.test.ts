@@ -152,7 +152,9 @@ describe('页签清单（SettingsApp 左侧竖排导航数据源）', () => {
 describe('常规配置：绑定键覆盖、归一化与 patch 载荷', () => {
   it('hydrate 配置不含 approval.dedupePluginModal', () => {
     expect(Object.keys(CONFIG_DEFAULTS)).not.toContain('approval.dedupePluginModal');
-    expect(CONFIG_FIELDS.every((field) => field.key !== 'approval.dedupePluginModal')).toBe(true);
+    expect((CONFIG_FIELDS as readonly { key: string }[]).every((field) => field.key !== 'approval.dedupePluginModal')).toBe(
+      true
+    );
   });
 
   it('CONFIG_FIELDS 覆盖全部 atOpsAgent.* 键（含 P1-9 只读免审名单）', () => {
