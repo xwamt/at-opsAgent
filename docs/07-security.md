@@ -11,13 +11,17 @@
 
 ① 不能替代 ③。③ 不能替代 ①。UI 必须写明这一点。
 
+① 仍做 block / riskCeiling / payload caps / command-policy 风险分类，但**不再**对「插件 MCP 已确认」的 write/exec 等人审。
+③ 是 Terminal / JumpServer / Nacos 的权威人审。Agent 不能替插件点同意，也不能压掉插件弹窗。
+at.database 写、第三方 MCP 写、ops_write_ops_doc：仍走 ① 的 9 要素简报。
+
 ## 2. 会话策略默认
 
 | risk | 主会话 | Investigator | Executor |
 |------|--------|--------------|----------|
 | read | 默认放行（可关） | 放行 | 仅当计划需要 |
-| write | 审批简报 | **拒绝** | 需 token + 哈希 |
-| exec | 审批简报 | **拒绝** | 需 token + 哈希 |
+| write | 插件已确认 → 放行；否则审批简报 | **拒绝** | 插件已确认 → 可无 token；否则需 token + 哈希 |
+| exec | 插件已确认 → 放行；否则审批简报 | **拒绝** | 插件已确认 → 可无 token；否则需 token + 哈希 |
 
 `at.database` 的 write 在插件无弹窗前，① 对 Database write **强制简报**，即使全局策略被用户调成 `exec-only`。
 

@@ -89,13 +89,11 @@ Activity Bar: AT Ops Agent
 
 思考过程 **不是**独立 `ThinkingTrace` 组件：CoT 不展开。能力清单在 **Settings Webview**（`src/webview-settings/`），不在 Chat TreeView。
 
-### 3.1 ApprovalBar 双弹窗文案
+### 3.1 ApprovalBar 与插件确认
 
-write/exec 在 Agent 确认后仍可能弹出插件模态。按钮旁固定提示：
+写操作由对应插件确认（Terminal / JumpServer / Nacos 的 MCP 弹窗，或主机信任档自动放行）。Agent 不能替插件点同意，也不能压掉插件弹窗。
 
-> 批准后插件仍可能再次确认。插件弹窗不是本次批准。
-
-对已知必弹插件确认的工具（Terminal `run_remote_command`、JumpServer exec/write），Agent 侧可配置 `sessionApproval: 'brief-only'`（展示简报但一键后直接 invoke，仍写 approvalToken），避免连续两张几乎相同的「是否执行」。**第一期默认双确认**；设置 `atOpsAgent.approval.dedupePluginModal` 默认 false。
+Agent `ApprovalBar` 只出现在**无插件弹窗**的写路径：`at.database` 写、第三方 MCP 写、`ops_write_ops_doc`。这些路径仍走 9 要素简报；`dualConfirmHint` 恒为 false，不再提示「插件还会再弹一次」。
 
 ### 3.2 ToolCallCard 截断
 
