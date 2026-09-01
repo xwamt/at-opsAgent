@@ -258,4 +258,48 @@ describe('RuntimeEventRouter：thinking / assistant 分 id（P0-id）', () => {
       expect(item.call.preview).toBe(SCREENSHOT_ENVELOPE);
     }
   });
+
+  it('idle 时自动从 assistant 文本提取 evidence-note@1 转为 evidence 卡片并清洗正文', () => {
+    const { router, store, sid, broadcasts } = fakeRouter();
+    const rawNote = JSON.stringify({
+      contract: 'evidence-note@1',
+      taskId: 'mem-uat-service-10114941',
+      confidence: 'confirmed',
+      summary: 'uat-service 32G 内存：10 个 ZGC Java 进程为主要占用方',
+      timeWindow: { from: '2026-05-22T05:25:00Z', to: '2026-05-22T05:30:00Z' },
+      refs: [{ kind: 'host', toolName: 'jumpserver_run_terminal_command', pluginId: 'at.jumpserver', preview: 'free -h' }],
+      conflicts: []
+    });
+    const assistantContent = `排查完成，结论如下：\n- 内存占用过高，主要由 Java 进程堆内存引起。\n\n${rawNote}`;
+
+    router.route(sid, { type: 'text_delta', id: 'msg-ev', text: assistantContent });
+    router.route(sid, { type: 'idle' });
+
+    // 1. assistant 正文中的裸 JSON 被清洗剥离
+    const assistant = store.findItem('msg-ev:assistant', sid);
+    expect(assistant?.kind === 'assistant').toBe(true);
+    if (assistant?.kind === 'assistant') {
+      expect(assistant.text).toBe('排查完成，结论如下：\n- 内存占用过高，主要由 Java 进程堆内存引起。');
+      expect(assistant.text).not.toContain('contract');
+      expect(assistant.streaming).toBe(false);
+    }
+
+    // 2. store 中生成了独立的 evidence 卡片项
+    const items = store.itemsOf(sid);
+    const evidenceItem = items.find((i) => i.kind === 'evidence');
+    expect(evidenceItem).toBeDefined();
+    if (evidenceItem?.kind === 'evidence') {
+      expect(evidenceItem.note.taskId).toBe('mem-uat-service-10114941');
+      expect(evidenceItem.note.confidence).toBe('confirmed');
+      expect(evidenceItem.note.summary).toContain('uat-service 32G 内存');
+      expect(evidenceItem.note.refs).toHaveLength(1);
+    }
+
+    // 3. store 时间线中也记录了该证据便签
+    const timeline = store.timeline;
+    expect(timeline.some((t) => t.kind === 'evidence' && t.taskId === 'mem-uat-service-10114941')).toBe(true);
+
+    // 4. 广播中包含了 transcript/patch 清洗后的正文与 transcript/append 的 evidence 项
+    expect(broadcasts.some((b) => b.type === 'transcript/append' && (b.payload as { item: { kind: string } }).item.kind === 'evidence')).toBe(true);
+  });
 });

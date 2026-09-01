@@ -1095,3 +1095,64 @@ export function deriveSubagentBoardPreview(card: SubagentCard, maxChars = 80): s
   }
   return '';
 }
+
+const FENCED_BLOCK_RE = /```[a-zA-Z]*[ \t]*\n?([\s\S]*?)```/g;
+
+/** 剥离 markdown 或纯文本中的 evidence-note / exec-report / verify-report 契约 JSON 块。 */
+export function stripContractJson(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  let result = text.replace(FENCED_BLOCK_RE, (match, inner) => {
+    try {
+      const obj = JSON.parse(inner.trim());
+      if (obj && typeof obj === 'object' && (typeof obj.contract === 'string' || (obj.confidence && obj.summary))) {
+        return '';
+      }
+    } catch {}
+    return match;
+  });
+
+  if (result.includes('"contract"') || (result.includes('"confidence"') && result.includes('"summary"'))) {
+    for (let i = 0; i < result.length; i++) {
+      if (result[i] === '{') {
+        let depth = 0;
+        let inString = false;
+        let escape = false;
+        for (let j = i; j < result.length; j++) {
+          const char = result[j];
+          if (escape) {
+            escape = false;
+            continue;
+          }
+          if (char === '\\') {
+            escape = true;
+            continue;
+          }
+          if (char === '"') {
+            inString = !inString;
+            continue;
+          }
+          if (!inString) {
+            if (char === '{') {
+              depth++;
+            } else if (char === '}') {
+              depth--;
+              if (depth === 0) {
+                const slice = result.slice(i, j + 1);
+                try {
+                  const obj = JSON.parse(slice.trim());
+                  if (obj && typeof obj === 'object' && (typeof obj.contract === 'string' || (obj.confidence && obj.summary))) {
+                    result = (result.slice(0, i) + result.slice(j + 1)).trim();
+                    i = -1;
+                  }
+                } catch {}
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return result.trim();
+}
+

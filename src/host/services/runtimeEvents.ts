@@ -6,8 +6,10 @@
 import { randomUUID } from 'node:crypto';
 import { resolveToolRisk } from '../../mcp-client/riskLookup';
 import type { ToolCallView, UsageView } from '../../protocol';
+import { parseEvidenceNote, stripContractJson } from '../../runtime';
 import type { RuntimeEventLike } from '../hostTypes';
 import type { HostContext } from './context';
+import { appendEvidenceNote } from './subagentCards';
 
 export interface RuntimeEventHooks {
   /** 该会话 idle（清 busy + 释放挂起重建；running context 重算）。 */
@@ -140,12 +142,28 @@ export class RuntimeEventRouter {
       }
       case 'idle': {
         for (const item of ctx.store.itemsOf(sid)) {
-          if (item.kind === 'assistant' && item.streaming) {
-            ctx.store.finalizeAssistant(item.id, undefined, sid);
-            ctx.broadcastToSession(sid, 'transcript/patch', {
-              itemId: item.id,
-              patch: { streaming: false }
-            });
+          if (item.kind === 'assistant') {
+            if (item.text) {
+              const note = parseEvidenceNote(item.text, item.id);
+              if (note) {
+                appendEvidenceNote(ctx, sid, note);
+                const cleanedText = stripContractJson(item.text);
+                if (cleanedText !== item.text) {
+                  ctx.store.finalizeAssistant(item.id, cleanedText, sid);
+                  ctx.broadcastToSession(sid, 'transcript/patch', {
+                    itemId: item.id,
+                    patch: { text: cleanedText, streaming: false }
+                  });
+                }
+              }
+            }
+            if (item.streaming) {
+              ctx.store.finalizeAssistant(item.id, undefined, sid);
+              ctx.broadcastToSession(sid, 'transcript/patch', {
+                itemId: item.id,
+                patch: { streaming: false }
+              });
+            }
           }
           if (item.kind === 'thinking') {
             this.finalizeThinking(sid, item.id);

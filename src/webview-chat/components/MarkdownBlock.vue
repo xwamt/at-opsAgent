@@ -13,10 +13,14 @@ import { computed, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue';
 import { t } from '../i18n';
 import { COPIED_FEEDBACK_MS, copyText } from '../lib/clipboard';
 import { renderMarkdown } from '../lib/markdown';
+import { stripContractJson } from '../store-helpers';
 
 const props = defineProps<{ source: string; streaming?: boolean }>();
 
-const html = computed(() => renderMarkdown(props.source ?? '', !!props.streaming));
+const html = computed(() => {
+  const src = props.streaming ? props.source ?? '' : stripContractJson(props.source ?? '');
+  return renderMarkdown(src, !!props.streaming);
+});
 const root = ref<HTMLElement | null>(null);
 
 let copyBindTimer: ReturnType<typeof setTimeout> | undefined;

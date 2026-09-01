@@ -298,59 +298,132 @@ function tryParseObject(raw: string): Record<string, unknown> | undefined {
   return undefined;
 }
 
-/** 从消息文本中解析契约 JSON：优先取最后一个 fenced 块，兜底整段裸 JSON。 */
-export function parseContractJson(text: string): ContractJson | undefined {
-  const blocks = [...text.matchAll(FENCED_BLOCK_RE)].map((m) => m[1]);
-  blocks.unshift(text); // 整条消息就是裸 JSON 的情况（优先级最低，放队首）
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const value = tryParseObject(blocks[i]);
-    if (value !== undefined && typeof value.contract === 'string') {
-      return value as ContractJson;
-    }
-  }
-  return undefined;
-}
-
 function isEvidenceConfidence(value: unknown): value is EvidenceNote['confidence'] {
   return value === 'confirmed' || value === 'hypothesis' || value === 'pending';
 }
 
-/**
- * 宽松兜底：contract 字段整个缺失、但 confidence+summary 形状完整的 JSON 块
- * 也接受（settle 仍按「缺契约块」标 degraded，但摘要/便签不丢）。
- * 写了 contract 却不是 evidence-note@1 的块不算（那是别的契约）。
- */
-function parseLooseEvidenceJson(text: string): Record<string, unknown> | undefined {
-  const blocks = [...text.matchAll(FENCED_BLOCK_RE)].map((m) => m[1]);
-  blocks.unshift(text);
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const value = tryParseObject(blocks[i]);
-    if (
-      value !== undefined &&
-      value.contract === undefined &&
-      isEvidenceConfidence(value.confidence) &&
-      typeof value.summary === 'string' &&
-      value.summary.length > 0
-    ) {
-      return value;
+export interface ContractMatch {
+  raw: string;
+  json: Record<string, unknown>;
+  start: number;
+  end: number;
+}
+
+/** 查找文本中的契约 JSON（优先取最后一个 fenced code block，其次扫描文本内/尾部的裸 JSON）。 */
+export function findContractMatch(text: string): ContractMatch | undefined {
+  if (!text || typeof text !== 'string') return undefined;
+
+  // 1. 优先扫描 fenced code blocks（从后向前）
+  const fencedMatches = [...text.matchAll(FENCED_BLOCK_RE)];
+  for (let i = fencedMatches.length - 1; i >= 0; i--) {
+    const m = fencedMatches[i];
+    const inner = m[1];
+    const obj = tryParseObject(inner);
+    if (obj) {
+      if (typeof obj.contract === 'string') {
+        const start = m.index ?? 0;
+        return {
+          raw: m[0],
+          json: obj,
+          start,
+          end: start + m[0].length
+        };
+      }
+      if (
+        isEvidenceConfidence(obj.confidence) &&
+        typeof obj.summary === 'string' &&
+        obj.summary.length > 0
+      ) {
+        const start = m.index ?? 0;
+        return {
+          raw: m[0],
+          json: obj,
+          start,
+          end: start + m[0].length
+        };
+      }
     }
+  }
+
+  // 2. 扫描裸 JSON 对象（支持尾部或文本中间的裸 JSON，平衡括号）
+  const candidates: ContractMatch[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '{') {
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      for (let j = i; j < text.length; j++) {
+        const char = text[j];
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (char === '\\') {
+          escape = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (!inString) {
+          if (char === '{') {
+            depth++;
+          } else if (char === '}') {
+            depth--;
+            if (depth === 0) {
+              const slice = text.slice(i, j + 1);
+              const obj = tryParseObject(slice);
+              if (obj) {
+                if (
+                  typeof obj.contract === 'string' ||
+                  (isEvidenceConfidence(obj.confidence) &&
+                    typeof obj.summary === 'string' &&
+                    obj.summary.length > 0)
+                ) {
+                  candidates.push({
+                    raw: slice,
+                    json: obj,
+                    start: i,
+                    end: j + 1
+                  });
+                }
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (candidates.length > 0) {
+    return candidates[candidates.length - 1];
+  }
+
+  return undefined;
+}
+
+/** 从消息文本中解析契约 JSON：优先取最后一个 fenced 块，兼容裸 JSON。 */
+export function parseContractJson(text: string): ContractJson | undefined {
+  const match = findContractMatch(text);
+  if (match && typeof match.json.contract === 'string') {
+    return match.json as ContractJson;
   }
   return undefined;
 }
 
 /**
  * 解析 evidence-note@1；形状不完整（缺 confidence/summary）返回 undefined。
- * contract 字段缺失但 confidence+summary 完整时宽松接受（见 parseLooseEvidenceJson）。
+ * contract 字段缺失但 confidence+summary 完整时宽松接受。
  */
 export function parseEvidenceNote(text: string, fallbackTaskId = ''): EvidenceNote | undefined {
-  const strict = parseContractJson(text);
-  const json =
-    strict !== undefined
-      ? strict.contract === 'evidence-note@1'
-        ? strict
-        : undefined
-      : parseLooseEvidenceJson(text);
-  if (json === undefined) return undefined;
+  const match = findContractMatch(text);
+  if (!match) return undefined;
+  const json = match.json;
+  if (typeof json.contract === 'string' && json.contract !== 'evidence-note@1') {
+    return undefined;
+  }
   const confidence = json.confidence;
   if (!isEvidenceConfidence(confidence)) {
     return undefined;
@@ -377,6 +450,15 @@ export function parseEvidenceNote(text: string, fallbackTaskId = ''): EvidenceNo
       ? json.conflicts.filter((c): c is string => typeof c === 'string')
       : []
   };
+}
+
+/** 从文本中剥离契约 JSON 块（无论是否带 markdown code fence），返回干净的对话正文。 */
+export function stripContractJson(text: string): string {
+  const match = findContractMatch(text);
+  if (!match) return text;
+  const before = text.slice(0, match.start);
+  const after = text.slice(match.end);
+  return (before + after).trim();
 }
 
 export function truncateSummary(text: string, limit = SUBAGENT_SUMMARY_CHAR_LIMIT): string {

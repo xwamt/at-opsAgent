@@ -44,6 +44,8 @@ export {
   normalizeDispatchInput,
   parseContractJson,
   parseEvidenceNote,
+  stripContractJson,
+  findContractMatch,
   runCheckSubagentToolCall,
   runDispatchToolCall,
   truncateSummary,

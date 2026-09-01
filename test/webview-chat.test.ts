@@ -67,6 +67,7 @@ import {
   classifyToolDataView,
   resolveInspectedSubagent,
   stickyTailSignature,
+  stripContractJson,
   subagentTitle,
   thinkingMetaVisible,
   toolCallHeadline,
@@ -1814,3 +1815,18 @@ describe('SubagentTranscript 结构', () => {
     expect(src).toContain('stickyTailSignature');
   });
 });
+
+describe('stripContractJson（Markdown 渲染契约剥离）', () => {
+  it('从 markdown 文本中剥离裸 JSON 与 fenced JSON 契约块', () => {
+    const bareJson = '{"contract":"evidence-note@1","taskId":"t1","confidence":"confirmed","summary":"mem ok"}';
+    const textWithBare = `巡检结论：服务正常。\n\n${bareJson}`;
+    expect(stripContractJson(textWithBare)).toBe('巡检结论：服务正常。');
+    expect(stripContractJson(bareJson)).toBe('');
+
+    const textWithFenced = `排查完成。\n\`\`\`json\n${bareJson}\n\`\`\``;
+    expect(stripContractJson(textWithFenced)).toBe('排查完成。');
+
+    expect(stripContractJson('纯文本不带 JSON')).toBe('纯文本不带 JSON');
+  });
+});
+

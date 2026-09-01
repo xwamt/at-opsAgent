@@ -84,6 +84,7 @@ import {
   normalizeDispatchInput,
   parseContractJson,
   parseEvidenceNote,
+  stripContractJson,
   readSkillFile,
   readWorkspaceFile,
   recoverFromPromptError,
@@ -1417,6 +1418,38 @@ describe('parseContractJson / parseEvidenceNote / truncateSummary', () => {
     const long = truncateSummary('y'.repeat(SUBAGENT_SUMMARY_CHAR_LIMIT + 10));
     expect(long.endsWith('…[truncated]')).toBe(true);
     expect(long.slice(0, SUBAGENT_SUMMARY_CHAR_LIMIT)).toBe('y'.repeat(SUBAGENT_SUMMARY_CHAR_LIMIT));
+  });
+
+  it('兼容对话正文末尾带裸 JSON 契约块的解析与剥离（stripContractJson）', () => {
+    const rawNote = JSON.stringify({
+      contract: 'evidence-note@1',
+      taskId: 'mem-uat-service-10114941',
+      confidence: 'confirmed',
+      summary: 'uat-service 32G 内存：10 个 ZGC Java 进程为主要占用方',
+      timeWindow: { from: '2026-05-22T05:25:00Z', to: '2026-05-22T05:30:00Z' },
+      refs: [{ kind: 'host', toolName: 'jumpserver_run_terminal_command', pluginId: 'at.jumpserver', preview: 'free -h' }],
+      conflicts: []
+    });
+
+    const fullMessage = `uat-service 内存排查结论如下：\n1. 10 个 Java 进程占用了 22.2G 堆内存。\n\n${rawNote}`;
+
+    const note = parseEvidenceNote(fullMessage);
+    expect(note).toBeDefined();
+    expect(note?.taskId).toBe('mem-uat-service-10114941');
+    expect(note?.confidence).toBe('confirmed');
+    expect(note?.summary).toContain('uat-service 32G 内存');
+    expect(note?.refs).toHaveLength(1);
+
+    const cleanText = stripContractJson(fullMessage);
+    expect(cleanText).toBe('uat-service 内存排查结论如下：\n1. 10 个 Java 进程占用了 22.2G 堆内存。');
+    expect(cleanText).not.toContain('contract');
+
+    // 纯裸 JSON 消息剥离后为空字符串
+    expect(stripContractJson(rawNote)).toBe('');
+
+    // fenced JSON 剥离
+    const fencedMsg = `排查完成。\n\n\`\`\`json\n${rawNote}\n\`\`\``;
+    expect(stripContractJson(fencedMsg)).toBe('排查完成。');
   });
 });
 
