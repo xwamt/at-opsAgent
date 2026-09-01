@@ -533,6 +533,14 @@ describe('FallbackRuntime', () => {
     }
   });
 
+  it('Fallback navigateToUserEntry 返回 cancelled，不抛错', async () => {
+    const { handlers } = collectEvents();
+    const runtime = createFallbackRuntime(handlers);
+    const result = await runtime.navigateToUserEntry('entry-1');
+    expect(result).toEqual({ cancelled: true });
+    expect(runtime.userMessagesForForking()).toEqual([]);
+  });
+
   it('createOpsRuntime 在模型无法解析时返回 Fallback 而不是抛错', async () => {
     const { events, handlers } = collectEvents();
     const agentDir = mkdtempSync(join(tmpdir(), 'ops-agent-test-'));

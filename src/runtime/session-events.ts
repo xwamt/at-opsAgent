@@ -78,9 +78,18 @@ export function subscribeSessionEvents(
   return session.subscribe((event: AgentSessionEvent) => {
     switch (event.type) {
       case 'message_start': {
-        const role = (event.message as { role?: string }).role;
+        const message = event.message as { role?: string; content?: unknown };
+        const role = message.role;
         if (role === 'assistant') {
           currentMessageId = randomUUID();
+        } else if (role === 'user') {
+          const text = userMessageText(message);
+          const match = session
+            .getUserMessagesForForking()
+            .find((row) => row.text === text);
+          if (match) {
+            emit({ type: 'user_entry', piEntryId: match.entryId, text: match.text });
+          }
         }
         break;
       }
@@ -206,4 +215,19 @@ export function subscribeSessionEvents(
         break;
     }
   });
+}
+
+function userMessageText(message: { content?: unknown }): string {
+  const content = message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) =>
+        part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string'
+          ? (part as { text: string }).text
+          : ''
+      )
+      .join('');
+  }
+  return '';
 }

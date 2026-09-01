@@ -235,6 +235,12 @@ export function createFallbackRuntime(handlers: OpsRuntimeHandlers, reason?: str
     abortSubagent(): void {
       // 无子代理在跑，无事可做。
     },
+    async navigateToUserEntry() {
+      return { cancelled: true };
+    },
+    userMessagesForForking() {
+      return [];
+    },
     async probeModel(): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
       return { ok: false, error: message };
     }

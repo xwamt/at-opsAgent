@@ -383,6 +383,24 @@ export async function createPiRuntime(
     abortSubagent(taskId: string): void {
       subagents.abort(taskId);
     },
+    async navigateToUserEntry(entryId: string) {
+      try {
+        const result = await session.navigateTree(entryId);
+        return {
+          cancelled: result.cancelled === true,
+          ...(typeof result.editorText === 'string' ? { editorText: result.editorText } : {})
+        };
+      } catch {
+        return { cancelled: true };
+      }
+    },
+    userMessagesForForking() {
+      try {
+        return session.getUserMessagesForForking();
+      } catch {
+        return [];
+      }
+    },
     // P0-C：当前 JSONL 路径（in-memory 会话为 undefined）。host 重建时
     // 作为 resumeSessionFile 传回续接。getter 保证读到的是实时路径。
     get sessionFile(): string | undefined {

@@ -155,7 +155,8 @@ export type RuntimeEventLike =
   | { type: 'compaction'; summary: string }
   /** 结构化提示（未配置模型 / 初始化失败等），带可行动按钮。 */
   | { type: 'notice'; variant: 'error' | 'info' | 'success'; text: string; actions?: NoticeAction[] }
-  | { type: 'idle' };
+  | { type: 'idle' }
+  | { type: 'user_entry'; piEntryId: string; text: string };
 
 /** runtime 请求会话审批的输入（execute 内挂起，await host 决策）。 */
 export interface RuntimeApprovalInput {
@@ -286,6 +287,8 @@ export interface RuntimeLike {
   dispatchSubagent?(spec: unknown): Promise<{ taskId: string; status: string }>;
   /** 中止单个子代理，不牵连主会话。 */
   abortSubagent?(taskId: string): void;
+  navigateToUserEntry?(entryId: string): Promise<{ editorText?: string; cancelled: boolean }>;
+  userMessagesForForking?(): Array<{ entryId: string; text: string }>;
   /**
    * OAuth 登录（Models 面板 OAuth 页驱动）：由 pi ModelRuntime.login 完成，
    * 凭证写 ~/.at-series/agent/auth.json（0600），不进 models.json、不写日志。

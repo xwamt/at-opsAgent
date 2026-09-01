@@ -178,7 +178,8 @@ export type OpsRuntimeEvent =
       text: string;
       actions?: NoticeAction[];
     }
-  | { type: 'idle' };
+  | { type: 'idle' }
+  | { type: 'user_entry'; piEntryId: string; text: string };
 
 /**
  * OpsRuntime.dispatchSubagent（host API）的即时返回。
@@ -210,6 +211,13 @@ export interface OpsRuntime {
   dispatchSubagent(spec: SubagentDispatchInput | TaskSpec): Promise<DispatchSubagentResult>;
   /** 中止单个子代理（AbortSignal 级联到其 LLM 子会话与 in-flight invoke）。 */
   abortSubagent(taskId: string): void;
+  /**
+   * 同会话 JSONL 上把 leaf 移到指定用户消息（pi navigateTree）。
+   * Fallback 返回 cancelled，host 应 fail closed、不截 UI。
+   */
+  navigateToUserEntry(entryId: string): Promise<{ editorText?: string; cancelled: boolean }>;
+  /** 当前 JSONL 里可供 fork/回溯的用户消息（含 entryId）。 */
+  userMessagesForForking(): Array<{ entryId: string; text: string }>;
   /**
    * 当前主会话 JSONL 路径（P0-C：会话单真源）。host 重建 runtime 时把它
    * 作为 CreateOpsRuntimeOptions.resumeSessionFile 传回来即可续接同一会话。
