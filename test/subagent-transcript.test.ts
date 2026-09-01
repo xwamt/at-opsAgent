@@ -52,7 +52,7 @@ describe('subagent-transcript builder', () => {
     t = appendSubagentThinkingDelta(t, 'th1', 'step one');
     t = appendSubagentThinkingDelta(t, 'th1', ' step two');
     const item = t.find((i: SubagentTranscriptItem) => i.kind === 'thinking');
-    expect(item && item.kind === 'thinking' ? item.steps.join('') : '').toContain('step one step two');
+    expect(item && item.kind === 'thinking' ? item.steps : []).toEqual(['step one step two']);
 
     t = finalizeSubagentThinking(t, 'th1', 500);
     const finalized = t.find((i: SubagentTranscriptItem) => i.id === 'th1');

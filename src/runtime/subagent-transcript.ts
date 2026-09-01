@@ -115,11 +115,12 @@ export function appendSubagentThinkingDelta(
     ]);
   }
   return clamp(
-    items.map((it) =>
-      it.kind === 'thinking' && it.id === id
-        ? { ...it, steps: [...it.steps, delta] }
-        : it
-    )
+    items.map((it) => {
+      if (it.kind !== 'thinking' || it.id !== id) return it;
+      const steps = it.steps.length === 0 ? [''] : [...it.steps];
+      steps[steps.length - 1] = (steps[steps.length - 1] ?? '') + delta;
+      return { ...it, steps };
+    })
   );
 }
 

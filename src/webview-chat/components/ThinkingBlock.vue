@@ -63,7 +63,10 @@ const thinkingText = computed(() => {
   if (!props.item.steps || props.item.steps.length === 0) {
     return '';
   }
-  return props.item.steps.join('\n\n').trim();
+  const steps = props.item.steps.filter((s) => typeof s === 'string' && s.length > 0);
+  if (steps.length === 0) return '';
+  if (steps.length === 1) return steps[0].trim();
+  return steps.join('\n\n').trim();
 });
 
 const durationText = computed(() => {
