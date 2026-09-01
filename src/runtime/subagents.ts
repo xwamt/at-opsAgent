@@ -162,9 +162,9 @@ function clampInt(value: number | undefined, min: number, max: number, fallback:
 /**
  * 把派发参数补全成完整 TaskSpec 并校验角色规则（docs/04 §3.1）：
  * - Investigator 的 riskCeiling 必须是 read（硬顶，违规直接拒绝）；
- * - Executor 必须携带 approvalToken.briefId（引用已批 9 要素简报）。
- *   commandSetSha256 由 host 在批准时计算并绑定——模型不自行计算哈希，
- *   因此这里不强制要求（带了就透传，host/policy 侧照常校验一致性）；
+ * - Executor 的 token 可选；无窗写工具由 policy 在调用时拒绝。
+ *   带了 approvalToken 则 briefId 不能为空；commandSetSha256 由 host
+ *   在批准时计算并绑定——模型不自行计算哈希（带了就透传）；
  * - Writer 没有业务工具（allowTools 强制清空，riskCeiling 收紧为 read）；
  * - Verifier 只读（riskCeiling 静默收紧为 read）。
  */
@@ -187,18 +187,17 @@ export function buildTaskSpec(input: SubagentDispatchInput): BuildTaskSpecOutcom
   }
   let approvalToken = input.approvalToken ?? undefined;
   if (input.role === 'executor') {
-    if (
-      approvalToken === undefined ||
-      approvalToken === null ||
-      typeof approvalToken.briefId !== 'string' ||
-      approvalToken.briefId.length === 0
-    ) {
-      return {
-        ok: false,
-        error:
-          'Executor 必须携带 approvalToken.briefId（引用已批的 9 要素简报；' +
-          'commandSetSha256 由 host 批准时计算绑定，不要自行计算哈希）'
-      };
+    if (approvalToken !== undefined && approvalToken !== null) {
+      if (typeof approvalToken.briefId !== 'string' || approvalToken.briefId.length === 0) {
+        return {
+          ok: false,
+          error:
+            'Executor 的 approvalToken.briefId 不能为空（无窗写工具仍要引用已批简报；' +
+            '插件会确认的工具可以不带 token）'
+        };
+      }
+    } else {
+      approvalToken = undefined;
     }
   } else {
     approvalToken = undefined;
@@ -1073,8 +1072,8 @@ export const dispatchToolSpec = {
     'allowTools 点名的工具会被实际注入子会话（不被 riskCeiling 滤掉）：' +
     'investigator 做只读巡检可点名 run_remote_command——只读命令' +
     '（hostname/uptime/df/free/ps/systemctl status 等）按 read 推断放行。' +
-    'Investigator 只读（riskCeiling 必须 read）；Executor 必须携带 approvalToken.briefId' +
-    '（commandSetSha256 由 host 绑定，不要自行计算）；Writer 无业务工具。' +
+    'Investigator 只读（riskCeiling 必须 read）；Executor 的 token 可选' +
+    '（无窗写由 policy 在调用时拒绝；commandSetSha256 由 host 绑定）；Writer 无业务工具。' +
     '仅主会话可用，子代理禁止递归派发。payloadCaps 不在本工具参数里（由 playbook yaml defaults 注入）。',
   parameters: {
     type: 'object',

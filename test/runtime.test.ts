@@ -1094,6 +1094,7 @@ describe('composeSubagentPrompt', () => {
   it('角色专属 L3\'：executor 绑定令牌、writer 无业务工具、verifier 独立只读', () => {
     const spec = makeInvestigatorSpec();
     const executor = composeSubagentPrompt({ role: 'executor', spec });
+    expect(executor).toContain('插件会自己弹确认');
     expect(executor).toContain('approvalToken');
     expect(executor).toContain('commandSetSha256');
     expect(executor).toContain('exec-report@1');
@@ -1140,12 +1141,14 @@ describe('buildTaskSpec', () => {
     }
   });
 
-  it('executor 必须携带 approvalToken.briefId；commandSetSha256 可选（host 绑定）', () => {
+  it('executor 可以不带 approvalToken；带了 briefId 则透传', () => {
     const bare = buildTaskSpec({ role: 'executor', goal: '重启实例', riskCeiling: 'exec' });
-    expect(bare.ok).toBe(false);
-    if (!bare.ok) expect(bare.error).toContain('approvalToken');
+    expect(bare.ok).toBe(true);
+    if (bare.ok) {
+      expect(bare.spec.approvalToken).toBeUndefined();
+      expect(bare.spec.output.contract).toBe('exec-report@1');
+    }
 
-    // briefId-only：模型不自行计算哈希（P0 §11/12），只引用已批简报
     const briefOnly = buildTaskSpec({
       role: 'executor',
       goal: '重启实例',
@@ -1155,10 +1158,8 @@ describe('buildTaskSpec', () => {
     expect(briefOnly.ok).toBe(true);
     if (briefOnly.ok) {
       expect(briefOnly.spec.approvalToken).toEqual({ briefId: 'brief-1' });
-      expect(briefOnly.spec.output.contract).toBe('exec-report@1');
     }
 
-    // 带 host 绑定的哈希也照常透传
     const withToken = buildTaskSpec({
       role: 'executor',
       goal: '重启实例',
@@ -1170,7 +1171,6 @@ describe('buildTaskSpec', () => {
       expect(withToken.spec.approvalToken).toEqual({ briefId: 'brief-1', commandSetSha256: 'abc123' });
     }
 
-    // 空 briefId 仍拒绝
     const emptyBrief = buildTaskSpec({
       role: 'executor',
       goal: '重启实例',
@@ -1178,6 +1178,7 @@ describe('buildTaskSpec', () => {
       approvalToken: { briefId: '' }
     });
     expect(emptyBrief.ok).toBe(false);
+    if (!emptyBrief.ok) expect(emptyBrief.error).toContain('approvalToken');
   });
 
   it('writer 清空 allowTools 且收紧为 read；verifier 静默收紧为 read', () => {
@@ -1841,9 +1842,12 @@ describe('runDispatchToolCall', () => {
     expect(tooMany.error).toContain(String(MAX_DISPATCH_TASKS));
 
     const bad = JSON.parse(
-      await runDispatchToolCall({ role: 'executor', goal: '改配置', riskCeiling: 'exec' }, manager)
+      await runDispatchToolCall(
+        { role: 'executor', goal: '改配置', riskCeiling: 'exec', approvalToken: { briefId: '' } },
+        manager
+      )
     ) as DispatchToolTaskResult;
-    expect(bad.status).toBe('rejected'); // executor 缺 approvalToken
+    expect(bad.status).toBe('rejected'); // 空 briefId 仍是无效 token
     expect(bad.error).toBeTruthy();
   });
 

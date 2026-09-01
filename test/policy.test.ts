@@ -562,15 +562,30 @@ describe('policy · 会话审批', () => {
     if (!decision.block) expect(decision.needSessionApproval).toBe(true);
   });
 
-  it('executor 无 approval 调 write/exec → OPS_APPROVAL_REQUIRED', async () => {
+  it('executor 无 approval 调无窗 write/exec → OPS_APPROVAL_REQUIRED', async () => {
     for (const risk of ['write', 'exec'] as const) {
       expectBlocked(
         await evaluatePolicy(
-          ctx({ toolName: 'terminal_run_command', role: 'executor', risk, approval: null })
+          ctx({ toolName: 'unknown_write_tool', role: 'executor', risk, approval: null })
         ),
         OPS_ERROR.APPROVAL_REQUIRED
       );
     }
+  });
+
+  it('executor 无 approval 调插件会确认的工具 → 放行', async () => {
+    expect(
+      await evaluatePolicy(
+        ctx({
+          toolName: 'run_remote_command',
+          pluginId: 'at.terminal',
+          role: 'executor',
+          risk: 'exec',
+          args: { command: 'hostname' },
+          approval: null
+        })
+      )
+    ).toEqual({ block: false, needSessionApproval: false });
   });
 
   it('executor 携带的 approval 与命令哈希不一致 → OPS_APPROVAL_STALE', async () => {
