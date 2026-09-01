@@ -829,8 +829,8 @@ describe('ToolCallCard 标题意图（toolCallHeadline，docs/14 P1-ui）', () =
       attemptCount: undefined
     });
     expect(parseToolOutputPreview('plain string output')).toEqual({
-      command: 'plain string output',
-      commandBody: 'plain string output',
+      command: undefined,
+      commandBody: undefined,
       purpose: undefined,
       hostLabel: undefined,
       hostAddr: undefined,
@@ -896,9 +896,9 @@ describe('ToolCallCard 标题意图（toolCallHeadline，docs/14 P1-ui）', () =
         serverId: 's1',
         command: '# Purpose: 检查磁盘\ndf -h'
       });
-      const parsed = parseToolOutputPreview(SCREENSHOT_ENVELOPE.replace('"hostname"', '"df -h"'), input);
+      const parsed = parseToolOutputPreview(SCREENSHOT_ENVELOPE, input);
       expect(parsed.purpose).toBe('检查磁盘');
-      expect(parsed.commandBody).toBe('df -h');
+      expect(parsed.commandBody).toBe('hostname');
       expect(parsed.stdout).toBe('cl\n');
     });
 
@@ -1553,6 +1553,7 @@ describe('终端命令执行组件（Kilo / Cursor 终端解耦，2026-08-31）'
     expect(isCommandToolCall({ name: 'ops_dispatch_subagent', preview: '{"role":"investigator"}' })).toBe(false);
     expect(isCommandToolCall({ name: 'ops_list_playbooks', preview: '{"playbooks":[]}' })).toBe(false);
     expect(isCommandToolCall({ name: 'ops_read_skill', preview: '{"content":"# Title"}' })).toBe(false);
+    expect(isCommandToolCall({ name: 'ops_read_skill', preview: '# Skill\ncontent' })).toBe(false);
 
     expect(isSubagentToolCall({ name: 'ops_dispatch_subagent' })).toBe(true);
     expect(isSubagentToolCall({ name: 'run_remote_command' })).toBe(false);

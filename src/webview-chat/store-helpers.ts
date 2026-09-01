@@ -484,12 +484,12 @@ export function parseToolOutputPreview(
   const stderr = fromOutput.stderr ?? fromInput.stderr;
   const exitCode = fromOutput.exitCode ?? fromInput.exitCode;
 
-  let fallbackCommand = command;
-  if (!fallbackCommand && !inputRaw && raw && outJson === undefined) {
-    fallbackCommand = raw.split('\n')[0].trim();
-  }
-  const commandForPurpose = fallbackCommand ?? '';
+  // command is JSON/input fields only — plaintext first-line is extractPreviewCommand.
+  const commandForPurpose = command ?? '';
   const { purpose } = parsedPurpose ?? parseCommandPurpose(commandForPurpose);
+  // Output body wins for display (executed command); input is fallback.
+  // Do not join/unique the two: that duplicates `df -h` and Task 2 must not
+  // "simplify" this back to a single parseCommandPurpose(purposeSource).
   const body =
     (fromOutput.command ? parseCommandPurpose(fromOutput.command).body : '') ||
     (fromInput.command ? parseCommandPurpose(fromInput.command).body : '') ||
@@ -498,7 +498,7 @@ export function parseToolOutputPreview(
   const payload = outUnwrapped?.payload ?? inUnwrapped?.payload;
 
   return {
-    command: fallbackCommand,
+    command,
     commandBody: body || undefined,
     purpose,
     hostLabel,
@@ -516,7 +516,22 @@ export function parseToolOutputPreview(
 
 function extractPreviewCommand(preview: string | undefined | null): string {
   const p = parseToolOutputPreview(preview);
-  return p.commandBody || p.command || '';
+  if (p.commandBody || p.command) {
+    return p.commandBody || p.command || '';
+  }
+  const raw = String(preview ?? '').trim();
+  if (!raw) {
+    return '';
+  }
+  if (raw.startsWith('{') || raw.startsWith('[')) {
+    try {
+      JSON.parse(raw);
+      return '';
+    } catch {
+      // invalid JSON: headline uses first line (legacy)
+    }
+  }
+  return raw.split('\n')[0].trim();
 }
 function extractPreviewServer(preview: string | undefined | null): string {
   return parseToolOutputPreview(preview).hostLabel || '';
