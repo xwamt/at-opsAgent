@@ -492,7 +492,7 @@ export function tf(key: OpsMessageKey, vars: Record<string, string | number>): s
 
 /**
  * ApprovalBar 双确认文案（docs/05 §3.1）：仅 brief.dualConfirmHint === true 时
- * 返回整句提示，否则空串（host 从 dedupePluginModal 取反下发）。
+ * 返回整句提示，否则空串。生产路径恒为 false（插件弹窗才是人审闸）。
  */
 export function dualConfirmText(
   brief: { dualConfirmHint?: boolean } | null | undefined,

@@ -25,7 +25,6 @@ const KNOWN_CONFIG_KEYS: readonly string[] = [
   'plugins.autoEnableNew',
   'policy.floor',
   'approval.sessionRequiredFor',
-  'approval.dedupePluginModal',
   'approval.sessionReadAllowlist',
   'approval.timeoutMs',
   'models.defaultThinkingLevel',

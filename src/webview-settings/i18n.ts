@@ -39,8 +39,6 @@ const zhCN = {
     '企业下发的会话审批下限。用户只能选得更严，不能更松；保存时若更松会按下限收紧。',
   cfgSessionRequiredFor: '会话内审批范围',
   cfgSessionRequiredForDesc: '哪些风险等级需要会话内审批简报：写+执行 / 仅执行 / 从不。',
-  cfgDedupePluginModal: '合并插件确认弹窗',
-  cfgDedupePluginModalDesc: '开启后以 Agent 审批简报为准，尽量抑制插件自身的确认弹窗。',
   cfgApprovalTimeoutMs: '审批等待超时（毫秒）',
   cfgApprovalTimeoutMsDesc: '无人处理的审批在此时长后按拒绝落定（默认 15 分钟）。0 表示不超时。软停与硬停同样按拒绝解挂。',
   cfgSessionReadAllowlist: '只读工具免审名单',
@@ -244,9 +242,6 @@ const en: Record<SettingsMessageKey, string> = {
   cfgSessionRequiredFor: 'In-session approval scope',
   cfgSessionRequiredForDesc:
     'Which risk levels require an in-session approval brief: write+exec / exec only / never.',
-  cfgDedupePluginModal: 'Merge plugin confirmation dialogs',
-  cfgDedupePluginModalDesc:
-    'When on, the agent approval brief is authoritative and plugin confirmation dialogs are suppressed when possible.',
   cfgApprovalTimeoutMs: 'Approval wait timeout (ms)',
   cfgApprovalTimeoutMsDesc:
     'Unhandled approvals settle as rejected after this duration (default 15 minutes). 0 disables the timeout. Soft-stop and hard-stop also reject waiters.',

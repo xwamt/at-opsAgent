@@ -32,7 +32,6 @@
   "config.plugins.autoEnableNew": "Automatically enable newly discovered capability plugins without asking.",
   "config.policy.floor": "Organization-managed lower bound for in-session approval (same values as approval.sessionRequiredFor). The effective scope is the stricter of this floor and the user setting. Default write-exec.",
   "config.approval.sessionRequiredFor": "Which risk levels require an in-chat session approval before a tool runs: write and exec operations, exec only, or never (plugin-side approvals still apply).",
-  "config.approval.dedupePluginModal": "Skip the capability plugin's own confirmation modal when the session approval already covers the same command set (uses HMAC approval tokens).",
   "config.approval.sessionReadAllowlist": "Tool name prefixes treated as read-only for this machine; matching tools bypass session approval. Example: [\"kb.\", \"metrics.query\"].",
   "config.approval.timeoutMs": "Pending-approval timeout in milliseconds. Timed-out requests are treated as rejected and the session is released. 0 disables the timeout.",
   "config.models.defaultThinkingLevel": "Default reasoning effort requested from models that support it.",

@@ -34,17 +34,12 @@ export function toBriefView(brief: ApprovalBriefLike): ApprovalBriefView {
   if (brief.commandSet !== undefined && elements.commands === undefined) {
     elements.commands = brief.commandSet;
   }
-  // 默认双确认（会话审批 + 插件内确认弹窗）；仅当用户显式开启
-  // dedupePluginModal 去重时 UI 才不再提示第二道闸。
-  const dedupePluginModal = vscode.workspace
-    .getConfiguration('atOpsAgent')
-    .get<boolean>('approval.dedupePluginModal', false);
   return {
     id: brief.briefId,
     risk: brief.risk,
     targetLabel: brief.elements?.goal ?? `${brief.risk} 变更（run ${brief.runId}）`,
     elements,
-    dualConfirmHint: !dedupePluginModal
+    dualConfirmHint: false
   };
 }
 

@@ -248,7 +248,7 @@ onBeforeUnmount(() => {
     </p>
 
     <p v-if="guided && guided.hint" class="approval__guided-hint ops-muted">{{ guided.hint }}</p>
-    <!-- 双确认句只在 dualConfirmHint（dedupePluginModal 取反）为 true 时出现 -->
+    <!-- 双确认句只在 dualConfirmHint 为 true 时出现；生产路径恒为 false -->
     <p v-if="dualText" class="approval__hint">{{ dualText }}</p>
 
     <dl v-if="expanded" class="approval__brief">

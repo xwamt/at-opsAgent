@@ -68,7 +68,6 @@ export interface OpsConfig {
   'plugins.autoEnableNew': boolean;
   'policy.floor': SessionApprovalScope;
   'approval.sessionRequiredFor': SessionApprovalScope;
-  'approval.dedupePluginModal': boolean;
   /** P1-9：会话内免审的只读工具名（批准只读工具时勾「本会话不再问」也会写入）。 */
   'approval.sessionReadAllowlist': string[];
   /** P0-C：审批 waiter 超时（毫秒）；0 = 禁用超时。 */
@@ -87,7 +86,6 @@ export const CONFIG_DEFAULTS: OpsConfig = {
   'plugins.autoEnableNew': true,
   'policy.floor': 'write-exec',
   'approval.sessionRequiredFor': 'write-exec',
-  'approval.dedupePluginModal': false,
   'approval.sessionReadAllowlist': [],
   'approval.timeoutMs': 900000,
   'models.defaultThinkingLevel': 'medium',
@@ -148,12 +146,6 @@ export const CONFIG_FIELDS: readonly ConfigFieldMeta[] = [
     options: SESSION_REQUIRED_FOR_VALUES,
     labelKey: 'cfgSessionRequiredFor',
     descKey: 'cfgSessionRequiredForDesc'
-  },
-  {
-    key: 'approval.dedupePluginModal',
-    kind: 'boolean',
-    labelKey: 'cfgDedupePluginModal',
-    descKey: 'cfgDedupePluginModalDesc'
   },
   {
     key: 'approval.sessionReadAllowlist',
@@ -284,7 +276,6 @@ export function normalizeConfig(raw: unknown): OpsConfig {
       get('approval.sessionRequiredFor'),
       'write-exec'
     ),
-    'approval.dedupePluginModal': toBool(get('approval.dedupePluginModal'), false),
     'approval.sessionReadAllowlist': toStringList(get('approval.sessionReadAllowlist')),
     'approval.timeoutMs': toNum(get('approval.timeoutMs'), CONFIG_DEFAULTS['approval.timeoutMs'], 0),
     'models.defaultThinkingLevel': toEnum(get('models.defaultThinkingLevel'), THINKING_LEVELS, 'medium'),

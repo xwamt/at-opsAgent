@@ -34,6 +34,7 @@ import {
   hmacSha256Hex,
   parseChatDeeplinkSessionId,
   sendApprovalWebhook,
+  toBriefView,
   type ApprovalWebhookContext
 } from '../src/host/services/approvalNotify';
 import type { ApprovalBriefView } from '../src/protocol';
@@ -188,6 +189,18 @@ describe('T7 禁区：无 inbound 批准监听；密钥不进 settings', () => {
   it('im.webhookSecret 不在 package.json configuration / configService 白名单', () => {
     expect(PACKAGE_JSON.contributes.configuration.properties['atOpsAgent.im.webhookSecret']).toBeUndefined();
     expect(CONFIG_SOURCE).not.toContain('webhookSecret');
+  });
+});
+
+describe('toBriefView 双确认提示', () => {
+  it('toBriefView 不再宣称插件会再弹一次', () => {
+    const view = toBriefView({
+      briefId: 'b1',
+      runId: 'r1',
+      risk: 'exec',
+      elements: { goal: '重启' }
+    });
+    expect(view.dualConfirmHint).toBe(false);
   });
 });
 
