@@ -61,6 +61,7 @@ import {
   normalizeSessions,
   normalizeTimelineEvent,
   normalizeUsage,
+  parseCommandPurpose,
   parseToolOutputPreview,
   resolveInspectedSubagent,
   stickyTailSignature,
@@ -810,16 +811,110 @@ describe('ToolCallCard 标题意图（toolCallHeadline，docs/14 P1-ui）', () =
     });
     expect(parseToolOutputPreview(jsonStr)).toEqual({
       command: 'systemctl status nginx',
+      commandBody: 'systemctl status nginx',
+      purpose: undefined,
+      hostLabel: undefined,
+      hostAddr: undefined,
+      serverName: undefined,
       exitCode: 0,
       stdout: 'Active: active (running)',
       stderr: undefined,
-      rawText: jsonStr
+      rawText: jsonStr,
+      payload: {
+        command: 'systemctl status nginx',
+        exitCode: 0,
+        stdout: 'Active: active (running)'
+      },
+      envelopeOk: undefined,
+      attemptCount: undefined
     });
     expect(parseToolOutputPreview('plain string output')).toEqual({
-      rawText: 'plain string output'
+      command: 'plain string output',
+      commandBody: 'plain string output',
+      purpose: undefined,
+      hostLabel: undefined,
+      hostAddr: undefined,
+      serverName: undefined,
+      exitCode: undefined,
+      stdout: 'plain string output',
+      stderr: undefined,
+      rawText: 'plain string output',
+      payload: undefined,
+      envelopeOk: undefined,
+      attemptCount: undefined
     });
     expect(parseToolOutputPreview(undefined)).toEqual({
-      rawText: ''
+      command: undefined,
+      commandBody: undefined,
+      purpose: undefined,
+      hostLabel: undefined,
+      hostAddr: undefined,
+      serverName: undefined,
+      exitCode: undefined,
+      stdout: undefined,
+      stderr: undefined,
+      rawText: '',
+      payload: undefined,
+      envelopeOk: undefined,
+      attemptCount: undefined
+    });
+  });
+
+  describe('parseToolOutputPreview 生产信封（2026-09-01）', () => {
+    const SCREENSHOT_ENVELOPE = JSON.stringify({
+      ok: true,
+      result: {
+        serverId: '4d1fbefc-aeef-42e9-9008-62c04915affe',
+        serverLabel: '99.90',
+        host: '192.168.99.90',
+        command: 'hostname',
+        exitCode: 0,
+        stdout: 'cl\n',
+        stderr: '',
+        durationMs: 258,
+        timedOut: false,
+        truncated: false
+      },
+      attemptCount: 1,
+      durationMs: 261
+    });
+
+    it('截图夹具：从 result.* 取 host/command/stdout，不把信封当 stdout', () => {
+      const parsed = parseToolOutputPreview(SCREENSHOT_ENVELOPE);
+      expect(parsed.hostLabel).toBe('99.90');
+      expect(parsed.hostAddr).toBe('192.168.99.90');
+      expect(parsed.command).toBe('hostname');
+      expect(parsed.commandBody).toBe('hostname');
+      expect(parsed.stdout).toBe('cl\n');
+      expect(parsed.exitCode).toBe(0);
+      expect(parsed.stdout).not.toContain('"ok"');
+      expect(parsed.stdout).not.toContain('attemptCount');
+    });
+
+    it('Purpose：inputPreview 含 # Purpose: 时标题字段与正文分离；end 信封不冲掉 Purpose', () => {
+      const input = JSON.stringify({
+        serverId: 's1',
+        command: '# Purpose: 检查磁盘\ndf -h'
+      });
+      const parsed = parseToolOutputPreview(SCREENSHOT_ENVELOPE.replace('"hostname"', '"df -h"'), input);
+      expect(parsed.purpose).toBe('检查磁盘');
+      expect(parsed.commandBody).toBe('df -h');
+      expect(parsed.stdout).toBe('cl\n');
+    });
+
+    it('全角冒号 Purpose 也能解析', () => {
+      expect(parseCommandPurpose('# Purpose：备份配置\ncp a b')).toEqual({
+        purpose: '备份配置',
+        body: 'cp a b'
+      });
+    });
+
+    it('result 为对象且无 string stdout 时 stdout 为空，禁止 JSON.stringify(result)', () => {
+      const parsed = parseToolOutputPreview(
+        JSON.stringify({ ok: true, result: { servers: [{ label: '99.90' }] }, attemptCount: 1 })
+      );
+      expect(parsed.stdout).toBeUndefined();
+      expect(parsed.payload).toEqual({ servers: [{ label: '99.90' }] });
     });
   });
 });

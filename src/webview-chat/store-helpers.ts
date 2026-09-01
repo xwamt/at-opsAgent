@@ -347,65 +347,179 @@ const COMMAND_INTENT_ZH: Record<string, string> = {
 
 const HEADLINE_COMMAND_CAP = 48;
 
-/**
- * preview → 命令文本：JSON 带 .command 用其首行；JSON 无 command 视为
- * 结构化输出（提不出命令）；非 JSON 纯文本取首行。
- */
-function extractPreviewCommand(preview: string | undefined | null): string {
-  const raw = String(preview ?? '').trim();
-  if (!raw) {
-    return '';
+export function unwrapHubPayload(raw: unknown): {
+  payload: unknown;
+  envelopeOk?: boolean;
+  attemptCount?: number;
+  envelopeDurationMs?: number;
+} {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { payload: raw };
   }
-  if (raw.startsWith('{') || raw.startsWith('[')) {
-    try {
-      const rec = asRecord(JSON.parse(raw));
-      const command = typeof rec.command === 'string' ? rec.command : '';
-      return command.split('\n')[0].trim();
-    } catch {
-      // 非合法 JSON：按纯文本首行处理
+  const rec = asRecord(raw);
+  if (typeof rec.ok === 'boolean' && 'result' in rec) {
+    return {
+      payload: rec.result,
+      envelopeOk: rec.ok,
+      attemptCount: typeof rec.attemptCount === 'number' ? rec.attemptCount : undefined,
+      envelopeDurationMs: typeof rec.durationMs === 'number' ? rec.durationMs : undefined
+    };
+  }
+  return { payload: raw };
+}
+
+const PURPOSE_LINE = /^\s*#\s*Purpose\s*[:：]\s*(.+?)\s*$/i;
+
+export function parseCommandPurpose(command: string): { purpose?: string; body: string } {
+  const lines = command.split('\n');
+  let purpose: string | undefined;
+  const body: string[] = [];
+  for (const line of lines) {
+    const m = line.match(PURPOSE_LINE);
+    if (m) {
+      if (!purpose) purpose = m[1].trim();
+      continue;
     }
+    body.push(line);
   }
-  return raw.split('\n')[0].trim();
+  return { purpose, body: body.join('\n').trim() };
+}
+
+function pickStr(rec: AnyRecord, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = rec[k];
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return undefined;
+}
+
+function pickNum(rec: AnyRecord, keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = rec[k];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+  }
+  return undefined;
+}
+
+function fieldsFromPayload(payload: unknown): Partial<ParsedToolPreview> {
+  if (typeof payload === 'string') {
+    return { stdout: payload };
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return {};
+  }
+  const rec = asRecord(payload);
+  const command = pickStr(rec, ['command', 'script', 'query', 'cmd']);
+  const stdout =
+    typeof rec.stdout === 'string'
+      ? rec.stdout
+      : typeof rec.output === 'string'
+        ? rec.output
+        : typeof rec.result === 'string'
+          ? rec.result
+          : undefined;
+  const stderr = typeof rec.stderr === 'string' ? rec.stderr : undefined;
+  return {
+    command,
+    hostLabel: pickStr(rec, ['serverLabel', 'serverName', 'label', 'server']),
+    hostAddr: pickStr(rec, ['host', 'ip', 'target']),
+    exitCode: pickNum(rec, ['exitCode', 'code']),
+    stdout,
+    stderr
+  };
+}
+
+function parseJsonBlob(raw: string): unknown | undefined {
+  const t = raw.trim();
+  if (!t.startsWith('{') && !t.startsWith('[')) return undefined;
+  try {
+    return JSON.parse(t);
+  } catch {
+    return undefined;
+  }
 }
 
 export interface ParsedToolPreview {
   command?: string;
+  commandBody?: string;
+  purpose?: string;
+  hostLabel?: string;
+  hostAddr?: string;
+  /** @deprecated 等于 hostLabel，兼容旧调用 */
+  serverName?: string;
   exitCode?: number;
   stdout?: string;
   stderr?: string;
   rawText: string;
+  payload?: unknown;
+  envelopeOk?: boolean;
+  attemptCount?: number;
 }
 
-export function parseToolOutputPreview(preview: string | undefined | null): ParsedToolPreview {
+export function parseToolOutputPreview(
+  preview: string | undefined | null,
+  inputPreview?: string | undefined | null
+): ParsedToolPreview {
   const raw = String(preview ?? '').trim();
-  if (!raw) {
-    return { rawText: '' };
+  const inputRaw = String(inputPreview ?? '').trim();
+  const outJson = parseJsonBlob(raw);
+  const inJson = parseJsonBlob(inputRaw);
+
+  const outUnwrapped = outJson !== undefined ? unwrapHubPayload(outJson) : undefined;
+  const inUnwrapped = inJson !== undefined ? unwrapHubPayload(inJson) : undefined;
+
+  const fromInput = inUnwrapped ? fieldsFromPayload(inUnwrapped.payload) : {};
+  const fromOutput = outUnwrapped ? fieldsFromPayload(outUnwrapped.payload) : {};
+
+  const streamingStdout = outJson === undefined && raw ? raw : undefined;
+
+  const command = fromOutput.command ?? fromInput.command;
+  const purposeSource = [fromInput.command, fromOutput.command]
+    .filter((s): s is string => Boolean(s))
+    .join('\n');
+  const parsedPurpose = purposeSource ? parseCommandPurpose(purposeSource) : undefined;
+  const hostLabel = fromOutput.hostLabel ?? fromInput.hostLabel;
+  const hostAddr = fromOutput.hostAddr ?? fromInput.hostAddr;
+  const stdout = fromOutput.stdout ?? streamingStdout;
+  const stderr = fromOutput.stderr ?? fromInput.stderr;
+  const exitCode = fromOutput.exitCode ?? fromInput.exitCode;
+
+  let fallbackCommand = command;
+  if (!fallbackCommand && !inputRaw && raw && outJson === undefined) {
+    fallbackCommand = raw.split('\n')[0].trim();
   }
-  if (raw.startsWith('{') || raw.startsWith('[')) {
-    try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const command = typeof parsed.command === 'string' ? parsed.command : undefined;
-      const exitCode =
-        typeof parsed.exitCode === 'number'
-          ? parsed.exitCode
-          : typeof parsed.code === 'number'
-            ? parsed.code
-            : undefined;
-      const stdout =
-        typeof parsed.stdout === 'string'
-          ? parsed.stdout
-          : typeof parsed.output === 'string'
-            ? parsed.output
-            : typeof parsed.result === 'string'
-              ? parsed.result
-              : undefined;
-      const stderr = typeof parsed.stderr === 'string' ? parsed.stderr : undefined;
-      return { command, exitCode, stdout, stderr, rawText: raw };
-    } catch {
-      // fallback to plain text
-    }
-  }
-  return { rawText: raw };
+  const commandForPurpose = fallbackCommand ?? '';
+  const { purpose } = parsedPurpose ?? parseCommandPurpose(commandForPurpose);
+  const body =
+    (fromOutput.command ? parseCommandPurpose(fromOutput.command).body : '') ||
+    (fromInput.command ? parseCommandPurpose(fromInput.command).body : '') ||
+    parseCommandPurpose(commandForPurpose).body;
+
+  const payload = outUnwrapped?.payload ?? inUnwrapped?.payload;
+
+  return {
+    command: fallbackCommand,
+    commandBody: body || undefined,
+    purpose,
+    hostLabel,
+    hostAddr,
+    serverName: hostLabel,
+    exitCode,
+    stdout,
+    stderr,
+    rawText: raw,
+    payload,
+    envelopeOk: outUnwrapped?.envelopeOk,
+    attemptCount: outUnwrapped?.attemptCount
+  };
+}
+
+function extractPreviewCommand(preview: string | undefined | null): string {
+  const p = parseToolOutputPreview(preview);
+  return p.commandBody || p.command || '';
+}
+function extractPreviewServer(preview: string | undefined | null): string {
+  return parseToolOutputPreview(preview).hostLabel || '';
 }
 
 /** 命令首词（跳过 sudo / 环境变量赋值，剥路径前缀），用于意图映射。 */
