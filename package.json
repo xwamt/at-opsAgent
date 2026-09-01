@@ -366,7 +366,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies"
+    "package": "npm run compile && vsce package --no-dependencies"
   },
   "dependencies": {
     "@at-series/command-policy": "0.1.1",
