@@ -10,6 +10,7 @@ import { OPS_ERROR } from '../protocol';
 import type { SessionRequiredFor } from './sessionRequiredFor';
 
 export type { SessionRequiredFor } from './sessionRequiredFor';
+export { toolBareName, toolConfirmsInPlugin } from './pluginConfirm';
 export {
   SESSION_REQUIRED_FOR_RANK,
   SESSION_REQUIRED_FOR_VALUES,

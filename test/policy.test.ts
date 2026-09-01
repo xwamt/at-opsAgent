@@ -13,6 +13,7 @@ import {
   parseSessionRequiredFor,
   PolicyError,
   previewRemoteCommandPolicy,
+  toolConfirmsInPlugin,
   verifyApprovalToken,
   type PolicyContext,
   type PolicyDecision
@@ -679,5 +680,36 @@ describe('policy · 注入语料（工具结果不是指令）', () => {
       const decision = await evaluatePolicy(ctx(fixture.attempt));
       expect(decision.block, `${file} should stay blocked despite injected tool-result text`).toBe(true);
     }
+  });
+});
+
+describe('policy · toolConfirmsInPlugin', () => {
+  it('at.terminal 远程命令与 SFTP 写命中；只读 SFTP 不命中', () => {
+    expect(toolConfirmsInPlugin('at.terminal', 'run_remote_command')).toBe(true);
+    expect(toolConfirmsInPlugin('at.terminal', 'at.terminal/run_remote_command')).toBe(true);
+    expect(toolConfirmsInPlugin('at.terminal', 'sftp_write_file')).toBe(true);
+    expect(toolConfirmsInPlugin('at.terminal', 'sftp_delete')).toBe(true);
+    expect(toolConfirmsInPlugin('at.terminal', 'sftp_read_file')).toBe(false);
+    expect(toolConfirmsInPlugin('at.terminal', 'list_ssh_servers')).toBe(false);
+  });
+
+  it('JumpServer 命令/SQL/Redis/SFTP 写命中', () => {
+    expect(toolConfirmsInPlugin('at.jumpserver', 'jumpserver_run_terminal_command')).toBe(true);
+    expect(toolConfirmsInPlugin('at.jumpserver', 'jumpserver_mysql_execute_sql')).toBe(true);
+    expect(toolConfirmsInPlugin('at.jumpserver', 'jumpserver_redis_execute_command')).toBe(true);
+    expect(toolConfirmsInPlugin('at.jumpserver', 'jumpserver_sftp_write_file')).toBe(true);
+    expect(toolConfirmsInPlugin('at.jumpserver', 'jumpserver_list_assets')).toBe(false);
+  });
+
+  it('Nacos 写工具名命中；Database 永不命中', () => {
+    expect(toolConfirmsInPlugin('at.nacos', 'nacos_publish_config')).toBe(true);
+    expect(toolConfirmsInPlugin('at.nacos', 'nacos_delete_config')).toBe(true);
+    expect(toolConfirmsInPlugin('at.database', 'database_update_rows')).toBe(false);
+    expect(toolConfirmsInPlugin('at.database', 'run_remote_command')).toBe(false);
+  });
+
+  it('显式 flag 覆盖 allowlist', () => {
+    expect(toolConfirmsInPlugin('unknown', 'weird_write', true)).toBe(true);
+    expect(toolConfirmsInPlugin('at.terminal', 'run_remote_command', false)).toBe(false);
   });
 });
