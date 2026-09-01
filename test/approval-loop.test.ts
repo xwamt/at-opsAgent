@@ -296,18 +296,16 @@ describe('approval loop · policy + orchestrator 集成', () => {
     );
     expect(readCmd).toEqual({ block: false, needSessionApproval: false });
 
-    // 3. 后续新的 exec 命令（非 Executor 角色）：在无对应审批时正常触发新一轮 needSessionApproval，而不是误报 OPS_APPROVAL_STALE 错误
+    // 3. 后续新的 exec 命令：插件会确认，不再要会话简报（也不是 OPS_APPROVAL_STALE）
     const newExecCmd = await evaluatePolicy(
       execCtx({
         toolName: 'run_remote_command',
+        pluginId: 'at.terminal',
         args: { command: 'systemctl reload app' },
         approval: null
       })
     );
-    expect(newExecCmd.block).toBe(false);
-    if (!newExecCmd.block) {
-      expect(newExecCmd.needSessionApproval).toBe(true);
-    }
+    expect(newExecCmd).toEqual({ block: false, needSessionApproval: false });
   });
 });
 

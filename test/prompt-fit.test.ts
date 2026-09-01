@@ -81,10 +81,11 @@ describe('发现 loop 单真源', () => {
 });
 
 describe('L3 按场景触发', () => {
-  it('evidence-note 仅调查/合成；九要素仅 write/exec；闲聊不出仪式', () => {
+  it('evidence-note 仅调查/合成；九要素仅无插件弹窗的写；闲聊不出仪式', () => {
     expect(L3_OUTPUT_FORMAT).toMatch(/调查.*evidence-note@1/);
     expect(L3_OUTPUT_FORMAT).toMatch(/闲聊.*不要出便签|不要出便签.*闲聊/);
-    expect(L3_OUTPUT_FORMAT).toMatch(/write\/exec 前/);
-    expect(L3_OUTPUT_FORMAT).toMatch(/只读查询与闲聊不要出简报/);
+    expect(L3_OUTPUT_FORMAT).toMatch(/插件确认/);
+    expect(L3_OUTPUT_FORMAT).toMatch(/at\.database/);
+    expect(L3_OUTPUT_FORMAT).toMatch(/不要再出 9 要素会话简报/);
   });
 });

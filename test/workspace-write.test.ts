@@ -140,9 +140,10 @@ describe('审批 commands 预览', () => {
 describe('gate reject → 无文件；approve → 文件存在（host mock）', () => {
   async function mockHostWrite(
     docsRoot: string,
-    request: WriteOpsDocRequest
+    request: WriteOpsDocRequest,
+    now?: Date
   ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
-    const prepared = prepareWriteOpsDoc(docsRoot, request);
+    const prepared = prepareWriteOpsDoc(docsRoot, request, now);
     if (!prepared.ok) return prepared;
     mkdirSync(dirname(prepared.absPath), { recursive: true });
     writeFileSync(prepared.absPath, prepared.markdown, 'utf8');
@@ -188,7 +189,7 @@ describe('gate reject → 无文件；approve → 文件存在（host mock）', 
     const gate = await applyToolGate(handlers, WRITE_OPS_DOC_TOOL_NAME, {});
     expect(gate.kind).toBe('allow');
     const now = new Date(2026, 7, 29);
-    const written = await mockHostWrite(root, req());
+    const written = await mockHostWrite(root, req(), now);
     expect(written.ok).toBe(true);
     if (!written.ok) return;
     const abs = prepareWriteOpsDoc(root, req(), now);
