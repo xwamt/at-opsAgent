@@ -24,8 +24,8 @@ const isRunning = computed(() => props.call.status === 'running');
 const isCommand = computed(() => isCommandToolCall(props.call));
 const isSubagent = computed(() => isSubagentToolCall(props.call));
 
-/** 默认折叠，但命令类工具在运行中且为写/执行操作时可自动展开 */
-const expanded = ref(isRunning.value && (props.call.risk === 'write' || props.call.risk === 'exec'));
+/** 默认折叠；点击标题栏才展开详情 */
+const expanded = ref(false);
 const cmdExpanded = ref(true);
 
 // 实时动态耗时（运行中递增计时）
