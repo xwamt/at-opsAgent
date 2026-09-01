@@ -226,6 +226,25 @@ export class SessionStore {
     this.schedulePersist();
   }
 
+  truncateFrom(
+    itemId: string,
+    sessionId?: string
+  ): { ok: boolean; removed: number; rewindExecuted: boolean } {
+    const sid = sessionId ?? this._activeSessionId;
+    const items = this.itemsRef(sid);
+    const index = items.findIndex((item) => item.id === itemId);
+    if (index < 0) return { ok: false, removed: 0, rewindExecuted: false };
+    const removedSlice = items.slice(index);
+    const rewindExecuted = removedSlice.some(
+      (item) =>
+        item.kind === 'tool' && item.call.risk !== 'read' && item.call.status === 'ok'
+    );
+    const removed = items.length - index;
+    items.splice(index);
+    this.schedulePersist();
+    return { ok: true, removed, rewindExecuted };
+  }
+
   /**
    * 按 item id 合并字段（审批决议等）。找不到则 no-op。
    * 调用方负责 `broadcast('transcript/patch', { itemId, patch })`（webview 已有同路径）。

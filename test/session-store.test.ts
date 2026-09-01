@@ -392,3 +392,47 @@ describe('SessionStore · rename / delete', () => {
     store.dispose();
   });
 });
+
+describe('truncateFrom', () => {
+  it('从指定用户条起截断（含该条），留下更早的轮次', () => {
+    const { store } = tempStore();
+    store.appendItem({ kind: 'user', id: 'u1', text: '第一问' });
+    store.appendItem({ kind: 'assistant', id: 'a1', text: '第一答' });
+    store.appendItem({ kind: 'user', id: 'u2', text: '第二问' });
+    store.appendItem({ kind: 'assistant', id: 'a2', text: '第二答' });
+    store.appendItem({ kind: 'user', id: 'u3', text: '第三问' });
+
+    const result = store.truncateFrom('u2');
+    expect(result).toEqual({ ok: true, removed: 3, rewindExecuted: false });
+    expect(store.items.map((i) => i.id)).toEqual(['u1', 'a1']);
+    store.dispose();
+  });
+
+  it('截掉已成功的 write/exec 工具卡时 rewindExecuted=true', () => {
+    const { store } = tempStore();
+    store.appendItem({ kind: 'user', id: 'u1', text: '查主机' });
+    store.appendItem({
+      kind: 'tool',
+      id: 't1',
+      call: { name: 'run_remote_command', risk: 'exec', status: 'ok' }
+    });
+    store.appendItem({ kind: 'user', id: 'u2', text: '改命令' });
+    const result = store.truncateFrom('u1');
+    expect(result.ok).toBe(true);
+    expect(result.rewindExecuted).toBe(true);
+    expect(store.items).toEqual([]);
+    store.dispose();
+  });
+
+  it('找不到 id → ok false，items 不变', () => {
+    const { store } = tempStore();
+    store.appendItem({ kind: 'user', id: 'u1', text: 'x' });
+    expect(store.truncateFrom('missing')).toEqual({
+      ok: false,
+      removed: 0,
+      rewindExecuted: false
+    });
+    expect(store.items).toHaveLength(1);
+    store.dispose();
+  });
+});
