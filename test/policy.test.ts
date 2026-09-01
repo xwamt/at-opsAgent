@@ -325,7 +325,7 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
     expect(await inferEffectiveRisk('grafana_query', { command: 'ls -lah /data' }, 'write')).toBe('write');
   });
 
-  it('command-policy：ls → allow/read；rm -rf → review 且仍需会话审批', async () => {
+  it('command-policy：ls → allow/read；rm -rf → review 且风险仍为 exec（人审交给插件）', async () => {
     const ls = await previewRemoteCommandPolicy('run_remote_command', { command: 'ls -lah /data' });
     expect(ls?.action).toBe('allow');
     expect(ls?.source).toBe('command-policy');
@@ -338,7 +338,7 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'rm -rf /data' } })
     );
     expect(rmDecision.block).toBe(false);
-    if (!rmDecision.block) expect(rmDecision.needSessionApproval).toBe(true);
+    if (!rmDecision.block) expect(rmDecision.needSessionApproval).toBe(false);
 
     const lsElements = buildApprovalElements({
       toolName: 'run_remote_command',
@@ -387,7 +387,7 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
     );
   });
 
-  it('evaluatePolicy：主会话只读远程命令免 9 要素审批；写命令照常需要', async () => {
+  it('evaluatePolicy：主会话只读远程命令免 9 要素审批；写命令也不再要会话简报', async () => {
     expect(
       await evaluatePolicy(ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'df -h' } }))
     ).toEqual({ block: false, needSessionApproval: false });
@@ -396,7 +396,7 @@ describe('policy · inferEffectiveRisk（远程命令只读推断，docs/12）',
       ctx({ toolName: 'run_remote_command', risk: 'exec', args: { command: 'rm -rf /tmp/x' } })
     );
     expect(write.block).toBe(false);
-    if (!write.block) expect(write.needSessionApproval).toBe(true);
+    if (!write.block) expect(write.needSessionApproval).toBe(false);
   });
 });
 
@@ -416,10 +416,10 @@ describe('policy · sessionReadAllowlist（P1-9「本会话不再问」）', () 
     // write 命中名单也照常需要会话审批
     const write = await evaluatePolicy(
       ctx({
-        toolName: 'nacos_publish_config',
-        pluginId: 'at.nacos',
+        toolName: 'unknown_write_tool',
+        pluginId: 'third.party',
         risk: 'write',
-        sessionReadAllowlist: ['nacos_publish_config']
+        sessionReadAllowlist: ['unknown_write_tool']
       })
     );
     expect(write.block).toBe(false);
@@ -504,7 +504,7 @@ describe('policy · 会话审批', () => {
   });
 
   it('write-exec 策略下主会话 write 需要审批；exec-only 下普通 write 不需要', async () => {
-    const write = ctx({ toolName: 'nacos_publish_config', pluginId: 'at.nacos', risk: 'write' });
+    const write = ctx({ toolName: 'unknown_write_tool', pluginId: 'third.party', risk: 'write' });
     const underWriteExec = await evaluatePolicy(write);
     expect(!underWriteExec.block && underWriteExec.needSessionApproval).toBe(true);
 
@@ -519,6 +519,47 @@ describe('policy · 会话审批', () => {
 
     const underNever = await evaluatePolicy({ ...exec, sessionRequiredFor: 'never' });
     expect(underNever).toEqual({ block: false, needSessionApproval: false });
+  });
+
+  it('插件会确认的 write/exec 在 write-exec 下也不要会话简报', async () => {
+    expect(
+      await evaluatePolicy(
+        ctx({
+          toolName: 'run_remote_command',
+          pluginId: 'at.terminal',
+          risk: 'exec',
+          args: { command: 'systemctl restart nginx' },
+          sessionRequiredFor: 'write-exec',
+          approval: null
+        })
+      )
+    ).toEqual({ block: false, needSessionApproval: false });
+
+    expect(
+      await evaluatePolicy(
+        ctx({
+          toolName: 'nacos_publish_config',
+          pluginId: 'at.nacos',
+          risk: 'write',
+          sessionRequiredFor: 'write-exec',
+          approval: null
+        })
+      )
+    ).toEqual({ block: false, needSessionApproval: false });
+  });
+
+  it('at.database write 仍强制简报（插件 MCP 无窗）', async () => {
+    const decision = await evaluatePolicy(
+      ctx({
+        toolName: 'database_update_rows',
+        pluginId: 'at.database',
+        risk: 'write',
+        sessionRequiredFor: 'never',
+        approval: null
+      })
+    );
+    expect(decision.block).toBe(false);
+    if (!decision.block) expect(decision.needSessionApproval).toBe(true);
   });
 
   it('executor 无 approval 调 write/exec → OPS_APPROVAL_REQUIRED', async () => {

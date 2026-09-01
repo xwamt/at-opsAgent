@@ -7,6 +7,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import { OPS_ERROR } from '../protocol';
+import { toolConfirmsInPlugin } from './pluginConfirm';
 import type { SessionRequiredFor } from './sessionRequiredFor';
 
 export type { SessionRequiredFor } from './sessionRequiredFor';
@@ -575,6 +576,7 @@ export async function evaluatePolicy(ctx: PolicyContext): Promise<PolicyDecision
 
   // ── write / exec：审批链 ─────────────────────────────────────────────
   const approval = ctx.approval ?? null;
+  const pluginConfirms = toolConfirmsInPlugin(ctx.pluginId, ctx.toolName);
 
   if (approval !== null) {
     // 规则 6/8：token 必须非空；能推导命令哈希时必须与简报一致
@@ -592,8 +594,8 @@ export async function evaluatePolicy(ctx: PolicyContext): Promise<PolicyDecision
     return allow();
   }
 
-  // 规则 7：Executor 无 approval 一律拒绝 write/exec
-  if (ctx.role === 'executor') {
+  // 规则 7：Executor 无 approval 时，无窗写工具仍拒绝；插件会确认的工具放行
+  if (ctx.role === 'executor' && !pluginConfirms) {
     return block(
       OPS_ERROR.APPROVAL_REQUIRED,
       `Executor 调用 ${risk} 级工具必须携带有效 approvalToken`
@@ -604,6 +606,10 @@ export async function evaluatePolicy(ctx: PolicyContext): Promise<PolicyDecision
   // 即使 sessionRequiredFor 被调成 exec-only / never。
   if (ctx.pluginId === 'at.database' && risk === 'write') {
     return needApproval('at.database 写操作无插件弹窗，强制 9 要素审批简报');
+  }
+
+  if (pluginConfirms) {
+    return allow();
   }
 
   // 规则 6：按全局策略决定是否需要会话审批
