@@ -588,6 +588,82 @@ export function isSubagentToolCall(call: Pick<ToolCallView, 'name'>): boolean {
   return call.name === 'ops_dispatch_subagent' || call.name === 'ops_check_subagent';
 }
 
+export type ToolServerRow = {
+  id?: string;
+  label: string;
+  host: string;
+  port?: number;
+  username?: string;
+  connected: boolean;
+  trust?: string;
+  autoApprove?: boolean;
+};
+
+export type ToolDataView =
+  | { kind: 'servers'; servers: ToolServerRow[] }
+  | { kind: 'table'; columns: string[]; rows: Record<string, unknown>[] }
+  | { kind: 'kv'; entries: { key: string; value: unknown }[] }
+  | { kind: 'json'; text: string };
+
+function asServerRow(raw: unknown): ToolServerRow | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const rec = asRecord(raw);
+  const label = pickStr(rec, ['label', 'serverLabel', 'name']) ?? '';
+  const host = pickStr(rec, ['host', 'ip']) ?? '';
+  if (!label && !host) return undefined;
+  return {
+    id: pickStr(rec, ['id']),
+    label: label || host,
+    host: host || label,
+    port: pickNum(rec, ['port']),
+    username: pickStr(rec, ['username', 'user']),
+    connected: rec.connected === true,
+    trust: pickStr(rec, ['agentCommandTrust', 'trust']),
+    autoApprove: rec.agentCommandAutoApprove === true
+  };
+}
+
+export function classifyToolDataView(payload: unknown): ToolDataView {
+  if (
+    Array.isArray(payload) &&
+    payload.length &&
+    payload.every((x) => x && typeof x === 'object' && !Array.isArray(x))
+  ) {
+    const rows = payload.map((x) => asRecord(x));
+    const colSet = new Set<string>();
+    for (const row of rows) {
+      for (const k of Object.keys(row)) colSet.add(k);
+    }
+    const columns = [...colSet].filter((c) => !/^id$|^uuid$/i.test(c));
+    return { kind: 'table', columns, rows };
+  }
+  if (payload && typeof payload === 'object') {
+    const rec = asRecord(payload);
+    if (Array.isArray(rec.servers)) {
+      const servers = rec.servers.map(asServerRow).filter((s): s is ToolServerRow => Boolean(s));
+      if (servers.length) return { kind: 'servers', servers };
+    }
+    return { kind: 'kv', entries: Object.keys(rec).map((key) => ({ key, value: rec[key] })) };
+  }
+  try {
+    return { kind: 'json', text: JSON.stringify(payload, null, 2) ?? '' };
+  } catch {
+    return { kind: 'json', text: String(payload) };
+  }
+}
+
+export function formatKvCell(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 export function formatDataOutputPreview(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
@@ -637,7 +713,10 @@ export function normalizeUsage(raw: unknown): UsageView | null {
     outputTokens: asFiniteNumber(rec.outputTokens),
     contextUsed: asFiniteNumber(rec.contextUsed),
     contextWindow: asFiniteNumber(rec.contextWindow),
-    costUsd: asFiniteNumber(rec.costUsd)
+    costUsd: asFiniteNumber(rec.costUsd),
+    totalInputTokens: asFiniteNumber(rec.totalInputTokens),
+    totalOutputTokens: asFiniteNumber(rec.totalOutputTokens),
+    totalCostUsd: asFiniteNumber(rec.totalCostUsd)
   };
   const hasAny = Object.values(usage).some((v) => v !== undefined);
   return hasAny ? usage : null;
@@ -653,15 +732,15 @@ export function usagePercent(usage: UsageView | null | undefined): number | null
 
 function formatCompactTokenCount(tokens: number): string {
   if (tokens >= 1_000_000) {
-    return `${Math.round(tokens / 1_000_000)}M`;
+    return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
   }
   if (tokens >= 1000) {
-    return `${Math.round(tokens / 1000)}k`;
+    return `${(tokens / 1000).toFixed(1).replace(/\.0$/, '')}k`;
   }
   return String(tokens);
 }
 
-/** 紧凑单行 usage 指标，如「43% · 15k in · 2k out · $0.02」；无任何可用字段返回 null。 */
+/** 紧凑单行 usage 指标，如「43% 上下文 · 17k tokens · $0.02」；无任何可用字段返回 null。 */
 export function formatCompactUsage(usage: UsageView | null | undefined): string | null {
   if (!usage) {
     return null;
@@ -671,16 +750,38 @@ export function formatCompactUsage(usage: UsageView | null | undefined): string 
   if (pct !== null) {
     parts.push(`${pct}%`);
   }
-  if (usage.inputTokens !== undefined) {
-    parts.push(`${formatCompactTokenCount(usage.inputTokens)} in`);
+  const inTok = usage.totalInputTokens ?? usage.inputTokens;
+  const outTok = usage.totalOutputTokens ?? usage.outputTokens;
+  if (inTok !== undefined || outTok !== undefined) {
+    const sum = (inTok ?? 0) + (outTok ?? 0);
+    parts.push(`${formatCompactTokenCount(sum)} tokens`);
   }
-  if (usage.outputTokens !== undefined) {
-    parts.push(`${formatCompactTokenCount(usage.outputTokens)} out`);
-  }
-  if (usage.costUsd !== undefined) {
-    parts.push(`$${usage.costUsd.toFixed(2)}`);
+  const cost = usage.totalCostUsd ?? usage.costUsd;
+  if (cost !== undefined && cost > 0) {
+    parts.push(`$${cost.toFixed(2)}`);
   }
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/** 详细 Tooltip 文本：悬停展示当轮与累计消耗明细 */
+export function formatUsageTooltip(usage: UsageView | null | undefined): string {
+  if (!usage) return '';
+  const lines: string[] = [];
+  if (usage.contextUsed !== undefined && usage.contextWindow !== undefined) {
+    const pct = usagePercent(usage);
+    lines.push(`上下文水位: ${usage.contextUsed.toLocaleString()} / ${usage.contextWindow.toLocaleString()} (${pct}%)`);
+  }
+  if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) {
+    lines.push(`当轮消耗: Prompt ${usage.inputTokens?.toLocaleString() ?? 0} · Completion ${usage.outputTokens?.toLocaleString() ?? 0}`);
+  }
+  if (usage.totalInputTokens !== undefined || usage.totalOutputTokens !== undefined) {
+    lines.push(`会话累计: Prompt ${usage.totalInputTokens?.toLocaleString() ?? 0} · Completion ${usage.totalOutputTokens?.toLocaleString() ?? 0}`);
+  }
+  const cost = usage.totalCostUsd ?? usage.costUsd;
+  if (cost !== undefined && cost > 0) {
+    lines.push(`费用预估: $${cost.toFixed(4)}`);
+  }
+  return lines.join('\n');
 }
 
 // ── hydrate 元数据（hasApiKey / usage）───────────────────────────────────

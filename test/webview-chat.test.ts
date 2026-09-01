@@ -49,6 +49,7 @@ import {
   formatRelativeTime,
   formatDataOutputPreview,
   formatCompactUsage,
+  formatUsageTooltip,
   formatThinkingDurationMs,
   formatThinkingLiveLabel,
   formatElapsedSeconds,
@@ -63,6 +64,7 @@ import {
   normalizeUsage,
   parseCommandPurpose,
   parseToolOutputPreview,
+  classifyToolDataView,
   resolveInspectedSubagent,
   stickyTailSignature,
   subagentTitle,
@@ -464,6 +466,19 @@ describe('ModelSelector 自绘下拉（OPT-12）', () => {
     expect(src).toContain("event.key === 'ArrowUp'");
     expect(src).toContain('codicon-chip');
     expect(src).toContain('modelsel--empty');
+    expect(src).toContain('selectCustom');
+    expect(src).toContain('modelsel__item--custom');
+  });
+
+  it('支持自定义模型选项 i18n 模板替换', () => {
+    setLocale('zh-CN');
+    expect(tf('modelSelectorCustomOption', { model: 'my-custom-model' })).toBe(
+      '使用自定义模型 "my-custom-model"'
+    );
+    setLocale('en');
+    expect(tf('modelSelectorCustomOption', { model: 'my-custom-model' })).toBe(
+      'Use custom model "my-custom-model"'
+    );
   });
 });
 
@@ -574,9 +589,34 @@ describe('store：hydrate 元数据吸收（hasApiKey / usage）与未配置判�
         outputTokens: 2_105,
         costUsd: 0.02
       })
-    ).toBe('43% · 15k in · 2k out · $0.02');
-    expect(formatCompactUsage({ inputTokens: 500, outputTokens: 120 })).toBe('500 in · 120 out');
+    ).toBe('43% · 17.5k tokens · $0.02');
+    expect(formatCompactUsage({ inputTokens: 500, outputTokens: 120 })).toBe('620 tokens');
     expect(formatCompactUsage({ costUsd: 0.005 })).toBe('$0.01');
+    expect(
+      formatCompactUsage({
+        contextUsed: 50_000,
+        contextWindow: 100_000,
+        inputTokens: 1000,
+        outputTokens: 200,
+        totalInputTokens: 5000,
+        totalOutputTokens: 1200,
+        totalCostUsd: 0.05
+      })
+    ).toBe('50% · 6.2k tokens · $0.05');
+
+    const tooltip = formatUsageTooltip({
+      contextUsed: 50_000,
+      contextWindow: 100_000,
+      inputTokens: 1000,
+      outputTokens: 200,
+      totalInputTokens: 5000,
+      totalOutputTokens: 1200,
+      totalCostUsd: 0.05
+    });
+    expect(tooltip).toContain('上下文水位: 50,000 / 100,000 (50%)');
+    expect(tooltip).toContain('当轮消耗: Prompt 1,000 · Completion 200');
+    expect(tooltip).toContain('会话累计: Prompt 5,000 · Completion 1,200');
+    expect(tooltip).toContain('费用预估: $0.0500');
   });
 
   it('modelsConfigured：无模型或 hasApiKey===false ⇒ 未配置；null 不拦截', () => {
@@ -951,6 +991,65 @@ describe('ToolCallCard 标题意图（toolCallHeadline，docs/14 P1-ui）', () =
       expect(parsed.stdout).toBeUndefined();
       expect(parsed.payload).toEqual({ servers: [{ label: '99.90' }] });
     });
+  });
+});
+
+describe('classifyToolDataView', () => {
+  const LIST_SSH_ENVELOPE = JSON.stringify({
+    ok: true,
+    result: {
+      servers: [
+        {
+          id: '4d1fbefc-aeef-42e9-9008-62c04915affe',
+          label: '99.90',
+          host: '192.168.99.90',
+          port: 22,
+          username: 'root',
+          authType: 'password',
+          connected: true,
+          agentCommandTrust: 'full',
+          agentCommandAutoApprove: true
+        },
+        {
+          id: 'af238298-adfa-4948-9aad-fa96e5aa17c3',
+          label: '99.92',
+          host: '192.168.99.92',
+          port: 22,
+          username: 'root',
+          authType: 'password',
+          connected: true,
+          agentCommandTrust: 'full',
+          agentCommandAutoApprove: true
+        }
+      ]
+    },
+    attemptCount: 1,
+    durationMs: 11
+  });
+
+  it('list_ssh_servers 信封 → servers 视图，含两台 label', () => {
+    const parsed = parseToolOutputPreview(LIST_SSH_ENVELOPE);
+    const view = classifyToolDataView(parsed.payload);
+    expect(view.kind).toBe('servers');
+    if (view.kind === 'servers') {
+      expect(view.servers.map((s) => s.label)).toEqual(['99.90', '99.92']);
+      expect(view.servers[0].host).toBe('192.168.99.90');
+      expect(view.servers[0].port).toBe(22);
+      expect(view.servers[0].connected).toBe(true);
+      expect(view.servers[0].trust).toBe('full');
+      expect(view.servers[0].autoApprove).toBe(true);
+    }
+  });
+
+  it('普通对象 → kv，不含 ok/attemptCount 外壳', () => {
+    const parsed = parseToolOutputPreview(
+      JSON.stringify({ ok: true, result: { job: 'api', build: 12 }, attemptCount: 1 })
+    );
+    const view = classifyToolDataView(parsed.payload);
+    expect(view.kind).toBe('kv');
+    if (view.kind === 'kv') {
+      expect(view.entries.map((e) => e.key)).toEqual(['job', 'build']);
+    }
   });
 });
 
@@ -1552,6 +1651,31 @@ describe('终端命令执行组件（Kilo / Cursor 终端解耦，2026-08-31）'
     expect(card).toContain('tool__cmd-prompt');
     expect(card).toContain('tool__cmd-copy');
     expect(card).toContain('tool__term-viewer');
+  });
+
+  it('ToolCallCard：三行叠栏 class 与 inputPreview 解析', () => {
+    const card = readFileSync(
+      path.join(process.cwd(), 'src/webview-chat/components/ToolCallCard.vue'),
+      'utf8'
+    );
+    expect(card).toContain('inputPreview');
+    expect(card).toContain('commandBody');
+    expect(card).toContain('cmdExpanded');
+    expect(card).toContain('tool__cmd-toggle');
+    expect(card).toContain('classifyToolDataView');
+    expect(card).toContain('tool__host-row');
+    expect(card).not.toContain('class="tool__plugin');
+  });
+
+  it('数据工具 i18n zh/en 齐备', () => {
+    setLocale('zh-cn');
+    expect(t('toolTrust')).toBe('信任 {trust}');
+    expect(t('toolAutoApprove')).toBe('自动批准');
+    expect(t('toolNeedApprove')).toBe('需批准');
+    expect(tf('toolServerCount', { count: 2 })).toBe('2 台');
+    setLocale('en');
+    expect(t('toolAutoApprove')).toBe('auto-approve');
+    expect(tf('toolServerCount', { count: 2 })).toBe('2 hosts');
   });
 
   it('TerminalViewer：具备终端顶栏、退出码徽标、自动贴底开关与呼吸光标', () => {

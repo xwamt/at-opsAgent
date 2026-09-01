@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { ToolCallView } from '../../protocol/host-protocol';
-import { t } from '../i18n';
+import { t, tf } from '../i18n';
 import { useCopiedFlag } from '../lib/clipboard';
 import {
-  formatDataOutputPreview,
+  classifyToolDataView,
+  formatKvCell,
+  formatAbsoluteTime,
+  formatRelativeTime,
   isCommandToolCall,
   isSubagentToolCall,
   parseToolOutputPreview,
@@ -23,6 +26,7 @@ const isSubagent = computed(() => isSubagentToolCall(props.call));
 
 /** 默认折叠，但命令类工具在运行中且为写/执行操作时可自动展开 */
 const expanded = ref(isRunning.value && (props.call.risk === 'write' || props.call.risk === 'exec'));
+const cmdExpanded = ref(true);
 
 // 实时动态耗时（运行中递增计时）
 const elapsedMs = ref(0);
@@ -84,12 +88,20 @@ const STATUS_META: Record<
 
 const status = computed(() => STATUS_META[props.call.status] ?? STATUS_META.running);
 
-/** 标题显示命令意图（docs/14 P1-ui：磁盘/内存/…），原始工具名进 title 提示。 */
+/** 标题：主机 · Purpose/意图。工具名与插件放 title，避免挤掉 Purpose。 */
 const headline = computed(() => {
   if (isSubagent.value) {
     return t('toolSubagentDispatch');
   }
   return toolCallHeadline(props.call);
+});
+
+const headTitle = computed(() => {
+  const parts = [props.call.name];
+  if (props.call.pluginId) parts.push(props.call.pluginId);
+  const addr = parsed.value.hostAddr;
+  if (addr) parts.push(addr);
+  return parts.join(' · ');
 });
 
 const toolIcon = computed(() => {
@@ -114,9 +126,19 @@ async function copyHeadline(): Promise<void> {
   await copy(headline.value);
 }
 
-const parsed = computed(() => parseToolOutputPreview(props.call.preview));
+const parsed = computed(() => parseToolOutputPreview(props.call.preview, props.call.inputPreview));
 
 const commandText = computed(() => parsed.value.command || '');
+const commandBody = computed(() => parsed.value.commandBody || parsed.value.command || '');
+const hostLabel = computed(() => parsed.value.hostLabel || parsed.value.hostAddr || '');
+const isLongRunning = computed(() => isRunning.value && elapsedMs.value >= 30_000);
+
+const runningHint = computed(() => {
+  if (hostLabel.value) {
+    return tf('terminalRunningOnHost', { host: hostLabel.value });
+  }
+  return t('terminalRunningWait');
+});
 
 async function copyCommand(): Promise<void> {
   if (commandText.value) {
@@ -136,17 +158,46 @@ const duration = computed(() => {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 });
 
+const startedAtLabel = computed(() => {
+  const ts = props.call.startedAt;
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) {
+    return null;
+  }
+  return {
+    relative: formatRelativeTime(ts),
+    absolute: formatAbsoluteTime(ts)
+  };
+});
+
 const displayOutput = computed(() => {
-  const content = parsed.value.stdout ?? (parsed.value.rawText !== parsed.value.command ? parsed.value.rawText : '');
+  if (isCommand.value) {
+    const out = parsed.value.stdout ?? '';
+    const err = (parsed.value.stderr ?? '').trim();
+    const merged = err ? (out ? `${out.replace(/\n$/, '')}\n\n${err}` : err) : out;
+    return merged.slice(0, PREVIEW_CAP);
+  }
+  const content =
+    parsed.value.stdout ?? (parsed.value.rawText !== parsed.value.command ? parsed.value.rawText : '');
   return content.slice(0, PREVIEW_CAP);
 });
 
-const formattedDataOutput = computed(() => {
-  return formatDataOutputPreview(displayOutput.value);
+const dataView = computed(() => classifyToolDataView(parsed.value.payload));
+
+const dataHasRows = computed(() => {
+  const view = dataView.value;
+  if (view.kind === 'servers') return view.servers.length > 0;
+  if (view.kind === 'table') return view.rows.length > 0;
+  if (view.kind === 'kv') return view.entries.length > 0;
+  return Boolean(view.text);
 });
 
 async function copyDataContent(): Promise<void> {
-  await copyData(displayOutput.value);
+  const view = dataView.value;
+  if (view.kind === 'json') {
+    await copyData(view.text);
+    return;
+  }
+  await copyData(JSON.stringify(parsed.value.payload ?? {}, null, 2));
 }
 
 const clipped = computed(
@@ -155,8 +206,9 @@ const clipped = computed(
 
 const hasBody = computed(
   () =>
-    Boolean(commandText.value) ||
+    Boolean(commandBody.value) ||
     Boolean(displayOutput.value) ||
+    dataHasRows.value ||
     Boolean(props.call.artifactUri) ||
     props.call.status === 'error' ||
     isRunning.value
@@ -200,8 +252,7 @@ const artifactHref = computed(() =>
         aria-hidden="true"
       ></span>
       <span class="codicon tool__icon" :class="toolIcon" aria-hidden="true"></span>
-      <span class="tool__name ops-mono" :title="props.call.name">{{ headline }}</span>
-      <span v-if="props.call.pluginId" class="tool__plugin ops-muted ops-mono">{{ props.call.pluginId }}</span>
+      <span class="tool__name ops-mono" :title="headTitle">{{ headline }}</span>
       <span class="ops-badge" :class="'ops-risk-' + props.call.risk">{{ riskLabel }}</span>
       <button
         type="button"
@@ -215,6 +266,19 @@ const artifactHref = computed(() =>
         <span v-if="copied">{{ t('copied') }}</span>
       </button>
       <span class="tool__spacer"></span>
+      <span
+        v-if="isLongRunning"
+        class="ops-warn ops-mono tool__long-running-badge"
+        :title="t('toolLongRunningWarning')"
+      >
+        <span class="codicon codicon-warning" aria-hidden="true"></span>
+        {{ t('toolLongRunning') }}
+      </span>
+      <span
+        v-if="startedAtLabel"
+        class="ops-muted ops-mono tool__started-at"
+        :title="startedAtLabel.absolute"
+      >{{ startedAtLabel.relative }}</span>
       <span class="tool__status" :class="status.cls">
         <span class="codicon" :class="status.icon" aria-hidden="true"></span>{{ t(status.key) }}
       </span>
@@ -224,30 +288,43 @@ const artifactHref = computed(() =>
     <template v-if="expanded">
       <!-- ── A. 终端命令执行（Kilo / Cursor 风格）：仅对 Command 类工具生效 ── -->
       <template v-if="isCommand">
-        <!-- 1. 独立命令卡：提取的完整命令 + 提示符 + 独立复制按钮 -->
-        <div v-if="commandText" class="tool__cmd-bar">
-          <div class="tool__cmd-content">
-            <span class="tool__cmd-prompt ops-mono">$</span>
-            <span class="tool__cmd-text ops-mono" :title="commandText">{{ commandText }}</span>
-            <button
-              type="button"
-              class="ops-copy-btn tool__cmd-copy"
-              :class="{ 'ops-copy-btn--copied': copiedCmd }"
-              :aria-label="copiedCmd ? t('copied') : t('copyAria')"
-              :title="copiedCmd ? t('copied') : t('copy')"
-              @click.stop="copyCommand"
-            >
-              <span class="codicon" :class="copiedCmd ? 'codicon-check' : 'codicon-copy'" aria-hidden="true"></span>
-              <span v-if="copiedCmd">{{ t('copied') }}</span>
-            </button>
-          </div>
+        <div v-if="commandBody" class="tool__cmd-bar">
+          <button
+            type="button"
+            class="tool__cmd-toggle"
+            :aria-expanded="cmdExpanded"
+            :aria-label="t('toolToggleAria')"
+            @click.stop="cmdExpanded = !cmdExpanded"
+          >
+            <span
+              class="codicon"
+              :class="cmdExpanded ? 'codicon-chevron-down' : 'codicon-chevron-right'"
+              aria-hidden="true"
+            ></span>
+          </button>
+          <span class="tool__cmd-prompt ops-mono">$</span>
+          <span
+            class="tool__cmd-text ops-mono"
+            :class="{ 'tool__cmd-text--wrap': cmdExpanded }"
+            :title="commandText"
+          >{{ commandBody }}</span>
+          <button
+            type="button"
+            class="ops-copy-btn tool__cmd-copy"
+            :class="{ 'ops-copy-btn--copied': copiedCmd }"
+            :aria-label="copiedCmd ? t('copied') : t('copyAria')"
+            :title="copiedCmd ? t('copied') : t('copy')"
+            @click.stop="copyCommand"
+          >
+            <span class="codicon" :class="copiedCmd ? 'codicon-check' : 'codicon-copy'" aria-hidden="true"></span>
+            <span v-if="copiedCmd">{{ t('copied') }}</span>
+          </button>
         </div>
-
-        <!-- 2. 独立终端视窗：实时渲染标准输出/错误、退出码、ANSI 颜色与光标 -->
         <TerminalViewer
           class="tool__term-viewer"
           :text="displayOutput"
           :is-running="isRunning"
+          :running-hint="runningHint"
           :exit-code="parsed.exitCode"
           :uri="props.call.artifactUri"
           :truncated="clipped"
@@ -273,8 +350,12 @@ const artifactHref = computed(() =>
         <div class="tool__data-panel">
           <div class="tool__data-header">
             <span class="tool__data-title ops-muted">{{ t('toolDataPreview') }}</span>
+            <span
+              v-if="dataView.kind === 'servers'"
+              class="ops-muted ops-mono"
+            >{{ tf('toolServerCount', { count: dataView.servers.length }) }}</span>
             <button
-              v-if="displayOutput"
+              v-if="dataHasRows"
               type="button"
               class="ops-copy-btn tool__data-copy"
               :class="{ 'ops-copy-btn--copied': copiedData }"
@@ -286,7 +367,50 @@ const artifactHref = computed(() =>
               <span v-if="copiedData">{{ t('copied') }}</span>
             </button>
           </div>
-          <pre v-if="displayOutput" class="ops-codeblock tool__data-code ops-mono">{{ formattedDataOutput }}</pre>
+          <div v-if="dataView.kind === 'servers'" class="tool__data-list">
+            <div
+              v-for="row in dataView.servers"
+              :key="row.id || row.host"
+              class="tool__host-row"
+              :title="row.id"
+            >
+              <div class="tool__host-row__top">
+                <span
+                  class="tool__host-dot"
+                  :class="row.connected ? 'tool__host-dot--on' : 'tool__host-dot--off'"
+                ></span>
+                <span class="tool__host-label ops-mono">{{ row.label }}</span>
+                <span class="ops-mono">{{ row.host }}<template v-if="row.port">:{{ row.port }}</template></span>
+                <span class="ops-muted">{{ row.username }}</span>
+              </div>
+              <div class="ops-muted tool__host-row__meta">
+                {{ row.connected ? t('connected') : t('disconnected') }}
+                <template v-if="row.trust"> · {{ tf('toolTrust', { trust: row.trust }) }}</template>
+                · {{ row.autoApprove ? t('toolAutoApprove') : t('toolNeedApprove') }}
+              </div>
+            </div>
+          </div>
+          <div v-else-if="dataView.kind === 'table'" class="tool__data-table-wrap">
+            <table class="tool__data-table">
+              <thead>
+                <tr>
+                  <th v-for="col in dataView.columns" :key="col" class="ops-muted">{{ col }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, i) in dataView.rows" :key="i">
+                  <td v-for="col in dataView.columns" :key="col" class="ops-mono">{{ formatKvCell(row[col]) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else-if="dataView.kind === 'kv'" class="tool__kv">
+            <div v-for="e in dataView.entries" :key="e.key" class="tool__kv-row">
+              <span class="tool__kv-k ops-muted">{{ e.key }}</span>
+              <span class="tool__kv-v ops-mono">{{ formatKvCell(e.value) }}</span>
+            </div>
+          </div>
+          <pre v-else-if="dataView.text" class="ops-codeblock tool__data-code ops-mono">{{ dataView.text }}</pre>
           <div v-else-if="isRunning" class="tool__data-running ops-muted">
             <span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
             <span>{{ t('toolRunningTimer') }}</span>
@@ -432,12 +556,34 @@ const artifactHref = computed(() =>
   font-size: var(--ops-font-xs);
 }
 
+.tool__started-at {
+  font-size: var(--ops-font-xs);
+  white-space: nowrap;
+}
+
+.tool__long-running-badge {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  font-size: var(--ops-font-xs);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ops-pending) 15%, transparent);
+  color: var(--ops-pending);
+  border: 1px solid color-mix(in srgb, var(--ops-pending) 30%, transparent);
+  animation: tool-pulse 2s infinite ease-in-out;
+}
+
+@keyframes tool-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* ── A. 终端命令独立卡 ── */
 .tool__cmd-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--ops-space-2);
+  align-items: flex-start;
+  gap: var(--ops-space-1);
   margin-top: var(--ops-space-1);
   margin-bottom: var(--ops-space-1);
   padding: 5px var(--ops-space-2);
@@ -447,18 +593,30 @@ const artifactHref = computed(() =>
   font-size: var(--ops-font-xs);
 }
 
-.tool__cmd-content {
-  display: flex;
+.tool__cmd-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
   align-items: center;
-  gap: var(--ops-space-1);
-  flex: 1 1 auto;
-  min-width: 0;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ops-muted);
+  cursor: pointer;
+}
+
+.tool__cmd-toggle:hover {
+  color: var(--ops-fg);
 }
 
 .tool__cmd-prompt {
   color: var(--ops-accent);
   font-weight: 700;
   user-select: none;
+  margin-top: 1px;
 }
 
 .tool__cmd-text {
@@ -468,6 +626,13 @@ const artifactHref = computed(() =>
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ops-fg);
+}
+
+.tool__cmd-text--wrap {
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: visible;
+  text-overflow: unset;
 }
 
 .tool__cmd-copy {
@@ -518,8 +683,97 @@ const artifactHref = computed(() =>
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--ops-space-2);
   font-size: var(--ops-font-xs);
   padding: 0 2px;
+}
+
+.tool__host-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  background: var(--ops-code-bg);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius-ctl);
+}
+
+.tool__host-row + .tool__host-row {
+  margin-top: 4px;
+}
+
+.tool__host-row__top {
+  display: flex;
+  align-items: center;
+  gap: var(--ops-space-2);
+  min-width: 0;
+}
+
+.tool__host-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--ops-pending);
+}
+
+.tool__host-dot--on {
+  background: var(--ops-healthy);
+}
+
+.tool__host-dot--off {
+  background: var(--ops-pending);
+}
+
+.tool__host-label {
+  font-weight: 600;
+  color: var(--ops-accent);
+}
+
+.tool__host-row__meta {
+  padding-left: 15px;
+  font-size: var(--ops-font-xs);
+}
+
+.tool__kv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--ops-code-bg);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius-ctl);
+}
+
+.tool__kv-row {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 2px 10px;
+  font-size: var(--ops-font-xs);
+}
+
+.tool__kv-v {
+  word-break: break-all;
+}
+
+.tool__data-table-wrap {
+  overflow: auto;
+  max-height: 200px;
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius-ctl);
+}
+
+.tool__data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ops-font-xs);
+}
+
+.tool__data-table th,
+.tool__data-table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--ops-border);
 }
 
 .tool__data-copy {
