@@ -751,56 +751,91 @@ describe('SubagentBoard/ChatApp 子代理 inspector（docs/12 §3）', () => {
 });
 
 describe('ToolCallCard 标题意图（toolCallHeadline，docs/14 P1-ui）', () => {
+  const SCREENSHOT_ENVELOPE = JSON.stringify({
+    ok: true,
+    result: {
+      serverId: '4d1fbefc-aeef-42e9-9008-62c04915affe',
+      serverLabel: '99.90',
+      host: '192.168.99.90',
+      command: 'hostname',
+      exitCode: 0,
+      stdout: 'cl\n',
+      stderr: '',
+      durationMs: 258,
+      timedOut: false,
+      truncated: false
+    },
+    attemptCount: 1,
+    durationMs: 261
+  });
+
   it('纯文本 preview 首行提命令并映射意图：df -h → 磁盘', () => {
-    expect(toolCallHeadline({ name: 'run_remote_command', preview: 'df -h' })).toBe('磁盘 · df -h');
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: 'df -h' })).toBe('磁盘');
     expect(toolCallHeadline({ name: 'run_remote_command', preview: 'free -m\nMem: ...' })).toBe(
-      '内存 · free -m'
+      '内存'
     );
   });
 
-  it('run_remote_command 的 JSON preview 走 .command 字段', () => {
+  it('run_remote_command 的 JSON preview 走 .command 字段，带 serverName 拼入主机前缀', () => {
     expect(
       toolCallHeadline({
         name: 'run_remote_command',
-        preview: '{"command":"docker ps -a","serverName":"prod-gw-01"}'
+        preview: JSON.stringify({ command: 'docker ps -a', serverName: 'prod-gw-01' })
       })
-    ).toBe('容器 · docker ps -a');
+    ).toBe('prod-gw-01 · 容器');
     expect(
       toolCallHeadline({ name: 'run_remote_command', preview: JSON.stringify({ command: 'systemctl status nginx' }) })
-    ).toBe('服务 · systemctl status nginx');
+    ).toBe('服务');
+    expect(
+      toolCallHeadline({
+        name: 'run_remote_command',
+        preview: JSON.stringify({ command: 'free -m', serverName: '192.168.99.92' })
+      })
+    ).toBe('192.168.99.92 · 内存');
   });
 
   it('组合命令取首词；sudo 前缀被跳过', () => {
     expect(toolCallHeadline({ name: 'run_remote_command', preview: 'hostname && uptime && w' })).toBe(
-      '主机 · hostname && uptime && w'
+      '主机'
     );
     expect(toolCallHeadline({ name: 'run_remote_command', preview: 'sudo journalctl -u nginx -n 50' })).toBe(
-      '日志 · sudo journalctl -u nginx -n 50'
+      '日志'
     );
   });
 
-  it('长命令截断到 48 字符并加省略号', () => {
+  it('长命令不塞进标题，只保留意图', () => {
     const cmd = 'journalctl -u nginx --since "2026-08-28" --no-pager | grep -i error | head -n 200';
-    expect(toolCallHeadline({ name: 'run_remote_command', preview: cmd })).toBe(
-      `日志 · ${cmd.slice(0, 48)}…`
-    );
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: cmd })).toBe('日志');
   });
 
   it('工具名本身可映射（list_ssh_servers → SSH 目标），无命令时回退 name', () => {
-    expect(toolCallHeadline({ name: 'list_ssh_servers' })).toBe('SSH 目标 · list_ssh_servers');
+    expect(toolCallHeadline({ name: 'list_ssh_servers' })).toBe('SSH 目标');
     expect(toolCallHeadline({ name: 'list_ssh_servers', preview: '{"servers":[]}' })).toBe(
-      'SSH 目标 · list_ssh_servers'
+      'SSH 目标'
     );
   });
 
-  it('未知工具/提不出意图回退 name（有命令时附短命令）', () => {
+  it('未知工具/提不出意图回退 name', () => {
     expect(toolCallHeadline({ name: 'mystery_tool' })).toBe('mystery_tool');
     expect(toolCallHeadline({ name: 'run_remote_command', preview: '{"result":"ok"}' })).toBe(
       'run_remote_command'
     );
     expect(toolCallHeadline({ name: 'run_remote_command', preview: 'cat /etc/os-release' })).toBe(
-      'run_remote_command · cat /etc/os-release'
+      'run_remote_command'
     );
+  });
+
+  it('hub envelope：hostLabel · 意图；inputPreview Purpose 优先于意图映射', () => {
+    expect(toolCallHeadline({ name: 'run_remote_command', preview: SCREENSHOT_ENVELOPE })).toBe(
+      '99.90 · 主机'
+    );
+    expect(
+      toolCallHeadline({
+        name: 'run_remote_command',
+        preview: SCREENSHOT_ENVELOPE,
+        inputPreview: JSON.stringify({ command: '# Purpose: 检查磁盘\ndf -h' })
+      })
+    ).toBe('99.90 · 检查磁盘');
   });
 
   it('parseToolOutputPreview：JSON 解析提取 command / exitCode / stdout / stderr，回退纯文本', () => {
@@ -962,7 +997,7 @@ describe('复制 i18n + clipboard helper（P0-E hover 复制）', () => {
       preview: 'df -h\nFilesystem      Size  Used Avail Use%\n/dev/vda1        50G   46G  4.0G  93%'
     };
     const headline = toolCallHeadline(call);
-    expect(headline).toBe('磁盘 · df -h');
+    expect(headline).toBe('磁盘');
     expect(headline).not.toContain('Filesystem');
     expect(headline).not.toContain('93%');
   });

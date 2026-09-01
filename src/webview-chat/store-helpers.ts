@@ -345,8 +345,6 @@ const COMMAND_INTENT_ZH: Record<string, string> = {
   list_ssh_servers: 'SSH 目标'
 };
 
-const HEADLINE_COMMAND_CAP = 48;
-
 export function unwrapHubPayload(raw: unknown): {
   payload: unknown;
   envelopeOk?: boolean;
@@ -533,9 +531,6 @@ function extractPreviewCommand(preview: string | undefined | null): string {
   }
   return raw.split('\n')[0].trim();
 }
-function extractPreviewServer(preview: string | undefined | null): string {
-  return parseToolOutputPreview(preview).hostLabel || '';
-}
 
 /** 命令首词（跳过 sudo / 环境变量赋值，剥路径前缀），用于意图映射。 */
 function leadingCommandWord(command: string): string {
@@ -549,23 +544,24 @@ function leadingCommandWord(command: string): string {
 }
 
 /**
- * 工具卡标题（docs/14 P1-ui）：runtime 里几乎只有 run_remote_command 一个
- * 工具名，光看名字不知道在干什么。从 preview 提取命令 → 首词映射中文意图，
- * 标题为「意图 · 短命令」；提不出命令回退「意图 · name」；意图未知回退 name
- * （有命令时仍带短命令）。
+ * 工具卡标题（docs/14 P1-ui）：「主机 · Purpose/意图」。
+ * 命令正文不再进标题（第二行后续任务展示）。无主机则只显示 purpose/intent；
+ * 两者都没有才回退 call.name。纯文本 preview 无 command 字段时，用首行命令映射意图。
  */
-export function toolCallHeadline(call: Pick<ToolCallView, 'name' | 'preview'>): string {
-  const command = extractPreviewCommand(call.preview);
+export function toolCallHeadline(
+  call: Pick<ToolCallView, 'name' | 'preview'> & { inputPreview?: string }
+): string {
+  const parsed = parseToolOutputPreview(call.preview, call.inputPreview);
+  const command =
+    parsed.commandBody || parsed.command || extractPreviewCommand(call.preview);
   const lead = leadingCommandWord(command) || call.name;
   const intent = COMMAND_INTENT_ZH[lead] ?? COMMAND_INTENT_ZH[call.name];
-  const shortCommand =
-    command.length > HEADLINE_COMMAND_CAP
-      ? `${command.slice(0, HEADLINE_COMMAND_CAP)}…`
-      : command;
-  if (!intent) {
-    return shortCommand ? `${call.name} · ${shortCommand}` : call.name;
-  }
-  return `${intent} · ${shortCommand || call.name}`;
+  const purposeOrIntent = parsed.purpose || intent;
+  const host = parsed.hostLabel || parsed.hostAddr || '';
+  if (host && purposeOrIntent) return `${host} · ${purposeOrIntent}`;
+  if (host) return `${host} · ${call.name}`;
+  if (purposeOrIntent) return purposeOrIntent;
+  return call.name;
 }
 
 export function isCommandToolCall(call: Pick<ToolCallView, 'name' | 'preview'>): boolean {
