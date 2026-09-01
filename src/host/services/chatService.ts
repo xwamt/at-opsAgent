@@ -13,6 +13,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type {
+  ChatEditReq,
+  ChatEditRes,
   ChatPromptReq,
   HydrateEvt,
   NoticeAction,
@@ -26,6 +28,7 @@ import { readAgentSettings } from '../agentSettings';
 import { normalizeRoleModels } from '../modelsView';
 import type { RuntimeLike } from '../hostTypes';
 import { describeError, type HostContext } from './context';
+import { applyChatEdit } from './chatEdit';
 import { COMPACTION_NEW_SESSION_MESSAGE } from '../../runtime/compaction';
 import { sanitizeErrorText } from '../../runtime/sanitize';
 import { ensureVisibleInspectionReport } from './inspectionSummary';
@@ -242,6 +245,34 @@ export class ChatService {
       }
     }
     this.pool.abort(sid, mode);
+  }
+
+  async handleEdit(req: ChatEditReq): Promise<ChatEditRes> {
+    const sessionId = this.ctx.store.activeSessionId;
+    const runtime = this.pool.runtimeOf(sessionId);
+    const result = await applyChatEdit({
+      action: req.action,
+      itemId: req.itemId,
+      streaming: this.pool.isBusy(sessionId),
+      items: this.ctx.store.itemsOf(sessionId),
+      abort: () => this.abort('stop', sessionId),
+      navigate: async (entryId) => {
+        if (!runtime?.navigateToUserEntry) return { cancelled: true };
+        return runtime.navigateToUserEntry(entryId);
+      },
+      truncateFrom: (itemId) => this.ctx.store.truncateFrom(itemId, sessionId)
+    });
+    if (result.ok) {
+      this.ctx.approvals.clearSession(sessionId);
+      this.ctx.broadcast('hydrate', this.snapshot());
+      if (result.rewindExecuted) {
+        this.ctx.emitAssistantNotice(
+          '仅撤回了对话上下文。已在目标系统执行的操作不会自动撤销。',
+          sessionId
+        );
+      }
+    }
+    return result;
   }
 
   // ── 会话生命周期 ────────────────────────────────────────────────────────

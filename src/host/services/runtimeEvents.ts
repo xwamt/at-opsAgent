@@ -128,6 +128,21 @@ export class RuntimeEventRouter {
         ctx.broadcastToSession(sid, 'compaction', { summary: e.summary });
         break;
       }
+      case 'user_entry': {
+        const items = ctx.store.itemsOf(sid);
+        for (let i = items.length - 1; i >= 0; i -= 1) {
+          const item = items[i];
+          if (item.kind === 'user' && !item.piEntryId && item.text === e.text) {
+            ctx.store.patchItem(item.id, { piEntryId: e.piEntryId }, sid);
+            ctx.broadcastToSession(sid, 'transcript/patch', {
+              itemId: item.id,
+              patch: { piEntryId: e.piEntryId }
+            });
+            break;
+          }
+        }
+        break;
+      }
       case 'notice': {
         const item = {
           kind: 'notice' as const,

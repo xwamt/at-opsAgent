@@ -19,6 +19,7 @@ import {
   envelope,
   type ApprovalRespondReq,
   type ChatAbortReq,
+  type ChatEditReq,
   type ChatPromptReq,
   type Envelope,
   type Event,
@@ -169,6 +170,8 @@ export class HostController {
         return { ok: true };
       case 'chat/retry':
         return this.chat.retryLastPrompt();
+      case 'chat/edit':
+        return this.chat.handleEdit(payload as ChatEditReq);
       case 'chat/export':
         return this.workbench.exportReport(payload as ExportReportRequest);
       case 'clipboard/write':
