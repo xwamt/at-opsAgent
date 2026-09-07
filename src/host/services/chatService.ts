@@ -168,9 +168,7 @@ export class ChatService {
     }
     if (text.trim().length === 0) return { accepted: false };
     const userItem = { kind: 'user' as const, id: randomUUID(), text };
-    this.ctx.store.appendItem(userItem);
-    this.ctx.broadcast('transcript/append', { item: userItem });
-    return this.dispatchPrompt(text, req.mode);
+    return this.dispatchPrompt(text, req.mode, userItem);
   }
 
   /** chat/retry：重发最后一条用户消息（不重复追加 transcript 项）。 */
@@ -189,7 +187,8 @@ export class ChatService {
    */
   private async dispatchPrompt(
     text: string,
-    mode: 'steer' | 'followUp' | undefined
+    mode: 'steer' | 'followUp' | undefined,
+    userItemToAppend?: { kind: 'user'; id: string; text: string }
   ): Promise<{ accepted: boolean }> {
     const ctx = this.ctx;
     const sessionId = ctx.store.activeSessionId;
@@ -209,6 +208,10 @@ export class ChatService {
         return { accepted: false };
       }
       throw err;
+    }
+    if (userItemToAppend) {
+      ctx.store.appendItem(userItemToAppend, sessionId);
+      ctx.broadcastToSession(sessionId, 'transcript/append', { item: userItemToAppend });
     }
     // playbook 阶段驱动 + 当前阶段 L4 注入在首次模型调用之前完成。
     await ctx.playbooks.advancePlaybookForPrompt(sessionId);

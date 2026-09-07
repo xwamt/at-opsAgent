@@ -603,7 +603,11 @@ export class ApprovalService {
   /** 指定会话的全部挂起审批按拒绝决议（stop / cancel / 驱逐时避免 execute 悬挂）。 */
   rejectWaitersFor(sessionId: string): void {
     for (const [briefId, waiter] of [...this.approvalWaiters]) {
-      if (waiter.sessionId === sessionId) this.resolveApprovalWaiter(briefId, 'rejected');
+      if (waiter.sessionId === sessionId) {
+        if (this.resolveApprovalWaiter(briefId, 'rejected')) {
+          this.finalizeRejection(briefId, sessionId, 'abort');
+        }
+      }
     }
   }
 
@@ -621,8 +625,10 @@ export class ApprovalService {
   }
 
   dispose(): void {
-    for (const briefId of [...this.approvalWaiters.keys()]) {
-      this.resolveApprovalWaiter(briefId, 'rejected');
+    for (const [briefId, waiter] of [...this.approvalWaiters]) {
+      if (this.resolveApprovalWaiter(briefId, 'rejected')) {
+        this.finalizeRejection(briefId, waiter.sessionId, 'abort');
+      }
     }
   }
 }

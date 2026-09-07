@@ -11,7 +11,7 @@
  * pi JSONL 仍是模型上下文的唯一真源；本文件只是 UI transcript 缓存。
  */
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
@@ -469,9 +469,22 @@ export class SessionStore {
         encoding: 'utf8',
         mode: 0o600
       });
+      const bagsDir = this.sessionBagsDir();
+      mkdirSync(bagsDir, { recursive: true });
+      for (const [id, bag] of Object.entries(bags)) {
+        const bagFile = path.join(bagsDir, `${id}.json`);
+        writeFileSync(bagFile, `${JSON.stringify(bag)}\n`, {
+          encoding: 'utf8',
+          mode: 0o600
+        });
+      }
     } catch {
       // 落盘失败不致命：会话仍在内存，下一次变更重试。
     }
+  }
+
+  sessionBagsDir(): string {
+    return path.join(path.dirname(this.persistPath), 'session-bags');
   }
 
   private schedulePersist(): void {
@@ -506,8 +519,17 @@ export class SessionStore {
     }
     if (this._sessions.length === 0) return false;
     const bags = parsed.bags ?? {};
+    const bagsDir = this.sessionBagsDir();
     for (const session of this._sessions) {
-      const bag = bags[session.id];
+      let bag = bags[session.id];
+      const bagFile = path.join(bagsDir, `${session.id}.json`);
+      if (existsSync(bagFile)) {
+        try {
+          bag = JSON.parse(readFileSync(bagFile, 'utf8')) as PersistedBag;
+        } catch {
+          // 降级使用 ui-sessions.json 中的 bags
+        }
+      }
       const items = Array.isArray(bag?.items) ? sanitizeItems(bag.items) : [];
       const subagentsMap = new Map<string, SubagentCard>();
       const subItem = items.find((i) => i.kind === 'subagents');
@@ -574,6 +596,14 @@ export class SessionStore {
     if (wasActive) this.saveActiveBag();
     this._sessions.splice(idx, 1);
     this._bags.delete(id);
+    try {
+      const bagFile = path.join(this.sessionBagsDir(), `${id}.json`);
+      if (existsSync(bagFile)) {
+        unlinkSync(bagFile);
+      }
+    } catch {
+      // 忽略磁盘清理异常
+    }
     if (!wasActive) {
       this.sessionsEmitter.fire();
       this.schedulePersist();
@@ -645,6 +675,26 @@ function redactPersistedItem(item: TranscriptItem): TranscriptItem {
         return nextCard;
       });
       return { ...item, agents };
+    }
+    case 'evidence': {
+      const note = { ...item.note };
+      if (typeof note.summary === 'string') {
+        note.summary = redactSecrets(note.summary).text;
+      }
+      if (Array.isArray(note.refs)) {
+        note.refs = note.refs.map((ref) => ({
+          ...ref,
+          preview: typeof ref.preview === 'string' ? redactSecrets(ref.preview).text : ref.preview
+        }));
+      }
+      return { ...item, note };
+    }
+    case 'approval': {
+      const targetLabel =
+        typeof item.targetLabel === 'string'
+          ? redactSecrets(item.targetLabel).text
+          : item.targetLabel;
+      return { ...item, targetLabel };
     }
     default:
       return item;

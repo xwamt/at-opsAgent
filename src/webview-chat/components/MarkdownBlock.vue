@@ -58,7 +58,11 @@ function bindCopyButtons(): void {
   if (!host) {
     return;
   }
-  host.querySelectorAll('.ops-copy-btn').forEach((btn) => btn.remove());
+  host.querySelectorAll('.ops-copy-btn').forEach((btn) => {
+    const timer = (btn as HTMLButtonElement & { _opsCopyTimer?: ReturnType<typeof setTimeout> })._opsCopyTimer;
+    if (timer !== undefined) clearTimeout(timer);
+    btn.remove();
+  });
   host.querySelectorAll('.ops-md-fence__lang').forEach((el) => el.remove());
   host.querySelectorAll('pre.ops-codeblock, .ops-md pre, pre').forEach((node) => {
     const pre = node as HTMLElement;
@@ -103,7 +107,11 @@ function scheduleBindCopyButtons(): void {
 }
 
 async function onCopyClick(btn: HTMLButtonElement, icon: HTMLElement, pre: HTMLElement): Promise<void> {
-  await copyText(pre.innerText);
+  try {
+    await copyText(pre.innerText);
+  } catch {
+    return;
+  }
   icon.className = 'codicon codicon-check';
   btn.classList.add('ops-copy-btn--copied');
   btn.setAttribute('aria-label', t('copied'));
@@ -132,6 +140,14 @@ onUpdated(scheduleBindCopyButtons);
 onBeforeUnmount(() => {
   if (copyBindTimer !== undefined) {
     clearTimeout(copyBindTimer);
+    copyBindTimer = undefined;
+  }
+  const host = root.value;
+  if (host) {
+    host.querySelectorAll('.ops-copy-btn').forEach((btn) => {
+      const timer = (btn as HTMLButtonElement & { _opsCopyTimer?: ReturnType<typeof setTimeout> })._opsCopyTimer;
+      if (timer !== undefined) clearTimeout(timer);
+    });
   }
 });
 </script>

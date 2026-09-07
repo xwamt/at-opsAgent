@@ -32,10 +32,14 @@ export function redactSecrets(text: string): { text: string; hits: number } {
   );
   // 3. 裸 Bearer token（保留 modelsProbe 的大小写不敏感行为）
   apply(/Bearer\s+[A-Za-z0-9._\-+=/]{8,}/gi, `Bearer ${REDACTED}`);
-  // 4. api_key / secret / password / passwd / token 作为键（值不跨引号/空白）
+  // 4. api_key / secret / password / passwd / token 作为键（支持无引号、单双引号及转义）
   apply(
-    /(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*[^\s"'\\]+/gi,
-    (_match, key: string) => `${key}=${REDACTED}`
+    /(["']?)(api[_-]?key|secret|password|passwd|token)\1(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"',}\]]+)/gi,
+    (_match, quote: string, key: string, sep: string) => {
+      const hasQuote = quote.length > 0 || _match.endsWith('"') || _match.endsWith("'");
+      const redactedVal = hasQuote ? `"${REDACTED}"` : REDACTED;
+      return `${quote}${key}${quote}${sep}${redactedVal}`;
+    }
   );
   // 5. 数据库连接串 userinfo
   apply(
@@ -45,7 +49,10 @@ export function redactSecrets(text: string): { text: string; hits: number } {
   // 6. OpenAI 风格 sk-…
   apply(/sk-[A-Za-z0-9_-]{8,}/g, `sk-${REDACTED}`);
   // 7. 插件系列 token 头
-  apply(/x-at-series-token\s*[:=]\s*[^\s"'\\]+/gi, REDACTED);
+  apply(
+    /x-at-series-token\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"'\\]+)/gi,
+    REDACTED
+  );
 
   return { text: out, hits };
 }

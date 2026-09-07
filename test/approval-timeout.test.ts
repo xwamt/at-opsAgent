@@ -187,12 +187,20 @@ describe('approval TTL · waiter 超时 fail-closed', () => {
 });
 
 describe('abort cancel / stop 解挂 waiter', () => {
-  it('rejectWaitersFor 将挂起审批按 rejected 落定', async () => {
-    const { svc, sid } = createApprovalHarness();
+  it('rejectWaitersFor 将挂起审批按 rejected 落定并清理 store/广播', async () => {
+    const { svc, sid, store, broadcasts } = createApprovalHarness();
     svc._timeoutMsForTest = 0;
     const pending = requestExec(svc, sid);
     svc.rejectWaitersFor(sid);
     await expect(pending).resolves.toBe('rejected');
+    const item = store.items.find((i) => i.kind === 'approval');
+    expect(item).toBeDefined();
+    expect((item as { decision?: string }).decision).toBe('rejected');
+    expect(
+      broadcasts.some(
+        (b) => b.type === 'approval/resolve' && (b.payload as { decision?: string }).decision === 'rejected'
+      )
+    ).toBe(true);
     svc.dispose();
   });
 

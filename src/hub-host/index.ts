@@ -170,6 +170,13 @@ function raceCall(
   });
 }
 
+function isTransientBridgeError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|Bridge unavailable|No healthy bridge|socket hang up/i.test(
+    msg
+  );
+}
+
 class AtSeriesHubHost implements HubHost {
   readonly hostApp: string;
 
@@ -276,14 +283,27 @@ class AtSeriesHubHost implements HubHost {
     }
     // Meta (`at_*`) and business tools both go through `runtime.callTool` —
     // the Hub already does routing, failover, and auditing.
-    const outcome = await raceCall(runtime.callTool(inv.name, inv.arguments), inv);
+    let attemptCount = 1;
+    let outcome = await raceCall(runtime.callTool(inv.name, inv.arguments), inv);
+    if (
+      outcome.kind === 'rejected' &&
+      !inv.abort?.aborted &&
+      isTransientBridgeError(outcome.error)
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await this.scheduleSync();
+      if (!inv.abort?.aborted) {
+        attemptCount = 2;
+        outcome = await raceCall(runtime.callTool(inv.name, inv.arguments), inv);
+      }
+    }
     const durationMs = Date.now() - started;
     switch (outcome.kind) {
       case 'aborted':
         return {
           ok: false,
           error: { code: 'USER_CANCELLED', message: `Tool call cancelled: ${inv.name}` },
-          attemptCount: 1,
+          attemptCount,
           durationMs
         };
       case 'timeout':
@@ -293,7 +313,7 @@ class AtSeriesHubHost implements HubHost {
             code: 'UNAVAILABLE',
             message: `Tool call timed out after ${inv.timeoutMs}ms: ${inv.name}`
           },
-          attemptCount: 1,
+          attemptCount,
           durationMs
         };
       case 'rejected': {
@@ -302,12 +322,12 @@ class AtSeriesHubHost implements HubHost {
         return {
           ok: false,
           error: { code: 'INTERNAL_ERROR', message },
-          attemptCount: 1,
+          attemptCount,
           durationMs
         };
       }
       case 'settled':
-        return this.normalizeCallResult(inv.name, outcome.value, durationMs);
+        return this.normalizeCallResult(inv.name, outcome.value, durationMs, attemptCount);
     }
   }
 
@@ -352,7 +372,8 @@ class AtSeriesHubHost implements HubHost {
   private normalizeCallResult(
     name: string,
     raw: Awaited<ReturnType<HubRuntime['callTool']>>,
-    durationMs: number
+    durationMs: number,
+    attemptCount = 1
   ): ToolInvocationResult {
     const text = raw.content[0]?.text ?? '';
     const payload = tryParseJson(text);
@@ -361,7 +382,7 @@ class AtSeriesHubHost implements HubHost {
       return {
         ok: false,
         error: err ?? { code: 'INTERNAL_ERROR', message: text || 'Tool call failed' },
-        attemptCount: 1,
+        attemptCount,
         durationMs
       };
     }
@@ -380,11 +401,11 @@ class AtSeriesHubHost implements HubHost {
           message: nested?.message ?? fallbackMessage,
           details: result
         },
-        attemptCount: 1,
+        attemptCount,
         durationMs
       };
     }
-    return { ok: true, result, attemptCount: 1, durationMs };
+    return { ok: true, result, attemptCount, durationMs };
   }
 
   private selectionState(): SelectionState {

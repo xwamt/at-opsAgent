@@ -795,6 +795,12 @@ export function createSubagentManager(options: CreateSubagentManagerOptions): Su
       if (TERMINAL_STATUSES.has(record.status)) {
         const final = finals.get(waitId);
         if (final !== undefined) return Promise.resolve(final);
+        return Promise.resolve({
+          taskId: waitId,
+          role: record.spec.role,
+          status: record.status as SubagentTerminalStatus,
+          error: '任务已结束但未能获取最终结果摘要'
+        });
       }
       return new Promise((resolve) => {
         const list = waiters.get(waitId);

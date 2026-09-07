@@ -25,6 +25,7 @@ import {
 } from '../src/host/services/chatService';
 import type { HostContext } from '../src/host/services/context';
 import { SessionStore } from '../src/host/sessionStore';
+import { SessionPoolExhaustedError } from '../src/host/services/runtimePool';
 import { COMPACTION_NEW_SESSION_MESSAGE } from '../src/runtime/compaction';
 
 const tempDirs: string[] = [];
@@ -135,5 +136,19 @@ describe('ChatService.startHandoffSession', () => {
     expect(DISMISS_COMPACTION_NOTICE_ACTION.label).toBe('仅提示');
     expect(HANDOFF_NEW_SESSION_ACTION.request).toBeUndefined();
     expect(DISMISS_COMPACTION_NOTICE_ACTION.request).toBeUndefined();
+  });
+
+  it('席位耗尽时 handlePrompt 不残留孤儿用户消息', async () => {
+    const { chat, store } = createChatHarness();
+    const emitAssistantNotice = vi.fn();
+    (chat as any).ctx.emitAssistantNotice = emitAssistantNotice;
+    vi.spyOn((chat as any).pool, 'ensure').mockRejectedValueOnce(
+      new SessionPoolExhaustedError(1)
+    );
+
+    const res = await chat.handlePrompt({ text: '查一下当前主机情况' });
+    expect(res.accepted).toBe(false);
+    expect(store.items.some((i) => i.kind === 'user')).toBe(false);
+    expect(emitAssistantNotice).toHaveBeenCalled();
   });
 });

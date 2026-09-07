@@ -58,6 +58,33 @@ describe('redactSecrets', () => {
     expect(apiKey.hits).toBeGreaterThanOrEqual(1);
   });
 
+  it('redacts quoted JSON and YAML password / secret fields while preserving JSON validity', () => {
+    const rawJson = JSON.stringify({
+      username: 'root',
+      password: 'SuperSecretPassword!123',
+      api_key: 'my-custom-api-key',
+      database: 'production'
+    });
+    const redacted = redactSecrets(rawJson);
+    expect(redacted.text).not.toContain('SuperSecretPassword!123');
+    expect(redacted.text).not.toContain('my-custom-api-key');
+    expect(redacted.hits).toBeGreaterThanOrEqual(2);
+
+    // 验证脱敏后的内容仍是合法 JSON
+    const parsed = JSON.parse(redacted.text) as Record<string, string>;
+    expect(parsed.username).toBe('root');
+    expect(parsed.password).toBe(REDACTED);
+    expect(parsed.api_key).toBe(REDACTED);
+    expect(parsed.database).toBe('production');
+
+    // 验证 YAML 单引号格式
+    const yaml = 'db_config:\n  password: \'SingleQuotedP@ss\'\n  host: 127.0.0.1';
+    const yamlRedacted = redactSecrets(yaml);
+    expect(yamlRedacted.text).not.toContain('SingleQuotedP@ss');
+    expect(yamlRedacted.text).toContain(`password: "${REDACTED}"`);
+    expect(yamlRedacted.hits).toBeGreaterThanOrEqual(1);
+  });
+
   it('does not swallow the rest of minified JSON after a Bearer value', () => {
     const json = JSON.stringify({
       ok: true,

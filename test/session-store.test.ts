@@ -6,7 +6,7 @@
  *   （标题取首条用户消息；sessionFile 随会话保存；流式中断项被清洗）。
  * 测试一律用临时目录，绝不读写真实 ~/.at-series。
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -436,3 +436,118 @@ describe('truncateFrom', () => {
     store.dispose();
   });
 });
+
+describe('redactPersistedItem on persistNow', () => {
+  it('持久化时对 evidence 便签与 approval 项进行脱敏', () => {
+    const { store, filePath } = tempStore();
+    store.appendItem({
+      kind: 'evidence',
+      id: 'e1',
+      note: {
+        taskId: 'task-1',
+        confidence: 'confirmed',
+        summary: '数据库异常: password=super_secret_db_pass 连接失败',
+        refs: [
+          {
+            kind: 'log',
+            preview: 'Authorization: Bearer my-secret-token-12345'
+          }
+        ]
+      }
+    });
+    store.appendItem({
+      kind: 'approval',
+      id: 'app1',
+      briefId: 'brief-1',
+      targetLabel: '部署密钥: token=secret-token-val',
+      risk: 'exec',
+      decision: 'approved'
+    });
+
+    store.persistNow();
+
+    const raw = readFileSync(filePath, 'utf8');
+    expect(raw).not.toContain('super_secret_db_pass');
+    expect(raw).not.toContain('my-secret-token-12345');
+    expect(raw).not.toContain('secret-token-val');
+    expect(raw).toContain('[REDACTED]');
+
+    const revived = new SessionStore({ filePath });
+    const evidenceItem = revived.items.find((i) => i.kind === 'evidence');
+    expect(evidenceItem).toBeDefined();
+    if (evidenceItem?.kind === 'evidence') {
+      expect(evidenceItem.note.summary).toContain('[REDACTED]');
+      expect(evidenceItem.note.refs?.[0].preview).toContain('[REDACTED]');
+    }
+    const approvalItem = revived.items.find((i) => i.kind === 'approval');
+    expect(approvalItem).toBeDefined();
+    if (approvalItem?.kind === 'approval') {
+      expect(approvalItem.targetLabel).toContain('[REDACTED]');
+    }
+
+    revived.dispose();
+    store.dispose();
+  });
+});
+
+describe('SessionStore · session-bags 分文件持久化 (Task 7)', () => {
+  it('persistNow 写入 session-bags/<id>.json 并支持脱敏与单文件回载', () => {
+    const { store, filePath } = tempStore();
+    const sid = store.activeSessionId;
+    store.appendItem({
+      kind: 'user',
+      id: 'u1',
+      text: 'password="my-password-12345"'
+    });
+    store.appendItem({
+      kind: 'assistant',
+      id: 'a1',
+      text: '已处理请求'
+    });
+    store.persistNow();
+
+    const bagsDir = store.sessionBagsDir();
+    const bagPath = path.join(bagsDir, `${sid}.json`);
+    expect(existsSync(bagPath)).toBe(true);
+
+    const rawBag = readFileSync(bagPath, 'utf8');
+    expect(rawBag).not.toContain('my-password-12345');
+    expect(rawBag).toContain('[REDACTED]');
+
+    // 破坏/清空主索引中的 bags，验证 SessionStore 优先从 session-bags/<id>.json 独立回载
+    const mainIndex = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+    mainIndex.bags = {};
+    writeFileSync(filePath, JSON.stringify(mainIndex), 'utf8');
+
+    const revived = new SessionStore({ filePath });
+    expect(revived.sessions.map((s) => s.id)).toContain(sid);
+    expect(revived.items).toHaveLength(2);
+    expect(revived.items[0]).toMatchObject({ kind: 'user', text: 'password="[REDACTED]"' });
+    expect(revived.items[1]).toMatchObject({ kind: 'assistant', text: '已处理请求' });
+
+    revived.dispose();
+    store.dispose();
+  });
+
+  it('deleteSession 删除会话时同步移除对应的 session-bags/<id>.json', () => {
+    const { store } = tempStore();
+    const first = store.activeSessionId;
+    store.appendItem({ kind: 'user', id: 'u1', text: '待删除会话' });
+    const second = store.newSession().id;
+    store.appendItem({ kind: 'user', id: 'u2', text: '保留会话' });
+    store.persistNow();
+
+    const bagsDir = store.sessionBagsDir();
+    const firstBagFile = path.join(bagsDir, `${first}.json`);
+    const secondBagFile = path.join(bagsDir, `${second}.json`);
+    expect(existsSync(firstBagFile)).toBe(true);
+    expect(existsSync(secondBagFile)).toBe(true);
+
+    expect(store.deleteSession(first)).toBe(true);
+    expect(existsSync(firstBagFile)).toBe(false);
+    expect(existsSync(secondBagFile)).toBe(true);
+
+    store.dispose();
+  });
+});
+
